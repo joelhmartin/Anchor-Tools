@@ -5,7 +5,15 @@ namespace Anchor\Courses\Admin;
 
 use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\Curriculum;
+use Anchor\Courses\Database\CertificateRepository;
+use Anchor\Courses\Database\CreditRepository;
 use Anchor\Courses\Database\EnrollmentRepository;
+use Anchor\Courses\Database\ProgressRepository;
+use Anchor\Courses\Database\QuizAttemptRepository;
+use Anchor\Courses\Domain\Certificate;
+use Anchor\Courses\Domain\Credit;
+use Anchor\Courses\Services\CertificateService;
+use Anchor\Courses\Services\CreditService;
 use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Accounts;
 use Anchor\Courses\Support\Capabilities;
@@ -15,21 +23,29 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /**
  * The Learners tab (design spec 3.1) - a metabox, because the course edit
- * screen has metaboxes and not tabs (deviation D16).
+ * screen has metaboxes and not tabs (deviation D16) - plus a Courses block on
+ * the user profile screen (Task 31).
  *
  * Who is in, how far they have got, and the two controls staff need: add
  * somebody by name and email, or take their access away. Both go through
  * Support\Roles, so this screen is a caller of the one enrolment door rather
- * than a second one. Task 31 adds the credits and certificate columns.
+ * than a second one. Task 31 adds the credits, certificate and quiz-attempt
+ * columns, the user-profile surface, and hands the row-level enrolment
+ * actions (cancel/reset/complete/uncomplete) to Admin\EnrollmentManager,
+ * rendered inline below the add-learner form.
  *
  * The table prints learner email addresses, so it is gated on the REPORTS
- * capability, not on edit_posts; the two write handlers need
+ * capability, not on edit_posts; the write handlers need
  * manage_anchor_enrollments.
  *
  * rows() calls ProgressService::get_course_progress() once per enrolled
  * learner (an N+1 query per page). Known, reviewed, and deliberately left
- * alone here - it is carried to Task 31, which touches this same loop to add
- * the credits/certificate columns.
+ * alone here (Task 21 review, LOW) - Task 31 is careful not to make it
+ * WORSE: the three new report columns (credits, certificate, best quiz
+ * score) plus last_activity are each loaded with exactly one batched query
+ * for the whole page, via CreditRepository/CertificateRepository/
+ * QuizAttemptRepository/ProgressRepository methods that take the page's
+ * whole array of user ids, not one call per row.
  */
 final class LearnerReports {
 
@@ -40,6 +56,8 @@ final class LearnerReports {
 
 	public function __construct() {
 		\add_action( 'add_meta_boxes', [ $this, 'add_metabox' ] );
+		\add_action( 'show_user_profile', [ $this, 'render_user_profile' ] );
+		\add_action( 'edit_user_profile', [ $this, 'render_user_profile' ] );
 		\add_action( 'admin_post_anchor_courses_add_learner', [ $this, 'handle_add_learner' ] );
 		\add_action( 'admin_post_anchor_courses_revoke_access', [ $this, 'handle_revoke' ] );
 	}
@@ -62,25 +80,51 @@ final class LearnerReports {
 	 * legitimately disagree: the default loss policy keeps an enrolment after
 	 * its role goes, so "enrolled, no access" is a real and visible state.
 	 *
+	 * The four Phase 4 columns (last_activity, best_score, credits,
+	 * certificate_number/url) are batch-loaded once for the whole page of user
+	 * ids, not once per row - see the class docblock's N+1 note.
+	 *
 	 * @return array<int,array<string,mixed>>
 	 */
 	public static function rows( int $course_id, int $limit = 50, int $offset = 0 ): array {
-		$progress = new ProgressService();
-		$slug     = Roles::access_slug( $course_id );
-		$rows     = [];
+		$progress    = new ProgressService();
+		$slug        = Roles::access_slug( $course_id );
+		$enrollments = EnrollmentRepository::for_course( $course_id, [], $limit, $offset );
 
-		foreach ( EnrollmentRepository::for_course( $course_id, [], $limit, $offset ) as $enrollment ) {
-			$user = \get_userdata( $enrollment->user_id );
+		$user_ids = \array_map( static fn( $enrollment ) => $enrollment->user_id, $enrollments );
+
+		// One query per column source for the WHOLE PAGE (Task 21 review, N+1
+		// LOW, carried and closed here): three new report columns must not
+		// mean three more queries per learner.
+		$credits       = CreditRepository::for_users_in_course( $user_ids, $course_id );
+		$certificates  = CertificateRepository::for_users_in_course( $user_ids, $course_id );
+		$best_scores   = QuizAttemptRepository::best_scores_for_users_in_course( $user_ids, $course_id );
+		$last_activity = ProgressRepository::last_activity_for_users( $user_ids, $course_id );
+
+		$rows = [];
+
+		foreach ( $enrollments as $enrollment ) {
+			$user        = \get_userdata( $enrollment->user_id );
+			$credit      = $credits[ $enrollment->user_id ] ?? null;
+			$certificate = $certificates[ $enrollment->user_id ] ?? null;
 
 			$rows[] = [
-				'user_id'      => $enrollment->user_id,
-				'display_name' => $user ? (string) $user->display_name : '',
-				'user_email'   => $user ? (string) $user->user_email : '',
-				'enrolled_at'  => $enrollment->enrolled_at,
-				'percent'      => $progress->get_course_progress( $enrollment->user_id, $course_id )->percent,
-				'status'       => $enrollment->status,
-				'completed_at' => (string) ( $enrollment->completed_at ?? '' ),
-				'has_access'   => Roles::user_has( $enrollment->user_id, $slug ),
+				'user_id'            => $enrollment->user_id,
+				'display_name'       => $user ? (string) $user->display_name : '',
+				'user_email'         => $user ? (string) $user->user_email : '',
+				'enrolled_at'        => $enrollment->enrolled_at,
+				// Still one call per row - the pre-existing, already-reviewed
+				// N+1 this class's docblock carries forward (out of Task 31's
+				// scope, which is the THREE NEW columns below).
+				'percent'            => $progress->get_course_progress( $enrollment->user_id, $course_id )->percent,
+				'last_activity'      => $last_activity[ $enrollment->user_id ] ?? '',
+				'best_score'         => $best_scores[ $enrollment->user_id ] ?? null,
+				'status'             => $enrollment->status,
+				'completed_at'       => (string) ( $enrollment->completed_at ?? '' ),
+				'credits'            => $credit instanceof Credit ? $credit->credits : 0.0,
+				'certificate_number' => $certificate instanceof Certificate ? $certificate->certificate_number : '',
+				'certificate_url'    => $certificate instanceof Certificate ? $certificate->url() : '',
+				'has_access'         => Roles::user_has( $enrollment->user_id, $slug ),
 			];
 		}
 
@@ -115,8 +159,12 @@ final class LearnerReports {
 				\__( 'Email', 'anchor-schema' ),
 				\__( 'Enrolled', 'anchor-schema' ),
 				\__( 'Progress', 'anchor-schema' ),
+				\__( 'Last activity', 'anchor-schema' ),
+				\__( 'Best quiz', 'anchor-schema' ),
 				\__( 'Status', 'anchor-schema' ),
 				\__( 'Completed', 'anchor-schema' ),
+				\__( 'Credits', 'anchor-schema' ),
+				\__( 'Certificate', 'anchor-schema' ),
 				\__( 'Access', 'anchor-schema' ),
 			] as $heading ) {
 				echo '<th>' . \esc_html( $heading ) . '</th>';
@@ -144,9 +192,22 @@ final class LearnerReports {
 						\esc_html__( '—', 'anchor-schema' )
 					);
 				}
+				\printf( '<td>%s</td>', \esc_html( '' === $row['last_activity'] ? '-' : \mysql2date( 'Y-m-d', (string) $row['last_activity'] ) ) );
+				\printf( '<td>%s</td>', \esc_html( null === $row['best_score'] ? '-' : \number_format_i18n( (float) $row['best_score'], 0 ) . '%' ) );
 				\printf( '<td>%s</td>', \esc_html( (string) $row['status'] ) );
 				\printf( '<td>%s</td>', \esc_html( '' === $row['completed_at'] ? '-' : \mysql2date( 'Y-m-d', (string) $row['completed_at'] ) ) );
+				\printf( '<td>%s</td>', \esc_html( \number_format_i18n( (float) $row['credits'], 1 ) ) );
+				if ( '' !== $row['certificate_number'] ) {
+					\printf(
+						'<td><a href="%s">%s</a></td>',
+						\esc_url( (string) $row['certificate_url'] ),
+						\esc_html( (string) $row['certificate_number'] )
+					);
+				} else {
+					echo '<td>-</td>';
+				}
 
+				// Access + per-row Revoke, carried over from Task 21.
 				echo '<td>';
 				if ( $row['has_access'] && $may_write ) {
 					$this->revoke_button( $course_id, (int) $row['user_id'] );
@@ -163,7 +224,8 @@ final class LearnerReports {
 		}
 
 		if ( $may_write ) {
-			$this->render_add_learner_form( $course_id );
+			$this->render_add_learner_form( $course_id ); // Task 21.
+			( new EnrollmentManager() )->render_form( $course_id );
 		}
 	}
 
@@ -303,5 +365,126 @@ final class LearnerReports {
 
 		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', \sanitize_key( $code ), $target ) );
 		exit;
+	}
+
+	/**
+	 * Every course this learner is enrolled in, for the user-profile Courses
+	 * block. Not paginated - bounded by one learner's own enrollment count,
+	 * not by a report page size, so the N+1 ruling that governs rows() does
+	 * not apply here the same way; this loops CreditService/CertificateService
+	 * per course exactly as the brief's interface lists them as consumed.
+	 *
+	 * @return array<int,array<string,mixed>>
+	 */
+	public static function user_rows( int $user_id ): array {
+		$progress_service    = new ProgressService();
+		$credit_service      = new CreditService();
+		// CertificateService takes no constructor args (it links to a credit
+		// via CreditRepository internally, class_exists()-guarded) - the
+		// brief's sample constructor call does not match the shipped class.
+		$certificate_service = new CertificateService();
+
+		$rows = [];
+
+		foreach ( EnrollmentRepository::for_user( $user_id ) as $enrollment ) {
+			$credit      = $credit_service->get( $user_id, $enrollment->course_id );
+			$certificate = $certificate_service->get( $user_id, $enrollment->course_id );
+
+			$attempts = [];
+			foreach ( QuizAttemptRepository::for_user_course( $user_id, $enrollment->course_id ) as $attempt ) {
+				$attempts[] = [
+					'quiz_id'        => $attempt->quiz_id,
+					'quiz_title'     => (string) \get_the_title( $attempt->quiz_id ),
+					'attempt_number' => $attempt->attempt_number,
+					'score'          => $attempt->score,
+					'passed'         => $attempt->passed,
+					'submitted_at'   => (string) ( $attempt->submitted_at ?? '' ),
+				];
+			}
+
+			$rows[] = [
+				'course_id'          => $enrollment->course_id,
+				'course_title'       => (string) \get_the_title( $enrollment->course_id ),
+				'status'             => $enrollment->status,
+				'percent'            => $progress_service->get_course_progress( $user_id, $enrollment->course_id )->percent,
+				'attempts'           => $attempts,
+				'credits'            => $credit instanceof Credit ? $credit->credits : 0.0,
+				'certificate_number' => $certificate instanceof Certificate ? $certificate->certificate_number : '',
+				'certificate_url'    => $certificate instanceof Certificate ? $certificate->url() : '',
+			];
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * The "Courses" block on a user's profile screen (show_user_profile /
+	 * edit_user_profile). Same reports gate as the metabox, with one
+	 * exception: a user may always see their OWN courses without the reports
+	 * capability - this is their profile, not somebody else's report.
+	 */
+	public function render_user_profile( \WP_User $user ): void {
+		if ( ! Capabilities::current_user_can( 'reports' ) && \get_current_user_id() !== (int) $user->ID ) {
+			return;
+		}
+
+		$rows = self::user_rows( (int) $user->ID );
+
+		echo '<h2 id="anchor-courses">' . \esc_html__( 'Courses', 'anchor-schema' ) . '</h2>';
+
+		if ( [] === $rows ) {
+			echo '<p>' . \esc_html__( 'No enrolments.', 'anchor-schema' ) . '</p>';
+			return;
+		}
+
+		echo '<table class="widefat striped anchor-courses-report"><thead><tr>';
+		foreach ( [
+			\__( 'Course', 'anchor-schema' ),
+			\__( 'Status', 'anchor-schema' ),
+			\__( 'Progress', 'anchor-schema' ),
+			\__( 'Quiz attempts', 'anchor-schema' ),
+			\__( 'Credits', 'anchor-schema' ),
+			\__( 'Certificate', 'anchor-schema' ),
+		] as $heading ) {
+			echo '<th>' . \esc_html( $heading ) . '</th>';
+		}
+		echo '</tr></thead><tbody>';
+
+		foreach ( $rows as $row ) {
+			echo '<tr>';
+			\printf(
+				'<td><a href="%s">%s</a></td>',
+				\esc_url( (string) \get_edit_post_link( (int) $row['course_id'], 'raw' ) ),
+				\esc_html( (string) $row['course_title'] )
+			);
+			\printf( '<td>%s</td>', \esc_html( (string) $row['status'] ) );
+			\printf( '<td>%s%%</td>', \esc_html( \number_format_i18n( (float) $row['percent'], 0 ) ) );
+
+			echo '<td>';
+			foreach ( (array) $row['attempts'] as $attempt ) {
+				\printf(
+					'<div>%s #%d: %s%s</div>',
+					\esc_html( (string) $attempt['quiz_title'] ),
+					(int) $attempt['attempt_number'],
+					\esc_html( null === $attempt['score'] ? '-' : \number_format_i18n( (float) $attempt['score'], 0 ) . '%' ),
+					$attempt['passed'] ? ' ' . \esc_html__( '(passed)', 'anchor-schema' ) : ''
+				);
+			}
+			echo '</td>';
+
+			\printf( '<td>%s</td>', \esc_html( \number_format_i18n( (float) $row['credits'], 1 ) ) );
+			if ( '' !== $row['certificate_number'] ) {
+				\printf(
+					'<td><a href="%s">%s</a></td>',
+					\esc_url( (string) $row['certificate_url'] ),
+					\esc_html( (string) $row['certificate_number'] )
+				);
+			} else {
+				echo '<td>-</td>';
+			}
+			echo '</tr>';
+		}
+
+		echo '</tbody></table>';
 	}
 }

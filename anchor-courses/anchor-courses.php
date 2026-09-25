@@ -56,7 +56,9 @@ class Module {
 			new Admin\CourseEditor();
 			new Admin\LessonEditor();
 			new Admin\QuizEditor();
+			new Admin\Notices();
 			new Admin\LearnerReports();
+			new Admin\EnrollmentManager();
 		}
 
 		$this->enrollments = new Services\EnrollmentService();

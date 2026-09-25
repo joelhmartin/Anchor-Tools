@@ -189,10 +189,12 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Owner feedback round 1: layout="list" puts "Name, credentials" on one
-	 * line (credentials nested inside the name heading) and renders a
-	 * trailing "View" CTA with the .anchor-speaker__cta modifier, instead of
-	 * the grid/compact "View profile" link.
+	 * Owner feedback round 1 (still correct after round 2's body-wrapper
+	 * restructuring): when a speaker has BOTH a title and credentials,
+	 * layout="list" puts "Name, credentials" on one line (credentials
+	 * nested inside the name heading) with the title as the role line below
+	 * it, and renders a trailing "View" CTA with the .anchor-speaker__cta
+	 * modifier, instead of the grid/compact "View profile" link.
 	 */
 	public function test_list_layout_combines_name_and_credentials_with_cta() {
 		$id = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Dr. Steven Olmos' ] );
@@ -201,12 +203,58 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 		$html = do_shortcode( '[anchor_speakers layout="list"]' );
 
 		$this->assertMatchesRegularExpression(
-			'~<h3 class="anchor-speaker__name"><a href="[^"]*">Dr\. Steven Olmos</a><span class="anchor-speaker__credentials">, DDS</span></h3>~',
+			'~<div class="anchor-speaker__body"><h3 class="anchor-speaker__name"><a href="[^"]*">Dr\. Steven Olmos</a><span class="anchor-speaker__credentials">, DDS</span></h3><p class="anchor-speaker__title">Founder</p>~',
 			$html
 		);
 		$this->assertStringContainsString( 'anchor-speaker__link anchor-speaker__cta', $html );
 		$this->assertStringContainsString( '>View<', $html );
 		$this->assertStringNotContainsString( 'View profile', $html );
+	}
+
+	/**
+	 * Owner feedback round 2 (2.png): a speaker with credentials but NO
+	 * title used to render nothing on the role line at all (title-only
+	 * logic, no fallback). Credentials must now fill that line instead,
+	 * reusing the .anchor-speaker__title class (styled as plain body text,
+	 * not the inline "name, credentials" treatment) - and must NOT also
+	 * appear inline after the name in this case, so they show exactly once.
+	 */
+	public function test_list_layout_shows_credentials_as_the_role_line_when_title_is_empty() {
+		$id = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Dr. No Title' ] );
+		Anchor_Speaker_Meta::save( $id, [ 'credentials' => 'DDS' ] );
+
+		$html = do_shortcode( '[anchor_speakers layout="list"]' );
+
+		$this->assertMatchesRegularExpression(
+			'~<h3 class="anchor-speaker__name"><a href="[^"]*">Dr\. No Title</a></h3><p class="anchor-speaker__title">DDS</p>~',
+			$html
+		);
+		// Credentials appear exactly once (as the role line), never also
+		// nested inline after the name.
+		$this->assertSame( 1, substr_count( $html, 'DDS' ) );
+		$this->assertStringNotContainsString( 'anchor-speaker__credentials', $html );
+	}
+
+	/**
+	 * A speaker with neither a title nor credentials gets no role line at
+	 * all (not an empty <p>), and the body wrapper still exists around the
+	 * name alone.
+	 */
+	public function test_list_layout_omits_role_line_when_title_and_credentials_are_both_empty() {
+		// post_content explicitly empty: the factory default is non-empty
+		// placeholder text, which would otherwise auto-generate a non-empty
+		// excerpt (default `show` includes 'excerpt') and break this test's
+		// assumption that nothing renders between the name and the closing
+		// .anchor-speaker__body tag.
+		$id = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Dr. Bare', 'post_content' => '', 'post_excerpt' => '' ] );
+
+		$html = do_shortcode( '[anchor_speakers layout="list"]' );
+
+		$this->assertMatchesRegularExpression(
+			'~<div class="anchor-speaker__body"><h3 class="anchor-speaker__name"><a href="[^"]*">Dr\. Bare</a></h3></div>~',
+			$html
+		);
+		$this->assertStringNotContainsString( 'anchor-speaker__title', $html );
 	}
 
 	/**

@@ -22,6 +22,10 @@
  *                               (default rgba(0,0,0,.08))
  *   --as-title-color            list layout: the role/title line color
  *                               (default rgba(0,0,0,.6))
+ *   --as-name-size              list layout: the name line's font size
+ *                               (default 1.05em)
+ *   --as-photo-gap              list layout: the gap between the photo and
+ *                               the text/CTA columns (default 16px)
  *
  * The single-speaker fallback template (templates/single-anchor_speaker.php)
  * uses the separate .anchor-speaker-single block below, unrelated to the
@@ -49,20 +53,29 @@
 /*
  * .anchor-speaker sets flex-direction:column (below) with nothing here to
  * override it, so list cards stayed vertical instead of the row layout this
- * modifier intends. Grid instead: a single text column when the card has no
+ * modifier intends. Grid instead: a single body column when the card has no
  * photo (nothing to sit beside), a photo column only when a
  * .anchor-speaker__photo child actually exists (so a photo-less card never
- * gets a blank first column), and a trailing CTA column that spans the full
- * row height so "View ->" sits vertically centered at the row's edge
- * regardless of how many text lines (name, title, excerpt, ...) sit next to
- * it. `grid-row: 1 / -1` on the photo/CTA spans "however many rows this row
- * actually has" without the card needing to know that count up front.
+ * gets a blank first column), and a trailing CTA column.
+ *
+ * Owner feedback round 2: this used to give the photo and CTA
+ * `grid-row: 1 / -1` so they'd span however many implicit rows the loose
+ * text children (name, title, location, excerpt, each its own grid item)
+ * produced - but that let the row spread out to match the photo's height
+ * (or vice versa) with a wide, uneven gap between the name and title lines,
+ * and depended on each text child's own margin for spacing, which a
+ * theme's heading/paragraph margins could widen or override outright.
+ * list_card() in class-speaker-render.php now wraps all of that text in one
+ * `.anchor-speaker__body` element, so the grid only ever has ONE row (photo
+ * | body | CTA, three grid items total) - `align-items: center` centers
+ * them against each other directly, and the compact line spacing inside
+ * body comes from its own flex `gap`, not from child margins.
  */
 .anchor-speakers--list .anchor-speaker {
 	display: grid;
 	grid-template-columns: minmax( 0, 1fr ) auto;
 	align-items: center;
-	column-gap: var( --as-gap, 24px );
+	column-gap: var( --as-photo-gap, 16px );
 	padding: 16px 0;
 	border-bottom: 1px solid var( --as-list-border, rgba( 0, 0, 0, 0.08 ) );
 }
@@ -71,8 +84,17 @@
 	border-bottom: 0;
 }
 
-.anchor-speakers--list .anchor-speaker > * {
+.anchor-speakers--list .anchor-speaker__body {
 	grid-column: 1;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 4px;
+	min-width: 0;
+}
+
+.anchor-speakers--list .anchor-speaker__body > * {
+	margin: 0;
 }
 
 /*
@@ -82,8 +104,6 @@
  */
 .anchor-speakers--list .anchor-speaker > .anchor-speaker__cta {
 	grid-column: 2;
-	grid-row: 1 / -1;
-	align-self: center;
 	justify-self: end;
 }
 
@@ -91,14 +111,12 @@
 	grid-template-columns: 64px minmax( 0, 1fr ) auto;
 }
 
-.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > * {
-	grid-column: 2;
-}
-
 .anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__photo {
 	grid-column: 1;
-	grid-row: 1 / -1;
-	align-self: center;
+}
+
+.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__body {
+	grid-column: 2;
 }
 
 .anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__cta {
@@ -106,24 +124,25 @@
 }
 
 .anchor-speakers--list .anchor-speaker__name {
-	margin: 0;
-	font-size: 1.05em;
+	font-size: var( --as-name-size, 1.05em );
+	line-height: 1.3;
 }
 
 .anchor-speakers--list .anchor-speaker__name .anchor-speaker__credentials {
-	margin: 0;
 	font-weight: inherit;
 }
 
+/*
+ * The role line: title when a speaker has one, else their credentials as a
+ * fallback (list_card() reuses this same class for both, so a credentials
+ * fallback is never styled any differently from a normal title line - a
+ * plain line of body text, not the inline "name, credentials" treatment).
+ */
 .anchor-speakers--list .anchor-speaker__title {
 	color: var( --as-title-color, rgba( 0, 0, 0, 0.6 ) );
-	margin: 0.25em 0 0;
-}
-
-.anchor-speakers--list .anchor-speaker__link {
-	/* Overrides the grid/compact .anchor-speaker__link margin-top below so
-	   the list row's trailing link stays vertically centered in its cell. */
-	margin-top: 0;
+	font-size: 1em;
+	font-weight: 400;
+	line-height: 1.3;
 }
 
 .anchor-speakers--list .anchor-speaker__cta {

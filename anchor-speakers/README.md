@@ -55,7 +55,7 @@ Ordering: `ids` order when `ids` is given, else event order when `event` resolve
 
 ## Markup contract
 
-This is the `grid`/`compact` contract. `list` diverges in two places (credentials nest inside `.anchor-speaker__name` instead of their own `<p>`, and the trailing link is "View" + an arrow with an extra `.anchor-speaker__cta` class instead of "View profile") - see "List layout row design" below. `avatars` is a different markup shape entirely - see its own contract below.
+This is the `grid`/`compact` contract, from `Anchor_Speaker_Render::card()`. `list` uses a different method (`list_card()`) with its own markup shape - see "List layout row design" below. `avatars` is different again - see its own contract further down.
 
 ```html
 <div class="anchor-speakers anchor-speakers--{grid|list|compact}" style="--as-cols:{columns};">
@@ -63,11 +63,11 @@ This is the `grid`/`compact` contract. `list` diverges in two places (credential
     <!-- photo, only if a thumbnail is set; wrapped in <a> when link=1, else <span> -->
     <a class="anchor-speaker__photo" href="{permalink}"><!-- medium-size thumbnail, loading=lazy --></a>
     <h3 class="anchor-speaker__name"><a href="{permalink}">{name}</a></h3> <!-- <a> only when link=1 -->
-    <p class="anchor-speaker__credentials">{credentials}</p> <!-- only if in `show` and non-empty; list nests this inside __name instead, see below -->
+    <p class="anchor-speaker__credentials">{credentials}</p> <!-- only if in `show` and non-empty -->
     <p class="anchor-speaker__title">{title}</p> <!-- only if in `show` and non-empty -->
     <p class="anchor-speaker__location">{location}</p> <!-- only if in `show` and non-empty -->
     <p class="anchor-speaker__excerpt">{excerpt}</p> <!-- only if 'excerpt' in `show`; get_the_excerpt(), passed through wp_kses_post() not esc_html() since a manual excerpt may contain inline markup -->
-    <a class="anchor-speaker__link" href="{permalink}">View profile</a> <!-- only when link=1; list adds .anchor-speaker__cta and renders "View" + an arrow instead, see below -->
+    <a class="anchor-speaker__link" href="{permalink}">View profile</a> <!-- only when link=1 -->
   </article>
   <!-- one article per post -->
 </div>
@@ -97,7 +97,31 @@ A compact overlapping stack of circular headshots only - no names, credentials o
 
 ## List layout row design
 
-`layout=list` renders each speaker as a row: a round photo, "Name, credentials" on one line (the credentials nest inside `.anchor-speaker__name` as a `.anchor-speaker__credentials` span so they flow inline after the name instead of wrapping to their own line, only for this layout - grid/compact keep credentials as a separate `<p>`), the role/title line below it, and a trailing "View" link with a right-arrow glyph (`.anchor-speaker__link.anchor-speaker__cta`) vertically centered at the row's right edge. Rows are separated by a hairline bottom border (omitted on the last row). CSS Grid (`grid-template-columns: [64px photo] [1fr text] [auto cta]`, `grid-row: 1 / -1` on the photo and CTA) does the row layout; no new markup wrapper was needed beyond the `__cta` modifier.
+`layout=list` renders each speaker as a row: a round photo, a compact two-(or more-)line text block vertically centered beside it, and a trailing "View" link with a right-arrow glyph vertically centered at the row's right edge. Rows are separated by a hairline bottom border (omitted on the last row).
+
+```html
+<div class="anchor-speakers anchor-speakers--list" style="--as-cols:{columns};">
+  <article class="anchor-speaker">
+    <!-- photo, only if a thumbnail is set; wrapped in <a> when link=1, else <span> -->
+    <a class="anchor-speaker__photo" href="{permalink}"><!-- medium-size thumbnail, loading=lazy --></a>
+    <div class="anchor-speaker__body">
+      <h3 class="anchor-speaker__name">
+        <a href="{permalink}">{name}</a> <!-- <a> only when link=1 -->
+        <span class="anchor-speaker__credentials">, {credentials}</span> <!-- only when BOTH credentials and title are shown; see the role-line rule below -->
+      </h3>
+      <p class="anchor-speaker__title">{title or credentials}</p> <!-- the role line: title when present, else credentials as a fallback, else omitted -->
+      <p class="anchor-speaker__location">{location}</p> <!-- only if 'location' in `show` and non-empty -->
+      <p class="anchor-speaker__excerpt">{excerpt}</p> <!-- only if 'excerpt' in `show` and non-empty -->
+    </div>
+    <a class="anchor-speaker__link anchor-speaker__cta" href="{permalink}">View<span aria-hidden="true"> &#8594;</span></a> <!-- only when link=1 -->
+  </article>
+  <!-- one article per post -->
+</div>
+```
+
+All non-photo, non-CTA content is wrapped in one `.anchor-speaker__body` element (`Anchor_Speaker_Render::list_card()`), unlike the `grid`/`compact` contract where each field is its own sibling of `article`. This matters for two reasons: it collapses the row to a single CSS grid row (photo | body | CTA, three grid items - see the CSS custom properties section below for why that fixed a real layout bug), and the ~4px line spacing between body's children comes from its own flex `gap` rather than each child's own margin, which is immune to a theme's own heading/paragraph margins.
+
+**The role line** (`.anchor-speaker__title`, second line of `body`) prefers the speaker's title; when a speaker has no title, their credentials become the role line instead **using the same `.anchor-speaker__title` class** (so a credentials fallback is a plain line of body text, styled identically to a normal title - never a monospace/badge treatment). Credentials appear in exactly one place per card, never both: inline after the name (`.anchor-speaker__credentials`, only when the speaker has both credentials and a title, so the role line below is the title) or as the role line itself (only when there is no title). A speaker with neither a title nor credentials just has no second line.
 
 ## CSS custom properties
 
@@ -111,14 +135,16 @@ Theme-overridable, read by `assets/speakers.css` with fallback defaults, not set
 | `--as-photo-radius` | `50%` (a circle) | Speaker photo corner radius, on both the card photo and the single-template photo |
 | `--as-cta-color` | `currentColor` | List layout's trailing "View" link color |
 | `--as-list-border` | `rgba(0,0,0,.08)` | List layout's hairline row divider |
-| `--as-title-color` | `rgba(0,0,0,.6)` | List layout's role/title line color |
+| `--as-title-color` | `rgba(0,0,0,.6)` | List layout's role line color (title, or the credentials fallback) |
+| `--as-name-size` | `1.05em` | List layout's name line font size |
+| `--as-photo-gap` | `16px` | List layout's gap between the photo and the text/CTA columns |
 | `--as-avatar-size` | `40px` | Avatars layout: each headshot's diameter |
 | `--as-avatar-overlap` | `12px` | Avatars layout: how far each avatar tucks under the previous one |
 | `--as-avatar-ring` | `#fff` | Avatars layout: the ring/border color separating overlapping avatars |
 | `--as-avatar-placeholder-bg` | `rgba(0,0,0,.08)` | Avatars layout: a photo-less speaker's initial placeholder background |
 | `--as-avatar-placeholder-fg` | `rgba(0,0,0,.5)` | Avatars layout: that placeholder's text color |
 
-`layout=list` lays cards out as a CSS grid row (photo at a fixed 64px, per the row design above) instead of a grid of cards. `layout=compact` is the same grid as `grid` at half the gap. `layout=avatars` is a flex row of overlapping circles, not a grid at all.
+`layout=list` lays each card out as a single-row CSS grid (photo at a fixed 64px | `.anchor-speaker__body` | CTA, per the row design above) instead of a grid of cards. `layout=compact` is the same grid as `grid` at half the gap. `layout=avatars` is a flex row of overlapping circles, not a grid at all.
 
 ## Single template fallback
 

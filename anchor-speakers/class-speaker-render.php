@@ -51,7 +51,7 @@ class Anchor_Speaker_Render {
 
 		$cards = '';
 		foreach ( $posts as $post ) {
-			$cards .= self::card( $post, $show, $link, $layout );
+			$cards .= $layout === 'list' ? self::list_card( $post, $show, $link ) : self::card( $post, $show, $link );
 		}
 
 		return '<div class="anchor-speakers anchor-speakers--' . esc_attr( $layout ) . '" style="' . esc_attr( $style ) . '">' . $cards . '</div>';
@@ -98,12 +98,10 @@ class Anchor_Speaker_Render {
 		return $html;
 	}
 
-	private static function card( WP_Post $post, array $show, $link, $layout = 'grid' ) {
+	private static function card( WP_Post $post, array $show, $link ) {
 		$meta      = Anchor_Speaker_Meta::get( $post->ID );
 		$permalink = get_permalink( $post );
 		$name      = get_the_title( $post );
-		$is_list   = $layout === 'list';
-		$has_credentials = in_array( 'credentials', $show, true ) && $meta['credentials'] !== '';
 
 		$html = '<article class="anchor-speaker">';
 
@@ -116,19 +114,11 @@ class Anchor_Speaker_Render {
 			}
 		}
 
-		// List layout puts "Name, credentials" on one visual line: the
-		// credentials part nests inside the same heading (as
-		// .anchor-speaker__credentials, same class other layouts render as a
-		// sibling <p>) so it flows inline after the name instead of wrapping
-		// to its own line.
 		$html .= '<h3 class="anchor-speaker__name">';
 		$html .= $link ? '<a href="' . esc_url( $permalink ) . '">' . esc_html( $name ) . '</a>' : esc_html( $name );
-		if ( $is_list && $has_credentials ) {
-			$html .= '<span class="anchor-speaker__credentials">, ' . esc_html( $meta['credentials'] ) . '</span>';
-		}
 		$html .= '</h3>';
 
-		if ( ! $is_list && $has_credentials ) {
+		if ( in_array( 'credentials', $show, true ) && $meta['credentials'] !== '' ) {
 			$html .= '<p class="anchor-speaker__credentials">' . esc_html( $meta['credentials'] ) . '</p>';
 		}
 		if ( in_array( 'title', $show, true ) && $meta['title'] !== '' ) {
@@ -150,14 +140,87 @@ class Anchor_Speaker_Render {
 		}
 
 		if ( $link ) {
-			if ( $is_list ) {
-				// The row design's trailing "View" link with an arrow glyph;
-				// __cta is an additional modifier on the same __link part
-				// (same href, same underlying link), not a replacement.
-				$html .= '<a class="anchor-speaker__link anchor-speaker__cta" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View', 'anchor-schema' ) . '<span aria-hidden="true"> &#8594;</span></a>';
+			$html .= '<a class="anchor-speaker__link" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View profile', 'anchor-schema' ) . '</a>';
+		}
+
+		$html .= '</article>';
+
+		return $html;
+	}
+
+	/**
+	 * `layout="list"`: a compact row (owner feedback round 2, 2.png) - round
+	 * photo left, a tight two-(or more-)line text block vertically centered
+	 * beside it, and a trailing "View" CTA vertically centered at the row's
+	 * edge. All non-photo, non-CTA text (name, the role line, location,
+	 * excerpt) is wrapped in one `.anchor-speaker__body` element instead of
+	 * being scattered as separate grid items: that both collapses the row to
+	 * a single grid row (so `align-items: center` on the row centers photo/
+	 * body/CTA against each other directly, instead of the photo spanning
+	 * across several loosely-spaced implicit rows) and means the compact
+	 * ~4px line spacing comes from `.anchor-speaker__body`'s own flex `gap`
+	 * rather than each child's margin, which a theme's own heading/paragraph
+	 * margins could otherwise widen or override.
+	 *
+	 * The role line prefers the title; when a speaker has no title, its
+	 * credentials become the role line instead (reusing the
+	 * `.anchor-speaker__title` class, so it's styled identically - plain
+	 * body text, not the inline "name, credentials" treatment) rather than
+	 * leaving the line empty. Credentials appear in exactly one place per
+	 * card: inline after the name (only when a title also exists, so the
+	 * role line beneath it is the title) or as the role line itself (only
+	 * when there is no title) - never both, which would repeat them.
+	 */
+	private static function list_card( WP_Post $post, array $show, $link ) {
+		$meta      = Anchor_Speaker_Meta::get( $post->ID );
+		$permalink = get_permalink( $post );
+		$name      = get_the_title( $post );
+
+		$has_credentials = in_array( 'credentials', $show, true ) && $meta['credentials'] !== '';
+		$has_title       = in_array( 'title', $show, true ) && $meta['title'] !== '';
+		$role_line       = $has_title ? $meta['title'] : ( $has_credentials ? $meta['credentials'] : '' );
+		$credentials_inline = $has_title && $has_credentials;
+
+		$html = '<article class="anchor-speaker">';
+
+		if ( has_post_thumbnail( $post->ID ) ) {
+			$img = get_the_post_thumbnail( $post->ID, 'medium', [ 'loading' => 'lazy' ] );
+			if ( $link ) {
+				$html .= '<a class="anchor-speaker__photo" href="' . esc_url( $permalink ) . '">' . $img . '</a>';
 			} else {
-				$html .= '<a class="anchor-speaker__link" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View profile', 'anchor-schema' ) . '</a>';
+				$html .= '<span class="anchor-speaker__photo">' . $img . '</span>';
 			}
+		}
+
+		$html .= '<div class="anchor-speaker__body">';
+
+		$html .= '<h3 class="anchor-speaker__name">';
+		$html .= $link ? '<a href="' . esc_url( $permalink ) . '">' . esc_html( $name ) . '</a>' : esc_html( $name );
+		if ( $credentials_inline ) {
+			$html .= '<span class="anchor-speaker__credentials">, ' . esc_html( $meta['credentials'] ) . '</span>';
+		}
+		$html .= '</h3>';
+
+		if ( $role_line !== '' ) {
+			$html .= '<p class="anchor-speaker__title">' . esc_html( $role_line ) . '</p>';
+		}
+		if ( in_array( 'location', $show, true ) && $meta['location'] !== '' ) {
+			$html .= '<p class="anchor-speaker__location">' . esc_html( $meta['location'] ) . '</p>';
+		}
+		if ( in_array( 'excerpt', $show, true ) ) {
+			$excerpt = get_the_excerpt( $post );
+			if ( trim( (string) $excerpt ) !== '' ) {
+				$html .= '<p class="anchor-speaker__excerpt">' . wp_kses_post( $excerpt ) . '</p>';
+			}
+		}
+
+		$html .= '</div>';
+
+		if ( $link ) {
+			// The row design's trailing "View" link with an arrow glyph;
+			// __cta is an additional modifier on the same __link part (same
+			// href, same underlying link), not a replacement.
+			$html .= '<a class="anchor-speaker__link anchor-speaker__cta" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View', 'anchor-schema' ) . '<span aria-hidden="true"> &#8594;</span></a>';
 		}
 
 		$html .= '</article>';

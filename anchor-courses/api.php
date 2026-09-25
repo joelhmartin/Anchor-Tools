@@ -20,9 +20,10 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  * @param int   $user_id
  * @param int   $course_id
  * @param array $args source, source_id. `metadata` and `bypass_checks` are
- *                    ignored: Roles::grant_access() runs can_enroll() (course
- *                    published, prerequisites held) before granting, the same
- *                    gate every other grant path goes through.
+ *                    ignored: Roles::grant_access() refuses an unpublished
+ *                    course (no access role exists yet) and then runs
+ *                    can_enroll() (prerequisites held) before granting, the
+ *                    same gate every other grant path goes through.
  * @return \Anchor\Courses\Domain\Enrollment|WP_Error
  */
 function anchor_courses_enroll_user( $user_id, $course_id, array $args = [] ) {

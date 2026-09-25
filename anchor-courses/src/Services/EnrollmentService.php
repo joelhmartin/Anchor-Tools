@@ -212,17 +212,19 @@ final class EnrollmentService {
 	/**
 	 * May this learner use the course right now?
 	 *
-	 * BOTH halves are required (Task 20 fix round, R1): an active row AND the
+	 * BOTH halves are required (Task 20 fix round, R1): an open row AND the
 	 * `anchor_course_{id}` access role. The role is the door - revoking it
 	 * shuts access under every loss policy, including the default `keep`,
 	 * which only preserves the row (and so the learner's progress) for a
 	 * later re-grant. The row is the record - a role held over a closed row
-	 * (cancelled/expired/completed) does not re-open the course by itself.
+	 * (cancelled/expired) does not re-open the course by itself. A completed
+	 * learner is still enrolled: completion ends the work, not the access,
+	 * so they can revisit every lesson for as long as they hold the role.
 	 */
 	public function is_enrolled( int $user_id, int $course_id ): bool {
 		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
 		return $enrollment instanceof Enrollment
-			&& $enrollment->is_active()
+			&& ( $enrollment->is_active() || $enrollment->is_complete() )
 			&& Roles::user_has( $user_id, Roles::access_slug( $course_id ) );
 	}
 

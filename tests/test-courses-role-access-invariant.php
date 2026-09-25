@@ -92,6 +92,17 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
 	}
 
+	/** Completion ends the work, not the access: a completed learner can still open lessons. */
+	public function test_a_completed_learner_is_still_enrolled_while_holding_the_role() {
+		Roles::grant_access( $this->user, $this->course );
+		$this->enrollments->set_status( $this->user, $this->course, 'completed' );
+
+		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
+
+		Roles::revoke_access( $this->user, $this->course );
+		$this->assertFalse( $this->enrollments->is_enrolled( $this->user, $this->course ), 'without the role, completed or not, the door is shut.' );
+	}
+
 	/** Finding 4: a completed learner's access role survives a primary-role change. */
 	public function test_a_completed_learner_keeps_the_access_role_through_set_role() {
 		Roles::grant_access( $this->user, $this->course, 'manual' );

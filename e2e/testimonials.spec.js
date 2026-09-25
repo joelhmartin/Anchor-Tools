@@ -75,3 +75,33 @@ test('the next control advances the shared carousel track', async ({ page }) => 
 
 	await expect.poll(() => track.evaluate((el) => getComputedStyle(el).transform)).not.toBe(before);
 });
+
+test.describe('mobile viewport (390px)', () => {
+	// Final whole-branch review finding 3: --anchor-carousel-cols had no
+	// breakpoints, so testimonials.js's AnchorCarousel.init() computed a
+	// mobile card count of 1 while the CSS still laid out cards at the
+	// desktop column width below 1023px/767px, so card widths and the
+	// per-click advance no longer matched.
+	test.use({ viewport: { width: 390, height: 844 } });
+
+	test('one card is visible per view and next advances by one card', async ({ page }) => {
+		const viewport = page.locator('.anchor-testimonials__viewport').first();
+		const track = page.locator('.anchor-testimonials__track').first();
+		const firstCard = track.locator(':scope > *').first();
+
+		// The card fills its own viewport container's width (which is
+		// narrower than the raw 390px browser viewport, since the active
+		// theme adds its own page-content padding) -- i.e. --at-cols
+		// resolved to 1 below the 767px breakpoint, matching
+		// testimonials.js's mobile: 1 cols.
+		const viewportBox = await viewport.boundingBox();
+		const cardBox = await firstCard.boundingBox();
+		expect(viewportBox).not.toBeNull();
+		expect(cardBox).not.toBeNull();
+		expect(Math.abs(cardBox.width - viewportBox.width)).toBeLessThan(2);
+
+		const before = await track.evaluate((el) => getComputedStyle(el).transform);
+		await page.locator('.anchor-testimonials__next').first().click();
+		await expect.poll(() => track.evaluate((el) => getComputedStyle(el).transform)).not.toBe(before);
+	});
+});

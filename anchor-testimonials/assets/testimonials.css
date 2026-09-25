@@ -44,6 +44,23 @@
 	--anchor-carousel-gap: var( --at-gap, 24px );
 }
 
+/* Same breakpoints as the grid layout above, and the same column counts
+ * testimonials.js's AnchorCarousel.init() cols option computes
+ * (tablet: min(--at-cols,2), mobile: 1), otherwise the JS advances by a
+ * tablet/mobile-sized card while the CSS still lays out desktop-width
+ * columns, and next/prev no longer matches what is visible. */
+@media ( max-width: 1023px ) {
+	.anchor-testimonials--slider .anchor-testimonials__track {
+		--anchor-carousel-cols: min( var( --at-cols, 3 ), 2 );
+	}
+}
+
+@media ( max-width: 767px ) {
+	.anchor-testimonials--slider .anchor-testimonials__track {
+		--anchor-carousel-cols: 1;
+	}
+}
+
 .anchor-testimonial {
 	display: flex;
 	flex-direction: column;

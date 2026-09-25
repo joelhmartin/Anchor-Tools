@@ -104,12 +104,20 @@ class Anchor_Speakers_Module {
 		if ( strpos( $path, '/' ) === false
 			&& ! empty( $vars['post_type'] ) && $vars['post_type'] === self::CPT
 			&& ! empty( $vars[ self::CPT ] )
-			&& get_page_by_path( $path, OBJECT, self::CPT )
+			// A STRING $post_type makes WP core's get_page_by_path() also
+			// match 'attachment' posts of the same slug (it does
+			// `array( $post_type, 'attachment' )` internally); an array
+			// with only this CPT is the only way to exclude that.
+			&& get_page_by_path( $path, OBJECT, [ self::CPT ] )
 		) {
 			return $vars;
 		}
 
-		$page = get_page_by_path( $base . '/' . $path );
+		// Same reasoning: without an array here, an attachment (e.g. an
+		// image) whose slug happens to equal $base . '/' . $path would be
+		// treated as "a real page exists here" and this request would be
+		// handed to a page that does not actually exist.
+		$page = get_page_by_path( $base . '/' . $path, OBJECT, [ 'page' ] );
 		if ( ! $page ) return $vars;
 		return [ 'pagename' => $base . '/' . $path ];
 	}

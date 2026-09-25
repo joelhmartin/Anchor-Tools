@@ -70,6 +70,41 @@ class Test_Speakers_Rewrite extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Final whole-branch review finding (found importing real data):
+	 * get_page_by_path()'s $post_type parameter, passed as a plain string,
+	 * makes WP core also match 'attachment' posts of the same slug (it
+	 * queries post_type IN ($post_type, 'attachment') internally, see
+	 * get_page_by_path() in wp-includes/post.php). Both get_page_by_path()
+	 * calls in page_fallback() must pass an array so an unrelated media
+	 * attachment sharing a path segment's slug is never mistaken for "a
+	 * real speaker/page exists here", which would otherwise 404 a real
+	 * child page instead of letting it resolve.
+	 *
+	 * wp_insert_post() itself would normally de-duplicate the attachment's
+	 * slug away from an existing page's ('our-story' -> 'our-story-2'), so
+	 * the collision is forced directly at the DB row the way an import that
+	 * bypasses that de-dup (a raw SQL import, an XML-RPC/REST media import
+	 * with its own slug handling, a migration) can leave behind, which is
+	 * exactly the scenario this finding was found from.
+	 */
+	public function test_attachment_with_same_slug_does_not_shadow_a_real_child_page() {
+		global $wpdb;
+
+		$about = self::factory()->post->create( [ 'post_type' => 'page', 'post_name' => 'about-us' ] );
+		$child = self::factory()->post->create( [ 'post_type' => 'page', 'post_name' => 'our-story', 'post_parent' => $about ] );
+		// Unrelated media attachment forced to the same slug as the child
+		// page's last path segment (see docblock for why this is forced
+		// directly at the DB row instead of via the post factory).
+		$attachment = self::factory()->post->create( [ 'post_type' => 'attachment', 'post_name' => 'our-story-tmp', 'post_status' => 'inherit' ] );
+		$wpdb->update( $wpdb->posts, [ 'post_name' => 'our-story' ], [ 'ID' => $attachment ] );
+		clean_post_cache( $attachment );
+
+		$this->go_to( '/about-us/our-story/' );
+		$this->assertTrue( is_page() );
+		$this->assertSame( $child, get_queried_object_id() );
+	}
+
+	/**
 	 * maybe_flush() flushes once (no stored signature yet, i.e. first load),
 	 * is a no-op when nothing about the rules has changed, and flushes again
 	 * when the base changes outside the settings page (a direct

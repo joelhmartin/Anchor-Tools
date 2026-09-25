@@ -26,6 +26,7 @@ class Module {
 	public Services\EnrollmentService $enrollments;
 	public Services\ProgressService $progress;
 	public Services\QuizService $quizzes;
+	public Frontend\Shortcodes $shortcodes;
 
 	public function __construct() {
 		self::$instance = $this;
@@ -63,6 +64,10 @@ class Module {
 		// (not inside the is_admin() block above) - the handler runs on requests
 		// from the front end too.
 		new Frontend\Actions( $this->progress );
+
+		new Frontend\Templates();
+		new Frontend\Assets();
+		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments );
 
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).

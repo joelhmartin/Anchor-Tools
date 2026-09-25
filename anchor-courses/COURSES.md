@@ -212,10 +212,22 @@ one." for an enrolled learner locked by progression.
   genuinely never landed still gets created, but never re-runs the hook
   (not idempotent; may already have fired once with nothing recorded to
   prove it). The admin **Repair completion** action therefore always has a
-  real chance to fix an untracked row and reports `repaired` /
-  `repair_incomplete` accordingly; the earlier `repair_not_tracked` code (a
-  distinct "nothing could be determined" outcome) can no longer occur
+  real chance to fix an untracked row; the earlier `repair_not_tracked` code
+  (a distinct "nothing could be determined" outcome) can no longer occur
   through this path and was removed.
+  **`repaired` is reported only once every one of the four tracked effects
+  reads back `done` or `n/a`** (Codex P1 + CodeRabbit, PR #32 re-review) -
+  checked against `CompletionService::EFFECTS` explicitly, not by testing
+  for the absence of `pending`/`failed`. That weaker test also passes for
+  two shapes where nothing is actually confirmed: a fresh `running` claim
+  (a pipeline still within `EFFECTS_RUNNING_STALE_SECONDS`, deliberately
+  left alone rather than re-run) is neither `pending` nor `failed`, and
+  neither is a still-empty map (the repair's own `complete()` call could
+  not get the completion lock, so it ran nothing). Anything short of all
+  four settled redirects with **`repair_incomplete`** instead - a step
+  failed, or one is still finishing from moments ago; the operator is
+  told to check the log and try again in a few minutes, never told it
+  succeeded.
 - **Effect execution is serialised per (user, course)** (Codex review, PR #32
   finding 1): both the fresh transition's own run and any repair take the
   same kind of MySQL named lock `start_attempt()` uses
@@ -264,7 +276,13 @@ one." for an enrolled learner locked by progression.
   `anchor_courses_quiz_expired` hook, a REST read and
   `sweep_expired_attempts()`'s count must all see the real `expired` status,
   never a stale one. A failed detail write is logged as
-  `quiz_expire_detail_save_failed`.
+  `quiz_expire_detail_save_failed`. **That re-read itself is retried once**
+  (CodeRabbit Major, PR #32 re-review) before giving up: a null `find()`
+  right after a write that just succeeded is treated as a transient read
+  blip, not evidence the row reverted, so a second attempt is given a
+  chance to see it. Only if BOTH reads come back empty does `submit()`
+  return `WP_Error('read_failed')` (REST 503, safe to retry) - never the
+  stale `in_progress` object, and logged as `quiz_expire_read_failed`.
 - **A grade counts only once it is saved** (audit F03):
   `QuizAttemptRepository::update()` returns `null` when `$wpdb->update()`
   reports an error (a 0-row no-change update is still a success). `submit()`
@@ -414,7 +432,7 @@ Service errors map through `Routes::error_response()`:
 `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`,
 `attempt_not_yours`; 404 `no_attempt`, `no_course`, `no_user`; 409
 `attempt_closed`, `no_questions`, `attempt_course_mismatch`, `save_conflict`,
-`attempt_busy`; 503 `save_failed` (retry); 400
+`attempt_busy`; 503 `save_failed`, `read_failed` (both retry); 400
 `unknown_question` and anything unlisted.
 Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 `show_score` is off, grading data only with `show_correct_answers`).
@@ -425,7 +443,7 @@ Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 |---|---|
 | `admin-post.php?action=anchor_courses_complete_lesson` (also nopriv) | `Frontend\Actions` - "Mark complete"; redirects with `anchor_courses_notice` |
 | `admin-post.php?action=anchor_courses_add_learner` / `anchor_courses_revoke_access` | `Admin\LearnerReports` (nonce `anchor_courses_learners_{course}`, cap `enrollments`) |
-| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete`, `repair` (re-run failed/untracked completion effects; notices `repaired`, `repair_incomplete`, `repair_not_completed`) |
+| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete`, `repair` (re-run pending/failed/untracked completion effects; `repaired` only once all four read `done`/`n/a`, else `repair_incomplete`; `repair_not_completed` when the row isn't complete at all) |
 | `admin-post.php?action=anchor_courses_delete_role` | `Admin\CourseEditor` (cap `manage`) |
 | `admin-ajax.php?action=anchor_courses_search_items` / `anchor_courses_create_item` | curriculum builder |
 | `/certificate/{token}/` | `Frontend\CertificatePage` - public verification page (query var `anchor_certificate`, noindex) |

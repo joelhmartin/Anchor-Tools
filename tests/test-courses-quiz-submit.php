@@ -226,6 +226,71 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		$this->assertSame( 'expired', $reread->status, 'The row itself really did transition.' );
 	}
 
+	/**
+	 * CodeRabbit Major, PR #32 re-review: the re-read 3288e9c added (right
+	 * above this test) to fix the pre-transition fallback can itself fail -
+	 * a transient blip on the SELECT, not on either write. Before this fix
+	 * that null read fell straight back to $attempt, the object read at the
+	 * very TOP of submit(), still `in_progress` even though the earlier
+	 * atomic transition really did move the row to `expired`. The fix
+	 * retries the read once; this proves the retry - not a stale fallback -
+	 * is what recovers: the hook sees `expired`, no `in_progress` object
+	 * escapes anywhere, and the sweep still counts the attempt as closed.
+	 */
+	public function test_a_failed_re_read_after_expiring_is_retried_once_and_never_falls_back_to_the_stale_object() {
+		global $wpdb;
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+		$this->quizzes->save_answer( $attempt->id, $this->q1, 'a2' );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		$seen = [];
+		add_action(
+			'anchor_courses_quiz_expired',
+			static function ( $expired ) use ( &$seen ) {
+				$seen[] = $expired->status;
+			}
+		);
+
+		// Fail exactly the FIRST read of the row that happens after the
+		// in_progress -> expired transition and its detail write (both
+		// succeed for real here): #1 is submit()'s own read at the top
+		// (must succeed - it is what finds the deadline passed at all);
+		// #2 is QuizAttemptRepository::update()'s own re-read once the
+		// detail write succeeds. #3 - this fix's new re-read - is the one
+		// broken here; letting #4 (the one retry) through is what proves
+		// the retry recovers it, not a fallback to the stale object.
+		$wpdb->suppress_errors( true );
+		$hits  = 0;
+		$break = static function ( $query ) use ( &$hits ) {
+			if ( \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = \d+$/', (string) $query ) ) {
+				$hits++;
+				if ( 3 === $hits ) {
+					return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+				}
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+
+		// Drive it through the sweep, same as the test above, so the
+		// count itself is proven, not just the return value.
+		$closed = $this->quizzes->sweep_expired_attempts();
+
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertSame( 1, $closed, "The sweep's count must reflect the real transition even though its first re-read failed." );
+		$this->assertSame( [ 'expired' ], $seen, 'The expiry hook must see the real status - never the stale in_progress fallback.' );
+
+		$reread = QuizAttemptRepository::find( $attempt->id );
+		$this->assertSame( 'expired', $reread->status );
+	}
+
 	public function test_an_in_window_submission_records_its_duration() {
 		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600 ] );
 		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );

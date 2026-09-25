@@ -100,10 +100,12 @@ final class Routes {
 	 * no_course, no_user); 409 for a state conflict on an otherwise-valid
 	 * request (attempt_closed, no_questions, attempt_course_mismatch - audit
 	 * F05, save_conflict - audit F06, attempt_busy - audit F07); 503 for a
-	 * write the server
-	 * could not persist, safe to retry (save_failed - audit F03); 400 for a
-	 * malformed request (unknown_question) and the fallback for anything
-	 * unlisted.
+	 * write OR a read the server could not complete, safe to retry
+	 * (save_failed - audit F03; read_failed - CodeRabbit PR #32 re-review,
+	 * QuizService::submit()'s expire branch when the row it just
+	 * transitioned to `expired` could not be re-read even after a retry);
+	 * 400 for a malformed request (unknown_question) and the fallback for
+	 * anything unlisted.
 	 */
 	public static function error_response( \WP_Error $error, int $status = 400 ): \WP_REST_Response {
 		$map = [
@@ -122,6 +124,7 @@ final class Routes {
 			'unknown_question'        => 400,
 			'no_questions'            => 409,
 			'save_failed'             => 503,
+			'read_failed'             => 503,
 			'attempt_course_mismatch' => 409,
 			'save_conflict'           => 409,
 			'attempt_busy'            => 409,

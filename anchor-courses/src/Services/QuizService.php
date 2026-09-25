@@ -542,7 +542,26 @@ final class QuizService {
 			// the real status even when submitted_at/duration_seconds did
 			// not get durably recorded.
 			$expired = QuizAttemptRepository::find( $attempt_id );
-			$expired = $expired instanceof QuizAttempt ? $expired : $attempt; // Defensive: the row we just transitioned should always be readable.
+			if ( ! $expired instanceof QuizAttempt ) {
+				// A transient read failure right after a write that just
+				// succeeded (CodeRabbit Major, PR #32 re-review): one retry,
+				// since the row this call itself transitioned a moment ago
+				// should normally be readable now. Falling back to the
+				// PRE-transition $attempt here - the bug this replaces -
+				// would publish `in_progress` for a row that really is
+				// `expired`, to the hook, to REST and to
+				// sweep_expired_attempts()'s before/after status compare
+				// (which would then undercount).
+				$expired = QuizAttemptRepository::find( $attempt_id );
+			}
+			if ( ! $expired instanceof QuizAttempt ) {
+				// Both reads failed: there is no safe object to publish as
+				// `expired` (and definitely not the stale `in_progress`
+				// one). Report it as a retryable server error rather than
+				// letting the wrong status escape.
+				Log::write( 'quiz_expire_read_failed', [ 'attempt' => $attempt_id ] );
+				return new \WP_Error( 'read_failed', \__( 'The attempt expired, but its record could not be read back. Try again.', 'anchor-schema' ) );
+			}
 			$this->progress->record_item( $attempt->user_id, $attempt->course_id, $attempt->quiz_id, 'quiz', 'failed' );
 
 			Log::write( 'quiz_expired', [ 'attempt' => $attempt_id ] );

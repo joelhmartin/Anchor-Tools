@@ -43,7 +43,7 @@ class Test_Video_URL extends WP_UnitTestCase {
 			[ 'https://player.vimeo.com/video/123&autoplay=1', 'vimeo', '123', 0 ],
 			// Unlisted-hash URL: the greedy (?:.*/)? the new parser used to have
 			// picked the trailing all-digit hash instead of the actual video id
-			// (the first numeric path segment) — the old regex always won on the
+			// (the first numeric path segment); the old regex always won on the
 			// first segment.
 			[ 'https://vimeo.com/123456789/1234567890', 'vimeo', '123456789', 0 ],
 			// Review-link URL: first numeric segment wins, trailing segments ignored.
@@ -58,7 +58,7 @@ class Test_Video_URL extends WP_UnitTestCase {
 	/**
 	 * vimeo.com/event/<id> never matched the OLD regex either (no `video/`
 	 * prefix and no digits immediately after `vimeo.com/`), so the new parser
-	 * must keep rejecting it too — this is a case the finding calls out
+	 * must keep rejecting it too, and this is a case the finding calls out
 	 * explicitly to "match old behavior", and old behavior here is null.
 	 */
 	public function test_vimeo_event_url_returns_null_matching_old_behavior() {

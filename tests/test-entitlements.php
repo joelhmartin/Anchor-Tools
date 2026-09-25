@@ -184,6 +184,37 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $fired, 'The seat attempt fires nothing.' );
 	}
 
+	/** A seat grant restoring a role stripped externally must not rewrite a
+	 * manual grant record to seat (CodeRabbit PR #27, class-entitlements.php:303). */
+	public function test_seat_grant_restoring_a_stripped_role_keeps_the_manual_source() {
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create();
+		$slug     = $this->ent()->role_for( $event_id );
+
+		$this->assertTrue( $this->ent()->grant( $event_id, $user_id, 'manual' ) );
+
+		// Something outside Entitlements strips the role by writing the
+		// capabilities meta directly (e.g. a raw import/reset) — NOT through
+		// WP_User::remove_role(), which fires `remove_user_role` and would
+		// have Entitlements' own on_remove_user_role() listener put it right
+		// back (see test_remove_role_of_a_granted_event_role_is_reapplied);
+		// this is the actually-realistic "role missing" trigger the finding
+		// describes, one the listener never sees.
+		global $wpdb;
+		\update_user_meta( $user_id, $wpdb->get_blog_prefix() . 'capabilities', [] );
+		\clean_user_cache( $user_id );
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $user_id ) );
+
+		$this->assertTrue( $this->ent()->grant( $event_id, $user_id, 'seat' ), 'The role is restored — that IS a change.' );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ), 'Role is back.' );
+		$this->assertSame( 'manual', $this->ent()->grant_record( $event_id, $user_id )['source'], 'Record is still manual.' );
+
+		// A later seat cancellation must not revoke the (still-manual) grant.
+		$seat_id = $this->make_seat( $event_id, [ 'user_id' => $user_id ] );
+		$this->registrations()->update_status( $seat_id, \Anchor\Events\Registrations::STATUS_CANCELLED );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ), 'A seat cancellation cannot strip a comp.' );
+	}
+
 	/** Renaming the event renames the role. */
 	public function test_role_renames_with_the_title() {
 		$event_id = $this->event( [ 'title' => 'Old Name' ] );
@@ -535,6 +566,55 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$user_id = self::factory()->user->create( [ 'user_email' => 'v@example.test' ] );
 		$this->make_seat( $event_id, [ 'email' => 'v@example.test', 'ticket_type_id' => $virtual ] );
 		$this->assertTrue( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
+
+	/** A retired virtual tier's seat still resolves virtual: seat_tier_modality()
+	 * falls back to the frozen variation modality when ticket_types->find()
+	 * returns null (CodeRabbit PR #27, class-entitlements.php:1006). */
+	public function test_seat_tier_modality_falls_back_to_frozen_variation_meta_for_a_retired_tier() {
+		[ $event_id, $in_person_id, $virtual_id ] = $this->stream_event();
+		$user_id = self::factory()->user->create( [ 'user_email' => 'retired@example.test' ] );
+		$seat_id = $this->make_seat( $event_id, [ 'email' => 'retired@example.test', 'ticket_type_id' => $virtual_id ] );
+
+		// Simulate Product_Sync freezing modality on the variation before the
+		// tier disappears (class-product-sync.php:692-698).
+		$variation_id = self::factory()->post->create();
+		update_post_meta( $variation_id, '_anchor_evt_modality', 'virtual' );
+		update_post_meta( $seat_id, '_anchor_event_variation_id', $variation_id );
+
+		// Remove the virtual tier — ticket_types()->find() now returns null for it.
+		$this->ticket_types()->save( $event_id, [
+			[ 'id' => $in_person_id, 'label' => 'In person', 'price' => '0', 'active' => 1, 'modality' => 'in_person' ],
+		] );
+
+		$this->assertNull( $this->ticket_types()->find( $event_id, $virtual_id ), 'Sanity: the tier is really gone.' );
+		$this->assertSame( 'virtual', $this->ent()->seat_tier_modality( $event_id, $user_id ) );
+	}
+
+	/** seat_tier_modality() must match the seat OWNER, not the order's buyer:
+	 * a buyer with their own in-person seat plus a colleague's virtual seat
+	 * (both stamped with the buyer's customer id) resolves to in_person
+	 * (CodeRabbit PR #27, class-registrations.php:1307). */
+	public function test_seat_tier_modality_uses_owner_identity_not_the_order_customer_id() {
+		[ $event_id, $in_person_id, $virtual_id ] = $this->stream_event();
+		$buyer_id = self::factory()->user->create( [ 'user_email' => 'buyer@example.test' ] );
+
+		// The buyer's own in-person seat.
+		$this->make_seat( $event_id, [
+			'email'           => 'buyer@example.test',
+			'user_id'         => $buyer_id,
+			'customer_id'     => $buyer_id,
+			'ticket_type_id'  => $in_person_id,
+		] );
+		// A colleague's virtual seat, same order (customer_id = the buyer).
+		$this->make_seat( $event_id, [
+			'email'          => 'colleague@example.test',
+			'customer_id'    => $buyer_id,
+			'ticket_type_id' => $virtual_id,
+			'seat_index'     => 2,
+		] );
+
+		$this->assertSame( 'in_person', $this->ent()->seat_tier_modality( $event_id, $buyer_id ) );
 	}
 
 	public function test_in_person_tier_follows_the_toggle() {

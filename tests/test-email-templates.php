@@ -736,6 +736,11 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 			'timezone'            => 'UTC',
 			'start_ts'            => time() + DAY_IN_SECONDS,
 			'end_ts'              => time() + DAY_IN_SECONDS + 3600,
+			// A saved stream, so the disabled switch is the ONLY reason there
+			// is no room — without this the test passed even if the switch
+			// were ignored, because has_stream() alone would already be false.
+			'stream_default_modality' => 'virtual',
+			'stream_embed'            => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/8', 'raw' => '' ],
 		] );
 		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Off', 'email' => 'off-cta@example.test' ] );
 		$seat    = $this->registrations()->get_seat( $seat_id );

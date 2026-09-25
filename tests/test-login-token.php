@@ -104,6 +104,9 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 	 * @dataProvider staff_roles
 	 */
 	public function test_no_token_for_staff( $role ) {
+		if ( ! \get_role( $role ) ) {
+			$this->markTestSkipped( "Role {$role} is not registered (WooCommerce inactive)." );
+		}
 		$this->pretty_permalinks();
 		$event_id = $this->event();
 		$user_id  = self::factory()->user->create( [ 'role' => $role ] );

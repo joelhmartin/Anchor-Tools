@@ -45,6 +45,34 @@ class Test_Embed extends Anchor_Events_TestCase {
 		}
 	}
 
+	/** A playlist/results URL is not a bare video id — the bare-path branch
+	 * must not swallow it (CodeRabbit PR #27, class-embed.php:65). */
+	public function test_youtube_playlist_and_non_video_paths_are_refused() {
+		foreach ( [
+			'https://www.youtube.com/playlist?list=PLabcdefghijklmnop',
+			'https://www.youtube.com/results?search_query=lasers',
+		] as $input ) {
+			$out = Embed::normalize( $input );
+			$this->assertInstanceOf( WP_Error::class, $out, "Expected an error for {$input}" );
+		}
+	}
+
+	/** youtu.be/<id> (11-char id) still resolves. */
+	public function test_youtube_short_link_still_works() {
+		$this->assertSame(
+			'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
+			Embed::normalize( 'https://youtu.be/dQw4w9WgXcQ' )['src']
+		);
+	}
+
+	/** /shorts/<id> still resolves via the embed/live/v/shorts branch. */
+	public function test_youtube_shorts_still_works() {
+		$this->assertSame(
+			'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
+			Embed::normalize( 'https://www.youtube.com/shorts/dQw4w9WgXcQ' )['src']
+		);
+	}
+
 	/** Pasted iframe HTML has its src extracted. */
 	public function test_pasted_iframe_html() {
 		$html = '<iframe src="https://player.vimeo.com/video/987?h=zz" width="640" allowfullscreen></iframe>';

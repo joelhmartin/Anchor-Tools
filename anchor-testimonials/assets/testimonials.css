@@ -6,6 +6,13 @@
  *   --at-card-bg     card background (default #fff)
  *   --at-card-radius card corner radius (default 12px)
  *   --at-accent      play icon / rating color (default currentColor)
+ *   --at-arrow-size  slider prev/next button diameter (default 36px)
+ *   --at-arrow-bg    slider prev/next button background (default --at-card-bg)
+ *   --at-arrow-fg    slider prev/next icon color (default --at-accent)
+ *
+ * Slider arrows render in a row flanking the dots (.anchor-testimonials__controls:
+ * prev, dots, next, centered below the track) rather than overlaid on the
+ * track edges, so they never sit on top of card content at any viewport.
  *
  * Slider layout reuses assets/shared/anchor-carousel.css's .anchor-carousel__track
  * rules (the renderer adds that class to the track alongside
@@ -161,19 +168,27 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 36px;
-	height: 36px;
+	flex: 0 0 auto;
+	width: var( --at-arrow-size, 36px );
+	height: var( --at-arrow-size, 36px );
 	border: 0;
 	border-radius: 50%;
-	background: var( --at-card-bg, #fff );
-	color: var( --at-accent, currentColor );
+	background: var( --at-arrow-bg, var( --at-card-bg, #fff ) );
+	color: var( --at-arrow-fg, var( --at-accent, currentColor ) );
 	cursor: pointer;
 }
 
 .anchor-testimonials__prev svg,
 .anchor-testimonials__next svg {
-	width: 18px;
-	height: 18px;
+	width: 45%;
+	height: 45%;
+}
+
+.anchor-testimonials__prev:disabled,
+.anchor-testimonials__next:disabled {
+	opacity: 0.35;
+	cursor: default;
+	pointer-events: none;
 }
 
 .anchor-testimonials__dots {

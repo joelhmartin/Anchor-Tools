@@ -169,35 +169,78 @@
       }
     }
 
-    /* -- Touch / swipe support ------------------------------------------ */
+    /* -- Drag / swipe support (Pointer Events) --------------------------- */
+    //
+    // A single Pointer Events implementation drives both mouse drag
+    // (desktop) and touch swipe, replacing the previous touch-only handler
+    // so there is one code path instead of two. touch-action: pan-y on the
+    // track lets the browser keep handling vertical scrolling natively (a
+    // swipe that turns out to be a vertical scroll is abandoned rather than
+    // fought), and a drag that crosses the threshold suppresses the click
+    // event the browser fires on release, so a link or video button inside
+    // the dragged slide doesn't also activate.
+    //
+    // A drag only STARTS on the track (pointerdown listener below), but
+    // pointermove/pointerup/pointercancel listen on `document`, gated by the
+    // `dragging` flag, rather than using track.setPointerCapture(): capture
+    // would keep the drag tracking reliably once the pointer leaves the
+    // track's bounds, but it also retargets the browser's compatibility
+    // "click" event on release to the capturing element for EVERY click, not
+    // only a drag past the threshold - breaking every consumer's click
+    // delegation (e.g. `e.target.closest('.anchor-testimonial__media')` in
+    // testimonials.js, `.avg-tile` in the gallery), since the click's target
+    // becomes the track itself instead of the tapped/clicked descendant.
 
-    (function initTouch() {
-      var startX = 0, startY = 0, deltaX = 0, swiping = false;
+    track.style.touchAction = 'pan-y';
+
+    (function initDrag() {
+      var startX = 0, startY = 0, deltaX = 0, dragging = false, activePointerId = null;
       var threshold = 40;
 
-      on(track, 'touchstart', function(e) {
-        startX = e.touches[0].clientX;
-        startY = e.touches[0].clientY;
-        deltaX = 0;
-        swiping = true;
-      }, { passive: true });
+      function suppressNextClick() {
+        on(track, 'click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }, { capture: true, once: true });
+      }
 
-      on(track, 'touchmove', function(e) {
-        if (!swiping) return;
-        deltaX = e.touches[0].clientX - startX;
-        var deltaY = e.touches[0].clientY - startY;
-        // If vertical scroll is dominant, release the swipe.
-        if (Math.abs(deltaY) > Math.abs(deltaX)) { swiping = false; return; }
+      on(track, 'pointerdown', function(e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        startX = e.clientX;
+        startY = e.clientY;
+        deltaX = 0;
+        dragging = true;
+        activePointerId = e.pointerId;
+      });
+
+      on(document, 'pointermove', function(e) {
+        if (!dragging || e.pointerId !== activePointerId) return;
+        deltaX = e.clientX - startX;
+        var deltaY = e.clientY - startY;
+        // If vertical scroll is dominant, release the drag back to native
+        // scrolling instead of fighting it.
+        if (Math.abs(deltaY) > Math.abs(deltaX)) { dragging = false; return; }
         if (mode === 'carousel') e.preventDefault();
       }, { passive: false });
 
-      on(track, 'touchend', function() {
-        if (!swiping) return;
-        swiping = false;
+      function endDrag(e) {
+        if (!dragging || e.pointerId !== activePointerId) return;
+        dragging = false;
         if (Math.abs(deltaX) > threshold) {
+          suppressNextClick();
           scrollSlider(deltaX < 0 ? 1 : -1);
         }
-      }, { passive: true });
+      }
+
+      on(document, 'pointerup', endDrag);
+      on(document, 'pointercancel', function(e) {
+        if (e.pointerId !== activePointerId) return;
+        dragging = false;
+      });
+
+      // Prevent the browser's native "drag an image out of the page"
+      // gesture from hijacking a mouse drag that starts over a slide image.
+      on(track, 'dragstart', function(e) { e.preventDefault(); });
     })();
 
     /* -- Keyboard navigation --------------------------------------------- */
@@ -255,10 +298,10 @@
         on(root, 'mouseenter', stopAutoplay);
         on(root, 'mouseleave', startAutoplay);
       }
-      on(root, 'touchstart', stopAutoplay, { passive: true });
-      on(root, 'touchend', function() {
+      on(root, 'pointerdown', stopAutoplay);
+      on(root, 'pointerup', function() {
         pendingTimers.push(setTimeout(startAutoplay, 3000));
-      }, { passive: true });
+      });
     }
 
     /* -- Teardown ------------------------------------------------------------ */

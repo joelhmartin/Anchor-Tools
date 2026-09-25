@@ -89,6 +89,80 @@ test('the next control advances the shared carousel track', async ({ page }) => 
 	await expect.poll(() => track.evaluate((el) => getComputedStyle(el).transform)).not.toBe(before);
 });
 
+test.describe('mouse drag (shared carousel Pointer Events)', () => {
+	/**
+	 * Dispatches a synthetic pointer-based drag across an element's centre.
+	 * Mirrors the touch-swipe helper in e2e/gallery-lightbox.spec.js (manual
+	 * event dispatch rather than OS-level mouse synthesis) so the exact
+	 * target of the drag, and of the click that follows it, is deterministic.
+	 * pointerId 1 with pointerType 'mouse' is what a real desktop drag
+	 * produces; track.setPointerCapture()/releasePointerCapture() in
+	 * assets/shared/anchor-carousel.js tolerate this synthetic pointerId
+	 * (wrapped in try/catch there for exactly this reason).
+	 */
+	async function drag(page, selector, distance) {
+		await page.evaluate(
+			({ selector, distance }) => {
+				const el = document.querySelector(selector);
+				const box = el.getBoundingClientRect();
+				const y = box.top + box.height / 2;
+				const startX = box.left + box.width / 2;
+				const fire = (type, x) =>
+					el.dispatchEvent(
+						new PointerEvent(type, {
+							bubbles: true,
+							cancelable: true,
+							pointerId: 1,
+							pointerType: 'mouse',
+							button: 0,
+							clientX: x,
+							clientY: y,
+						})
+					);
+				fire('pointerdown', startX);
+				fire('pointermove', startX + distance / 2);
+				fire('pointermove', startX + distance);
+				fire('pointerup', startX + distance);
+			},
+			{ selector, distance }
+		);
+	}
+
+	test('a mouse drag past the threshold advances the shared carousel track', async ({ page }) => {
+		const track = page.locator('.anchor-testimonials__track').first();
+		const before = await track.evaluate((el) => getComputedStyle(el).transform);
+
+		await drag(page, '.anchor-testimonials__track', -120);
+
+		await expect.poll(() => track.evaluate((el) => getComputedStyle(el).transform)).not.toBe(before);
+	});
+
+	test('a click that follows a drag past the threshold does not open the lightbox', async ({ page }) => {
+		await drag(page, '.anchor-testimonials__track', -120);
+
+		// A real drag-release sequence ends with the browser firing a
+		// synthetic click on the element under the pointer; simulate that
+		// click directly against the media button the drag started over.
+		// The carousel's click-suppression (registered on pointerup, since
+		// the drag exceeded the threshold above) must swallow it.
+		await page.evaluate(() => {
+			document.querySelector('.anchor-testimonial__media').dispatchEvent(
+				new MouseEvent('click', { bubbles: true, cancelable: true })
+			);
+		});
+
+		await expect(page.locator('.avg-modal')).toBeHidden();
+	});
+
+	test('a click with no preceding drag still opens the lightbox', async ({ page }) => {
+		// Sanity check that the suppression is drag-scoped, not a blanket
+		// click blocker: an ordinary click (no pointerdown/move/up sequence
+		// first) must still open the lightbox.
+		await page.locator('.anchor-testimonial__media').first().click();
+		await expect(page.locator('.avg-modal')).toBeVisible();
+	});
+});
+
 test.describe('mobile viewport (390px)', () => {
 	// Final whole-branch review finding 3: --anchor-carousel-cols had no
 	// breakpoints, so testimonials.js's AnchorCarousel.init() computed a

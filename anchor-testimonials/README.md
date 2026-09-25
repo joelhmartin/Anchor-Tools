@@ -99,11 +99,16 @@ Theme-overridable, read by `assets/testimonials.css` with fallback defaults, not
 
 | Property | Default | Affects |
 |---|---|---|
-| `--at-card-bg` | `#fff` | Card background, prev/next button background |
+| `--at-card-bg` | `#fff` | Card background, prev/next button background fallback |
 | `--at-card-radius` | `12px` | Card corner radius |
-| `--at-accent` | `currentColor` | Play-button circle, rating stars, dots |
+| `--at-accent` | `currentColor` | Play-button circle, rating stars, dots, prev/next icon color fallback |
+| `--at-arrow-size` | `36px` | Slider prev/next button diameter (icon scales with it) |
+| `--at-arrow-bg` | `--at-card-bg` | Slider prev/next button background |
+| `--at-arrow-fg` | `--at-accent` | Slider prev/next icon color |
 
 Slider layout reuses `assets/shared/anchor-carousel.css`'s `.anchor-carousel__track` rules: the CSS only maps `--at-cols`/`--at-gap` into that shared component's own `--anchor-carousel-cols`/`--anchor-carousel-gap` variables, so column count and spacing have a single source of truth and no carousel layout math is duplicated here.
+
+The prev/next buttons render in a row flanking `.anchor-testimonials__dots` (`.anchor-testimonials__controls`, centered below the track) rather than overlaid on the track edges, so they never cover card content at any column count or viewport. They carry the disabled state (dimmed, `pointer-events: none`) at either end when the slider isn't looping, matching `assets/shared/anchor-carousel.js`'s `prevBtn.disabled`/`nextBtn.disabled` toggling.
 
 ## Front-end behavior (`assets/testimonials.js`)
 
@@ -111,6 +116,7 @@ Enqueued only when the shortcode actually renders something, with `anchor-lightb
 
 - A delegated click listener on `.anchor-testimonial__media` collects every video tile in that block into `{ type: 'video', provider, videoId, caption: name }` items and calls `window.AnchorLightbox.open(items, index, { autoplay: true, origin: button })`. If `window.AnchorLightbox` isn't present (dependency not enqueued by a theme override), it logs a `console.warn` and playback is disabled rather than throwing.
 - When `data-layout="slider"`, calls `window.AnchorCarousel.init(root, { … })` reading `--at-cols` off the root's computed style for the desktop/tablet/mobile column counts (tablet = `min(cols, 2)`, mobile = `1`), wiring the prev/next buttons and `.anchor-testimonials__dots` from the markup above. Same defensive `console.warn`-and-skip if `window.AnchorCarousel` is missing.
+- The shared carousel adds mouse drag (desktop) and touch swipe on the track via one Pointer Events implementation (`assets/shared/anchor-carousel.js`): dragging past a 40px threshold advances/retreats one slide and suppresses the click the browser fires on release, so a drag that ends over a `.anchor-testimonial__media` button doesn't also open the lightbox. `touch-action: pan-y` on the track keeps vertical page scroll working through a swipe. Keyboard `ArrowLeft`/`ArrowRight` on the focused carousel root still navigate, unaffected by the drag handling.
 
 No new lightbox or carousel code lives in this module; both are pure consumers of the shared `assets/shared/anchor-lightbox.*` and `assets/shared/anchor-carousel.*` primitives.
 

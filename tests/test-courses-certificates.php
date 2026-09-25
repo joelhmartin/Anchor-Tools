@@ -103,6 +103,48 @@ class Test_Courses_Certificates extends Anchor_Courses_TestCase {
 		$this->assertSame( 2.0, $data['ce_credits'] );
 	}
 
+	/**
+	 * Final review I7: the public verification page vouches for what was
+	 * true at issue. A learner renaming themselves afterwards (or the course
+	 * being retitled, its credits or provider changed) must not rewrite a
+	 * certificate already issued.
+	 */
+	public function test_a_certificate_renders_the_snapshot_taken_at_issue() {
+		( new CreditService() )->award( $this->user, $this->course );
+		$certificate = $this->certificates->issue( $this->user, $this->course );
+
+		wp_update_user( [ 'ID' => $this->user, 'display_name' => 'Somebody Else' ] );
+		wp_update_post( [ 'ID' => $this->course, 'post_title' => 'A Different Course' ] );
+		update_post_meta( $this->course, '_anchor_course_ce_provider_name', 'Other Provider' );
+		update_post_meta( $this->course, '_anchor_course_ce_credits', '9' );
+		update_post_meta( $this->course, '_anchor_course_instructor', 'Dr Nobody' );
+
+		$data = $this->certificates->template_data( $this->certificates->get_by_token( $certificate->verification_token ) );
+
+		$this->assertSame( 'Ada Lovelace', $data['learner_name'] );
+		$this->assertSame( 'Laser Safety', $data['course_name'] );
+		$this->assertSame( 'DEKA Academy', $data['provider_name'] );
+		$this->assertSame( 'AGD-1234', $data['provider_number'] );
+		$this->assertSame( 'Dr Vega', $data['instructor_name'] );
+		$this->assertSame( 2.0, $data['ce_credits'] );
+
+		$html = $this->certificates->render( $certificate );
+		$this->assertStringContainsString( 'Ada Lovelace', $html );
+		$this->assertStringNotContainsString( 'Somebody Else', $html );
+	}
+
+	/** A row issued before snapshots existed still renders, from live values. */
+	public function test_a_pre_snapshot_certificate_falls_back_to_live_values() {
+		$certificate = $this->certificates->issue( $this->user, $this->course );
+		global $wpdb;
+		$wpdb->update( \Anchor\Courses\Database\Migrations::table( 'certificates' ), [ 'metadata' => '{"template":"default"}' ], [ 'id' => $certificate->id ] );
+
+		$data = $this->certificates->template_data( $this->certificates->get_by_token( $certificate->verification_token ) );
+
+		$this->assertSame( 'Ada Lovelace', $data['learner_name'] );
+		$this->assertSame( 'Laser Safety', $data['course_name'] );
+	}
+
 	public function test_the_certificate_data_filter_can_override_values() {
 		add_filter(
 			'anchor_courses_certificate_data',

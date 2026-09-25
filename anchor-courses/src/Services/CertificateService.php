@@ -23,8 +23,10 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * route (Task 30); `file_path` is deliberately left empty so that adding PDF
  * generation later needs no schema change (design spec 1).
  *
- * `issue()` links a matching CE credit to the new certificate, and
- * `template_data()` prefers the learner's actual awarded `credits` value over
+ * `issue()` links a matching CE credit to the new certificate and freezes
+ * what the certificate vouches for (learner name, course name, credits,
+ * provider, instructor) into its metadata; `template_data()` renders that
+ * snapshot. Both prefer the learner's actual awarded `credits` value over
  * the course's configured default - both read `Database\CreditRepository`
  * directly (Task 27/28 join; no `class_exists()` guard - credits are
  * unconditionally on this tree). Neither is required for a certificate to be
@@ -75,7 +77,11 @@ final class CertificateService {
 				'issued_at'          => Clock::now(),
 				'expires_at'         => $expires_days > 0 ? Clock::offset( $expires_days * DAY_IN_SECONDS ) : null,
 				'verification_token' => Uuid::v4(),
-				'metadata'           => [ 'template' => (string) CourseEditor::setting( $course_id, 'certificate_template' ) ],
+				// What the certificate vouches for, frozen now (final review
+				// I7): template_data() renders these, so a later rename of the
+				// learner or the course cannot rewrite an issued certificate.
+				'metadata'           => [ 'template' => (string) CourseEditor::setting( $course_id, 'certificate_template' ) ]
+					+ self::live_values( $user_id, $course_id ),
 			]
 		);
 
@@ -140,28 +146,51 @@ final class CertificateService {
 		return CertificateRepository::for_user( $user_id );
 	}
 
-	/** The brief section 13 template variables, plus the verification URL. */
+	/**
+	 * The snapshot keys issue() freezes into the certificate's metadata.
+	 * `credits` is the learner's awarded credit when one exists (the pipeline
+	 * awards before it issues), else the course's configured value.
+	 */
+	public const SNAPSHOT_KEYS = [ 'learner_name', 'course_name', 'credits', 'provider_name', 'provider_number', 'instructor_name' ];
+
+	/** @return array{learner_name:string,course_name:string,credits:float,provider_name:string,provider_number:string,instructor_name:string} */
+	private static function live_values( int $user_id, int $course_id ): array {
+		$user   = \get_userdata( $user_id );
+		$credit = CreditRepository::find( $user_id, $course_id );
+
+		return [
+			'learner_name'    => $user ? (string) $user->display_name : '',
+			'course_name'     => (string) \get_the_title( $course_id ),
+			'credits'         => $credit instanceof Credit ? $credit->credits : (float) CourseEditor::setting( $course_id, 'ce_credits' ),
+			'provider_name'   => (string) CourseEditor::setting( $course_id, 'ce_provider_name' ),
+			'provider_number' => (string) CourseEditor::setting( $course_id, 'ce_provider_number' ),
+			'instructor_name' => (string) CourseEditor::setting( $course_id, 'instructor' ),
+		];
+	}
+
+	/**
+	 * The brief section 13 template variables, plus the verification URL.
+	 *
+	 * Rendered from the snapshot issue() stored (final review I7). A row
+	 * issued before snapshots existed has none of those keys and falls back
+	 * to live values - key by key, so a partial snapshot still prefers what
+	 * it has.
+	 */
 	public function template_data( Certificate $certificate ): array {
-		$user = \get_userdata( $certificate->user_id );
-
-		$ce_credits = (float) CourseEditor::setting( $certificate->course_id, 'ce_credits' );
-
-		// The learner's actual awarded credit can differ from the course's
-		// configured default; prefer it when it exists.
-		$credit = CreditRepository::find( $certificate->user_id, $certificate->course_id );
-		if ( $credit instanceof Credit ) {
-			$ce_credits = $credit->credits;
-		}
+		$snapshot = \array_intersect_key( $certificate->metadata, \array_flip( self::SNAPSHOT_KEYS ) );
+		$values   = \count( $snapshot ) === \count( self::SNAPSHOT_KEYS )
+			? $snapshot
+			: $snapshot + self::live_values( $certificate->user_id, $certificate->course_id );
 
 		$data = [
-			'learner_name'       => $user ? (string) $user->display_name : '',
-			'course_name'        => (string) \get_the_title( $certificate->course_id ),
+			'learner_name'       => (string) $values['learner_name'],
+			'course_name'        => (string) $values['course_name'],
 			'completion_date'    => $certificate->issued_at,
-			'ce_credits'         => $ce_credits,
+			'ce_credits'         => (float) $values['credits'],
 			'certificate_number' => $certificate->certificate_number,
-			'instructor_name'    => (string) CourseEditor::setting( $certificate->course_id, 'instructor' ),
-			'provider_name'      => (string) CourseEditor::setting( $certificate->course_id, 'ce_provider_name' ),
-			'provider_number'    => (string) CourseEditor::setting( $certificate->course_id, 'ce_provider_number' ),
+			'instructor_name'    => (string) $values['instructor_name'],
+			'provider_name'      => (string) $values['provider_name'],
+			'provider_number'    => (string) $values['provider_number'],
 			'expiration_date'    => (string) ( $certificate->expires_at ?? '' ),
 			'verification_url'   => $certificate->url(),
 		];

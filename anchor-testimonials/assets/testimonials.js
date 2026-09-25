@@ -26,6 +26,7 @@
 				type: 'video',
 				provider: btn.getAttribute( 'data-provider' ) || '',
 				videoId: btn.getAttribute( 'data-video-id' ) || '',
+				start: parseInt( btn.getAttribute( 'data-start' ), 10 ) || 0,
 				caption: name ? name.textContent : ''
 			};
 		} );

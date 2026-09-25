@@ -67,6 +67,19 @@ test('escape hides the lightbox and returns focus to the originating button', as
 	expect(returnedFocus).toBe(true);
 });
 
+test('a video with a start time passes it into the lightbox iframe src', async ({ page }) => {
+	// Fixture: E2E Testimonial 1's video URL is ...&t=42s (bin/e2e-seed.sh),
+	// so its media button carries data-start="42".
+	const firstMedia = page.locator('.anchor-testimonial__media').first();
+	await expect(firstMedia).toHaveAttribute('data-start', '42');
+
+	await firstMedia.click();
+
+	const modal = page.locator('.avg-modal');
+	await expect(modal).toBeVisible();
+	await expect(modal.locator('.avg-modal-frame iframe')).toHaveAttribute('src', /[?&]start=42\b/);
+});
+
 test('the next control advances the shared carousel track', async ({ page }) => {
 	const track = page.locator('.anchor-testimonials__track').first();
 	const before = await track.evaluate((el) => getComputedStyle(el).transform);

@@ -5,17 +5,18 @@
   // Video URL Builders
   // ============================================================================
 
-  function buildYouTubeSrc(id, autoplay) {
+  function buildYouTubeSrc(id, autoplay, start) {
     var params = new URLSearchParams({
       autoplay: autoplay ? '1' : '0',
       playsinline: '1',
       rel: '0',
       modestbranding: '1'
     });
+    if (start > 0) params.set('start', String(start));
     return 'https://www.youtube.com/embed/' + encodeURIComponent(id) + '?' + params.toString();
   }
 
-  function buildVimeoSrc(id, autoplay) {
+  function buildVimeoSrc(id, autoplay, start) {
     var params = new URLSearchParams({
       autoplay: autoplay ? '1' : '0',
       byline: '0',
@@ -23,15 +24,18 @@
       portrait: '0',
       dnt: '1'
     });
-    return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + params.toString();
+    // Vimeo's start time is a URL fragment (#t=<n>s), not a query param.
+    var fragment = start > 0 ? '#t=' + start + 's' : '';
+    return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + params.toString() + fragment;
   }
 
-  function getVideoSrc(provider, id, autoplay) {
+  function getVideoSrc(provider, id, autoplay, start) {
+    start = parseInt(start, 10) || 0;
     if (provider === 'youtube') {
-      return buildYouTubeSrc(id, autoplay);
+      return buildYouTubeSrc(id, autoplay, start);
     }
     if (provider === 'vimeo') {
-      return buildVimeoSrc(id, autoplay);
+      return buildVimeoSrc(id, autoplay, start);
     }
     return '';
   }
@@ -185,7 +189,7 @@
       // Server-side wp_kses_post output, cloned from the tile.
       frame.innerHTML = item.html;
     } else {
-      var src = getVideoSrc(item.provider, item.videoId, lbState.autoplay);
+      var src = getVideoSrc(item.provider, item.videoId, lbState.autoplay, item.start);
       frame.innerHTML = '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
     }
 

@@ -511,7 +511,10 @@ log "Carousel gallery page #${GALLERY_CAROUSEL_PAGE_ID}"
 # ---------------------------------------------------------------------------
 TESTIMONIAL_IDS="$(wp eval '
   $defs = [
-      [ "title" => "E2E Testimonial 1", "slug" => "e2e-testimonial-1", "name" => "Jane Doe",    "meta" => "Patient, Denver", "content" => "Life changing care.", "video" => "https://www.youtube.com/watch?v=dQw4w9WgXcQ" ],
+      // The video URL for testimonial 1 carries a start time (t=42s) so
+      // e2e/testimonials.spec.js can assert data-start round-trips into the
+      // shared lightbox iframe src (final whole-branch review finding 6).
+      [ "title" => "E2E Testimonial 1", "slug" => "e2e-testimonial-1", "name" => "Jane Doe",    "meta" => "Patient, Denver", "content" => "Life changing care.", "video" => "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s" ],
       [ "title" => "E2E Testimonial 2", "slug" => "e2e-testimonial-2", "name" => "John Smith",  "meta" => "Patient, Austin", "content" => "Highly recommend.",   "video" => "https://www.youtube.com/watch?v=jNQXAC9IVRw" ],
       [ "title" => "E2E Testimonial 3", "slug" => "e2e-testimonial-3", "name" => "Alex Rivera", "meta" => "Patient, Miami",  "content" => "Wonderful team.",      "video" => "" ],
       [ "title" => "E2E Testimonial 4", "slug" => "e2e-testimonial-4", "name" => "Priya Patel", "meta" => "Patient, Tampa",  "content" => "Great results.",       "video" => "" ],

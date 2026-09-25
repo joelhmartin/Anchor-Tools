@@ -29,6 +29,7 @@ final class QuizAttempt {
 		public readonly ?int $duration_seconds,
 		public readonly array $answers,
 		public readonly array $grading_data,
+		public readonly array $metadata,
 		public readonly string $created_at,
 		public readonly string $updated_at
 	) {}
@@ -50,6 +51,7 @@ final class QuizAttempt {
 			isset( $row['duration_seconds'] ) && null !== $row['duration_seconds'] ? (int) $row['duration_seconds'] : null,
 			Json::decode( $row['answers'] ?? null ),
 			Json::decode( $row['grading_data'] ?? null ),
+			Json::decode( $row['metadata'] ?? null ),
 			(string) ( $row['created_at'] ?? '' ),
 			(string) ( $row['updated_at'] ?? '' )
 		);
@@ -73,6 +75,8 @@ final class QuizAttempt {
 	 * safe for a learner-facing response - it always includes grading_data.
 	 */
 	public function for_learner( bool $show_correct ): array {
+		// metadata holds the pinned time_limit_seconds/on_timer_expiry (brief
+		// T24 ruling R3) - internal timer bookkeeping, never learner-facing.
 		$out = [
 			'id'              => $this->id,
 			'quiz_id'         => $this->quiz_id,
@@ -112,6 +116,7 @@ final class QuizAttempt {
 			'duration_seconds' => $this->duration_seconds,
 			'answers'          => $this->answers,
 			'grading_data'     => $this->grading_data,
+			'metadata'         => $this->metadata,
 			'created_at'       => $this->created_at,
 			'updated_at'       => $this->updated_at,
 		];

@@ -15,7 +15,10 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * create() allocates attempt_number with a single INSERT ... SELECT MAX()+1
  * against UNIQUE (user_id, quiz_id, attempt_number). Two simultaneous starts
  * therefore produce one row and one rejected duplicate rather than two
- * attempts numbered the same (brief 26).
+ * attempts numbered the same (brief 26) - create() returns null on that
+ * collision (Task 24 review, ruling R1) rather than silently resolving it;
+ * the caller (QuizService::start_attempt()) is the one place that decides
+ * what a null means, by calling open_attempt() for the winner's row.
  */
 final class QuizAttemptRepository {
 
@@ -43,7 +46,15 @@ final class QuizAttemptRepository {
 		return \is_array( $row ) ? QuizAttempt::from_row( $row ) : null;
 	}
 
-	/** @param array $data user_id, course_id, quiz_id, points_possible. */
+	/**
+	 * @param array $data user_id, course_id, quiz_id, points_possible, metadata
+	 *                    (the pinned time_limit_seconds/on_timer_expiry, brief
+	 *                    T24 ruling R3 - stored as-is, this repository does not
+	 *                    interpret it).
+	 * @return QuizAttempt|null Null on a genuine unique-key collision (ruling
+	 *                          R1) - the caller resolves it via open_attempt(),
+	 *                          never this method.
+	 */
 	public static function create( array $data ): ?QuizAttempt {
 		global $wpdb;
 
@@ -51,21 +62,26 @@ final class QuizAttemptRepository {
 		$user_id   = (int) ( $data['user_id'] ?? 0 );
 		$course_id = (int) ( $data['course_id'] ?? 0 );
 		$quiz_id   = (int) ( $data['quiz_id'] ?? 0 );
+		$metadata  = Json::encode( (array) ( $data['metadata'] ?? [] ) );
 		$table     = self::table();
 
 		// One statement: the next number is computed inside the INSERT, so two
-		// concurrent starts cannot both read the same MAX().
+		// concurrent starts cannot both read the same MAX(). IGNORE turns the
+		// expected unique-key collision (ruling R1) into a silent no-op instead
+		// of a raised wpdb error - insert_id then stays 0 and create() returns
+		// null exactly as it would for any other rejected duplicate.
 		$wpdb->query(
 			$wpdb->prepare(
-				"INSERT INTO {$table}
-				 (user_id, course_id, quiz_id, attempt_number, status, points_possible, started_at, answers, grading_data, created_at, updated_at)
-				 SELECT %d, %d, %d, COALESCE(MAX(a.attempt_number), 0) + 1, 'in_progress', %f, %s, '[]', '[]', %s, %s
+				"INSERT IGNORE INTO {$table}
+				 (user_id, course_id, quiz_id, attempt_number, status, points_possible, started_at, answers, grading_data, metadata, created_at, updated_at)
+				 SELECT %d, %d, %d, COALESCE(MAX(a.attempt_number), 0) + 1, 'in_progress', %f, %s, '[]', '[]', %s, %s, %s
 				 FROM {$table} a WHERE a.user_id = %d AND a.quiz_id = %d", // phpcs:ignore WordPress.DB.PreparedSQL
 				$user_id,
 				$course_id,
 				$quiz_id,
 				(float) ( $data['points_possible'] ?? 0 ),
 				$now,
+				$metadata,
 				$now,
 				$now,
 				$user_id,
@@ -74,7 +90,7 @@ final class QuizAttemptRepository {
 		);
 
 		$id = (int) $wpdb->insert_id;
-		return $id > 0 ? self::find( $id ) : self::open_attempt( $user_id, $quiz_id );
+		return $id > 0 ? self::find( $id ) : null;
 	}
 
 	/**

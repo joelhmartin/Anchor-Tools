@@ -56,11 +56,17 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 		);
 	}
 
+	/**
+	 * metadata (1.1.0, Task 25 ruling R3) pins time_limit_seconds/on_timer_expiry
+	 * at attempt start. It lands after updated_at because dbDelta's ALTER TABLE
+	 * ADD COLUMN has no position control - it always appends; from_row() reads
+	 * every column by name, so this is cosmetic only.
+	 */
 	public function test_quiz_attempts_columns_match_the_brief() {
 		$this->assertSame(
 			[ 'id', 'user_id', 'course_id', 'quiz_id', 'attempt_number', 'status', 'score',
 			  'points_earned', 'points_possible', 'passed', 'started_at', 'submitted_at',
-			  'duration_seconds', 'answers', 'grading_data', 'created_at', 'updated_at' ],
+			  'duration_seconds', 'answers', 'grading_data', 'created_at', 'updated_at', 'metadata' ],
 			$this->columns( 'quiz_attempts' )
 		);
 	}

@@ -18,7 +18,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class Migrations {
 
-	public const DB_VERSION = '1.0.0';
+	public const DB_VERSION = '1.1.0';
 	public const OPTION     = 'anchor_courses_db_version';
 
 	public const TABLES = [ 'enrollments', 'progress', 'quiz_attempts', 'ce_credits', 'certificates' ];
@@ -44,6 +44,10 @@ final class Migrations {
 
 		if ( \version_compare( $from, '1.0.0', '<' ) ) {
 			self::migrate_1_0_0();
+		}
+
+		if ( \version_compare( $from, '1.1.0', '<' ) ) {
+			self::migrate_1_1_0();
 		}
 
 		\update_option( self::OPTION, self::DB_VERSION, false );
@@ -170,5 +174,46 @@ final class Migrations {
 		if ( \class_exists( Capabilities::class ) ) {
 			Capabilities::sync();
 		}
+	}
+
+	/**
+	 * 1.1.0 - quiz_attempts gains `metadata` (Task 25, ruling R3): the
+	 * time_limit_seconds and on_timer_expiry policy in force when an attempt
+	 * starts are pinned here, so a later settings edit can never move a
+	 * running deadline. dbDelta is given the table's full definition and
+	 * ALTERs in only what is missing - do not reformat the SQL below.
+	 */
+	private static function migrate_1_1_0(): void {
+		global $wpdb;
+		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+		$charset = $wpdb->get_charset_collate();
+
+		\dbDelta(
+			"CREATE TABLE " . self::table( 'quiz_attempts' ) . " (
+				id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+				user_id BIGINT UNSIGNED NOT NULL,
+				course_id BIGINT UNSIGNED NOT NULL,
+				quiz_id BIGINT UNSIGNED NOT NULL,
+				attempt_number INT UNSIGNED NOT NULL,
+				status VARCHAR(30) NOT NULL,
+				score DECIMAL(6,2) NULL,
+				points_earned DECIMAL(8,2) NULL,
+				points_possible DECIMAL(8,2) NULL,
+				passed TINYINT(1) NOT NULL DEFAULT 0,
+				started_at DATETIME NOT NULL,
+				submitted_at DATETIME NULL,
+				duration_seconds INT UNSIGNED NULL,
+				answers LONGTEXT NULL,
+				grading_data LONGTEXT NULL,
+				metadata LONGTEXT NULL,
+				created_at DATETIME NOT NULL,
+				updated_at DATETIME NOT NULL,
+				PRIMARY KEY  (id),
+				UNIQUE KEY user_quiz_attempt (user_id,quiz_id,attempt_number),
+				KEY quiz_status (quiz_id,status),
+				KEY user_course (user_id,course_id)
+			) {$charset};"
+		);
 	}
 }

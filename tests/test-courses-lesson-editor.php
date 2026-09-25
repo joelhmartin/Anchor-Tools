@@ -24,7 +24,7 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		$d = LessonEditor::defaults();
 		$this->assertSame( 'manual', $d['completion_mode'] );
 		$this->assertSame( 'content', $d['type'] );
-		$this->assertSame( 1, $d['required'] );
+		$this->assertArrayNotHasKey( 'required', $d, 'Requiredness lives on the curriculum item, not a lesson setting.' );
 	}
 
 	public function test_save_persists_completion_mode_and_quiz_link() {
@@ -32,10 +32,33 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		$lesson = $this->make_lesson();
 		$quiz   = $this->make_quiz();
 
-		$this->submit( $lesson, [ 'completion_mode' => 'quiz_pass', 'quiz_id' => (string) $quiz, 'required' => '1' ] );
+		$this->submit( $lesson, [ 'completion_mode' => 'quiz_pass', 'quiz_id' => (string) $quiz ] );
 
 		$this->assertSame( 'quiz_pass', get_post_meta( $lesson, '_anchor_lesson_completion_mode', true ) );
 		$this->assertSame( $quiz, (int) get_post_meta( $lesson, '_anchor_lesson_quiz_id', true ) );
+	}
+
+	/**
+	 * Audit finding (d), 2026-09-25: the metabox's own "Required for course
+	 * completion" checkbox was removed - it was saved but nothing ever read
+	 * it. A save must no longer write `_anchor_lesson_required` at all.
+	 */
+	public function test_required_is_no_longer_a_writable_setting() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson();
+
+		$this->submit( $lesson, [ 'completion_mode' => 'manual', 'required' => '1' ] );
+
+		$this->assertSame( '', get_post_meta( $lesson, '_anchor_lesson_required', true ) );
+	}
+
+	/** The removed checkbox must not linger in the rendered metabox either. */
+	public function test_render_no_longer_shows_the_required_checkbox() {
+		$lesson = $this->make_lesson();
+		$html   = $this->render_html( $lesson );
+
+		$this->assertStringNotContainsString( 'anchor_lesson[required]', $html );
+		$this->assertStringContainsString( "Curriculum builder", $html, 'A hint must point authors at where requiredness actually lives.' );
 	}
 
 	public function test_quiz_id_must_reference_a_real_quiz() {

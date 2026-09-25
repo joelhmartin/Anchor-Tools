@@ -123,23 +123,37 @@ Granted to the roles named by `anchor_courses_capability_roles` (default
 **Curriculum:** `_anchor_course_curriculum` - ordered modules
 `{ id (uuid v4), title, description, items: [ { type: lesson|quiz, id, required } ] }`.
 Modules are not posts. `Content\Curriculum` reads are memoised per request and
-invalidated on any write to that meta key.
+invalidated on any write to that meta key. **`required` lives HERE, and only
+here** - `Curriculum::required_items()` is the one place course completion
+reads it (audit finding d, 2026-09-25). The curriculum builder's per-item
+"Required" checkbox (`admin-curriculum.js`) is the only control that sets it;
+new items default to required.
 
 **Lesson** (`Admin\LessonEditor::setting()`): `completion_mode` `manual`
-(`view`, `quiz_pass`), `required` `1`, `quiz_id` `0`, `type` `content`
+(`view`, `quiz_pass`), `quiz_id` `0`, `type` `content`
 (`live_session`), `event_id` `0`, `session_index` `0`, `require_prior_items` `0`.
 The three live-session fields are **not wired yet** (plan Phase 5 - the
 live-session adapter and the stream prerequisite veto): the lesson editor shows
 them disabled under "Not active until the live-session adapter ships (plan
-Phase 5)", and hidden mirrors keep the stored values across a save.
+Phase 5)", and hidden mirrors keep the stored values across a save. The
+editor used to also carry its own "Required for course completion" checkbox;
+it was removed (audit finding d) because nothing ever read it - a lesson's
+requiredness is the curriculum item's, not the lesson post's. `required` is
+no longer written by `save()` or listed in `defaults()`, though a pre-fix
+row's stray `_anchor_lesson_required` meta is harmless if read directly.
 
 **Quiz** (`_anchor_quiz_settings`, `Admin\QuizEditor::settings()`): `passing_score`
 `80` (1-100), `max_attempts` `0` (unlimited, max 1000), `time_limit_seconds` `0`
 (untimed, max 86400), `shuffle_questions` `0`, `shuffle_answers` `0`,
 `show_correct_answers` `1`, `show_score` `1`, `allow_review` `1`,
-`retry_delay_seconds` `0`, `required` `1`, `on_timer_expiry` `auto_submit` (`expire`).
+`retry_delay_seconds` `0`, `on_timer_expiry` `auto_submit` (`expire`).
 Questions: `_anchor_quiz_questions`, types `single_choice`, `multiple_choice`,
 `true_false`. The time limit and expiry policy are pinned into each attempt at start.
+Same finding-d removal as the lesson editor: the quiz settings box's own
+"Required for course completion" checkbox is gone; `required` is no longer
+part of these settings at all (a pre-fix quiz's stray `required` key inside
+the stored `settings` array is harmless if read directly - `coerce()` simply
+does not touch it).
 
 ### Which course a lesson is read in
 

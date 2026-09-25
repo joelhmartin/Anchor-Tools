@@ -26,7 +26,7 @@ final class QuizEditor {
 
 	private const BOOLS = [
 		'shuffle_questions', 'shuffle_answers', 'show_correct_answers',
-		'show_score', 'allow_review', 'required',
+		'show_score', 'allow_review',
 	];
 
 	public const TIMER_POLICIES = [ 'auto_submit', 'expire' ];
@@ -51,7 +51,6 @@ final class QuizEditor {
 			'show_score'           => 1,
 			'allow_review'         => 1,
 			'retry_delay_seconds'  => 0,
-			'required'             => 1,
 			'on_timer_expiry'      => 'auto_submit',
 		];
 	}
@@ -151,7 +150,6 @@ final class QuizEditor {
 			'show_correct_answers' => \__( 'Show correct answers after grading', 'anchor-schema' ),
 			'show_score'           => \__( 'Show the score', 'anchor-schema' ),
 			'allow_review'         => \__( 'Allow reviewing a graded attempt', 'anchor-schema' ),
-			'required'             => \__( 'Required for course completion', 'anchor-schema' ),
 		];
 		foreach ( $checks as $key => $label ) {
 			\printf(
@@ -161,6 +159,16 @@ final class QuizEditor {
 				\esc_html( $label )
 			);
 		}
+
+		// Audit finding d, 2026-09-25: this metabox used to carry its own
+		// "Required for course completion" checkbox, but nothing ever read
+		// it - requiredness lives on the CURRICULUM ITEM that links to this
+		// quiz (Curriculum::required_items()), not on the quiz post. The
+		// control was removed rather than left to silently do nothing.
+		echo '<p class="description">' . \esc_html__(
+			'Whether this quiz is required for course completion is set on its curriculum item, in the course\'s Curriculum builder.',
+			'anchor-schema'
+		) . '</p>';
 
 		echo '<p><label>' . \esc_html__( 'When the timer expires', 'anchor-schema' ) . '<br />';
 		echo '<select name="anchor_quiz[on_timer_expiry]">';

@@ -23,7 +23,6 @@ final class LessonEditor {
 	public static function defaults(): array {
 		return [
 			'completion_mode'     => 'manual',
-			'required'            => 1,
 			'quiz_id'             => 0,
 			'type'                => 'content',
 			'event_id'            => 0,
@@ -95,11 +94,15 @@ final class LessonEditor {
 		}
 		echo '</select></label></p>';
 
-		\printf(
-			'<p><label><input type="checkbox" name="anchor_lesson[required]" value="1"%s /> %s</label></p>',
-			\checked( (int) self::setting( $id, 'required' ), 1, false ),
-			\esc_html__( 'Required for course completion', 'anchor-schema' )
-		);
+		// Audit finding d, 2026-09-25: this metabox used to carry its own
+		// "Required for course completion" checkbox, but nothing ever read
+		// it - requiredness lives on the CURRICULUM ITEM that links to this
+		// lesson (Curriculum::required_items()), not on the lesson post. The
+		// control was removed rather than left to silently do nothing.
+		echo '<p class="description">' . \esc_html__(
+			'Whether this lesson is required for course completion is set on its curriculum item, in the course\'s Curriculum builder.',
+			'anchor-schema'
+		) . '</p>';
 
 		$this->render_live_session_fields( $id );
 	}
@@ -194,7 +197,6 @@ final class LessonEditor {
 			'completion_mode'     => $mode,
 			'type'                => $type,
 			'quiz_id'             => $quiz_id,
-			'required'            => empty( $input['required'] ) ? 0 : 1,
 			'event_id'            => \absint( $input['event_id'] ?? 0 ),
 			'session_index'       => \absint( $input['session_index'] ?? 0 ),
 			'require_prior_items' => empty( $input['require_prior_items'] ) ? 0 : 1,

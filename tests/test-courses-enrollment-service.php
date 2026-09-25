@@ -64,6 +64,27 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 		$this->assertSame( '4242', $allowed->source_id );
 	}
 
+	/**
+	 * Closes the Task 18 layering exception: Frontend\Shortcodes::my_courses()
+	 * used to call EnrollmentRepository::for_user() directly because this
+	 * service was locked mid-review (progress.md ruling). This is a thin
+	 * wrapper over that same repository method - filtering by status is the
+	 * repository's job, not a new rule this service invents.
+	 */
+	public function test_get_for_user_returns_the_users_rows_filtered_by_status() {
+		$user    = $this->make_learner();
+		$active  = $this->make_course();
+		$other   = $this->make_course();
+		$this->service->enroll( $user, $active );
+		$this->service->enroll( $user, $other );
+		$this->service->set_status( $user, $other, 'completed' );
+
+		$this->assertCount( 2, $this->service->get_for_user( $user ) );
+		$completed = $this->service->get_for_user( $user, [ 'completed' ] );
+		$this->assertCount( 1, $completed );
+		$this->assertSame( $other, $completed[0]->course_id );
+	}
+
 	/** There is no access type, so there is no "closed" refusal to make. */
 	public function test_there_is_no_course_closed_refusal() {
 		$user   = $this->make_learner();

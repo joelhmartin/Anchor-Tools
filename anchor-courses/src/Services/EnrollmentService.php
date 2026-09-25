@@ -210,6 +210,22 @@ final class EnrollmentService {
 	}
 
 	/**
+	 * Every enrolment row a user holds, optionally filtered by status.
+	 *
+	 * Thin wrapper over EnrollmentRepository::for_user() (closes the Task 18
+	 * layering exception - Frontend\Shortcodes::my_courses() read the
+	 * repository directly while this service was locked mid-review; see
+	 * progress.md). Side-effect-free, so there is nothing here beyond naming
+	 * the read as the service's own.
+	 *
+	 * @param string[] $statuses Optional status filter; [] returns every row.
+	 * @return Enrollment[]
+	 */
+	public function get_for_user( int $user_id, array $statuses = [] ): array {
+		return EnrollmentRepository::for_user( $user_id, $statuses );
+	}
+
+	/**
 	 * May this learner use the course right now?
 	 *
 	 * BOTH halves are required (Task 20 fix round, R1): an open row AND the

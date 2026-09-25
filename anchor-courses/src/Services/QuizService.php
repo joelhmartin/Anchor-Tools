@@ -202,6 +202,18 @@ final class QuizService {
 		return QuizAttemptRepository::find( $attempt_id );
 	}
 
+	/**
+	 * The learner's best (highest-scoring, graded) attempt at this quiz, or
+	 * null if none is graded yet.
+	 *
+	 * Thin wrapper over QuizAttemptRepository::best_for_quiz() (closes the
+	 * second Task 18 layering-exception call site - pre-gate cleanup round:
+	 * Frontend\Shortcodes::render_quiz() read the repository directly).
+	 */
+	public function best_attempt( int $user_id, int $quiz_id ): ?QuizAttempt {
+		return QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id );
+	}
+
 	public function owns_attempt( int $user_id, int $attempt_id ): bool {
 		$attempt = QuizAttemptRepository::find( $attempt_id );
 		return $attempt instanceof QuizAttempt && $attempt->user_id === $user_id;

@@ -94,6 +94,29 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		$this->assertSame( -1, $this->quizzes->attempts_remaining( $this->user, $this->quiz ) );
 	}
 
+	/**
+	 * Closes the Task 18 layering exception's second call site (pre-gate
+	 * cleanup round): Frontend\Shortcodes::render_quiz() read
+	 * QuizAttemptRepository::best_for_quiz() directly. Thin wrapper - the
+	 * repository already picks "best" (highest graded score).
+	 */
+	public function test_best_attempt_returns_the_highest_graded_score() {
+		$low  = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+		QuizAttemptRepository::update( $low->id, [ 'status' => 'graded', 'score' => 0.5 ] );
+		$high = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+		QuizAttemptRepository::update( $high->id, [ 'status' => 'graded', 'score' => 1.0 ] );
+
+		$best = $this->quizzes->best_attempt( $this->user, $this->quiz );
+
+		$this->assertInstanceOf( QuizAttempt::class, $best );
+		$this->assertSame( $high->id, $best->id );
+	}
+
+	/** No graded attempt yet: nothing to report as "best". */
+	public function test_best_attempt_is_null_with_no_graded_attempt() {
+		$this->assertNull( $this->quizzes->best_attempt( $this->user, $this->quiz ) );
+	}
+
 	public function test_retry_delay_blocks_an_immediate_second_attempt() {
 		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
 		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'max_attempts' => 0, 'retry_delay_seconds' => 3600 ] );

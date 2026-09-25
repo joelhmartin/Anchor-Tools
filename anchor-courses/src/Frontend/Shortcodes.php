@@ -6,8 +6,6 @@ namespace Anchor\Courses\Frontend;
 use Anchor\Courses\Admin\CourseEditor;
 use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\Curriculum;
-use Anchor\Courses\Database\EnrollmentRepository;
-use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Module;
 use Anchor\Courses\Services\CertificateService;
 use Anchor\Courses\Services\CreditService;
@@ -145,13 +143,7 @@ final class Shortcodes {
 			'dashboard',
 			[
 				'user_id'     => $user_id,
-				// EnrollmentService owns writes to this table (brief 15/16/26) but
-				// exposes no read-all-for-user method; Task 19/20 (role listener)
-				// is concurrently editing that class, so this reads the same
-				// public, side-effect-free repository method the service itself
-				// calls. Fold into EnrollmentService::get_for_user() once that
-				// file is free to touch again (see task-18-report.md).
-				'enrollments' => EnrollmentRepository::for_user( $user_id ),
+				'enrollments' => $this->enrollments->get_for_user( $user_id ),
 				'progress'    => $this->progress,
 			]
 		);
@@ -317,7 +309,7 @@ final class Shortcodes {
 				'user_id'            => $user_id,
 				'can_start'          => $module->quizzes->can_start( $user_id, $quiz_id, $course_id ),
 				'attempts_remaining' => $module->quizzes->attempts_remaining( $user_id, $quiz_id ),
-				'best'               => QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id ),
+				'best'               => $module->quizzes->best_attempt( $user_id, $quiz_id ),
 				// Gate the "Best score" line the same way the REST payload
 				// gates score/points_earned/passed (Task 26 review, MINOR).
 				'show_score'         => 1 === (int) $module->quizzes->settings( $quiz_id )['show_score'],

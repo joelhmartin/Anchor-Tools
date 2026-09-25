@@ -1030,6 +1030,3 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$this->assertSame( [], $this->ent()->grant_record( $event_id, $user_id ) );
 	}
 }
-
-/** Thrown from the wp_redirect filter so the handlers' exit never runs. */
-class Anchor_Entitlements_Redirect_Signal extends \Exception {}

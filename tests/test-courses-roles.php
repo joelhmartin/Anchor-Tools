@@ -207,7 +207,12 @@ class Test_Courses_Roles extends Anchor_Courses_TestCase {
 
 		$this->assertStringContainsString( Roles::access_slug( $this->course ), $html );
 		$this->assertStringContainsString( Roles::completion_slug( $this->course ), $html );
-		$this->assertSame( 2, substr_count( $html, 'anchor_courses_delete_role' ) );
+		// The metabox body itself carries no <form> (CodeRabbit PR #29 - a
+		// nested <form> is dropped by the browser); it prints one delete
+		// button per role, each bound by form="…" to the real admin-post
+		// form MetaboxForms queues for admin_footer.
+		$this->assertStringNotContainsString( '<form', $html );
+		$this->assertSame( 2, substr_count( $html, 'anchor-courses-delete-role-' . $this->course . '-' ) );
 	}
 
 	public function test_the_role_panel_says_when_nobody_has_completed_yet() {
@@ -218,7 +223,12 @@ class Test_Courses_Roles extends Anchor_Courses_TestCase {
 		$html = (string) ob_get_clean();
 
 		$this->assertStringContainsString( 'Not created yet', $html );
-		$this->assertSame( 1, substr_count( $html, 'anchor_courses_delete_role' ), 'Only the access role is deletable so far.' );
+		$this->assertStringNotContainsString( '<form', $html );
+		$this->assertSame(
+			1,
+			substr_count( $html, 'anchor-courses-delete-role-' . $this->course . '-' ),
+			'Only the access role is deletable so far.'
+		);
 	}
 
 	/* ---------------------------------------------------------------------

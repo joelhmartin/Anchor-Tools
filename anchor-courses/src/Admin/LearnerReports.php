@@ -278,35 +278,51 @@ final class LearnerReports {
 		echo '</p>';
 	}
 
+	/**
+	 * This metabox body renders inside WordPress's own post-edit <form>, so
+	 * this can only print the VISIBLE controls, each bound via `form="…"` to
+	 * the real admin-post <form> that MetaboxForms prints from admin_footer
+	 * (CodeRabbit PR #29 - a nested <form> start tag is dropped by the
+	 * browser, and its own _wpnonce field can shadow the post form's).
+	 */
 	public function render_add_learner_form( int $course_id ): void {
+		$form_id = 'anchor-courses-add-learner-' . $course_id;
+
+		\printf( '<h4>%s</h4>', \esc_html__( 'Add a learner', 'anchor-schema' ) );
 		\printf(
-			'<h4>%s</h4><form method="post" action="%s" class="anchor-courses-add-learner">',
-			\esc_html__( 'Add a learner', 'anchor-schema' ),
-			\esc_url( \admin_url( 'admin-post.php' ) )
-		);
-		\wp_nonce_field( self::NONCE . '_' . $course_id );
-		echo '<input type="hidden" name="action" value="anchor_courses_add_learner" />';
-		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
-		\printf(
-			'<p><input type="text" name="learner_name" placeholder="%s" /> '
-			. '<input type="email" name="learner_email" placeholder="%s" required /> '
-			. '<button type="submit" class="button">%s</button></p>',
+			'<p><input type="text" name="learner_name" placeholder="%s" form="%s" /> '
+			. '<input type="email" name="learner_email" placeholder="%s" required form="%2$s" /> '
+			. '<button type="submit" class="button" form="%2$s">%s</button></p>',
 			\esc_attr__( 'Name', 'anchor-schema' ),
+			\esc_attr( $form_id ),
 			\esc_attr__( 'Email', 'anchor-schema' ),
 			\esc_html__( 'Add learner', 'anchor-schema' )
 		);
 		echo '<p class="description">' . \esc_html__( 'Creates the account if there is none. No email is sent.', 'anchor-schema' ) . '</p>';
-		echo '</form>';
+
+		MetaboxForms::queue_form(
+			$form_id,
+			'anchor_courses_add_learner',
+			[ 'course_id' => (string) $course_id ],
+			self::NONCE . '_' . $course_id
+		);
 	}
 
 	public function revoke_button( int $course_id, int $user_id ): void {
-		\printf( '<form method="post" action="%s">', \esc_url( \admin_url( 'admin-post.php' ) ) );
-		\wp_nonce_field( self::NONCE . '_' . $course_id );
-		echo '<input type="hidden" name="action" value="anchor_courses_revoke_access" />';
-		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
-		\printf( '<input type="hidden" name="user_id" value="%d" />', $user_id );
-		\printf( '<button type="submit" class="button-link">%s</button>', \esc_html__( 'Revoke', 'anchor-schema' ) );
-		echo '</form>';
+		$form_id = 'anchor-courses-revoke-' . $course_id . '-' . $user_id;
+
+		\printf(
+			'<button type="submit" class="button-link" form="%s">%s</button>',
+			\esc_attr( $form_id ),
+			\esc_html__( 'Revoke', 'anchor-schema' )
+		);
+
+		MetaboxForms::queue_form(
+			$form_id,
+			'anchor_courses_revoke_access',
+			[ 'course_id' => (string) $course_id, 'user_id' => (string) $user_id ],
+			self::NONCE . '_' . $course_id
+		);
 	}
 
 	public function handle_add_learner(): void {

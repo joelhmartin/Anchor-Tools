@@ -573,17 +573,28 @@ final class CourseEditor {
 			)
 		);
 
+		// This metabox body renders inside WordPress's own post-edit <form>,
+		// so only the visible button prints here; the real admin-post <form>
+		// (its own nonce + onsubmit confirm) prints from admin_footer, bound
+		// by id (CodeRabbit PR #29 - a nested <form> is dropped by the
+		// browser, and its own _wpnonce field can shadow the post form's).
+		$form_id = 'anchor-courses-delete-role-' . $course_id . '-' . \sanitize_key( $slug );
 		\printf(
-			'<form method="post" action="%s" onsubmit="return confirm(%s);">',
-			\esc_url( \admin_url( 'admin-post.php' ) ),
-			\esc_attr( (string) \wp_json_encode( \__( 'Delete this role and strip it from every holder? This cannot be undone.', 'anchor-schema' ) ) )
+			'<button type="submit" class="button button-link-delete" form="%s">%s</button>',
+			\esc_attr( $form_id ),
+			\esc_html__( 'Delete role', 'anchor-schema' )
 		);
-		\wp_nonce_field( 'anchor_courses_delete_role_' . $course_id );
-		echo '<input type="hidden" name="action" value="anchor_courses_delete_role" />';
-		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
-		\printf( '<input type="hidden" name="role" value="%s" />', \esc_attr( $slug ) );
-		\printf( '<button type="submit" class="button button-link-delete">%s</button>', \esc_html__( 'Delete role', 'anchor-schema' ) );
-		echo '</form>';
+
+		MetaboxForms::queue_form(
+			$form_id,
+			'anchor_courses_delete_role',
+			[ 'course_id' => (string) $course_id, 'role' => $slug ],
+			'anchor_courses_delete_role_' . $course_id,
+			\sprintf(
+				'onsubmit="return confirm(%s);"',
+				\esc_attr( (string) \wp_json_encode( \__( 'Delete this role and strip it from every holder? This cannot be undone.', 'anchor-schema' ) ) )
+			)
+		);
 	}
 
 	public function handle_delete_role(): void {

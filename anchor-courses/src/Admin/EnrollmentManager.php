@@ -41,26 +41,34 @@ final class EnrollmentManager {
 		Notices::register( 'complete_failed', Notices::TYPE_ERROR, \__( 'The course could not be marked complete: the learner has no current access to it.', 'anchor-schema' ) );
 	}
 
+	/**
+	 * This metabox body renders inside WordPress's own post-edit <form>, so
+	 * this can only print the VISIBLE controls, each bound via `form="…"` to
+	 * the real admin-post <form> that MetaboxForms prints from admin_footer
+	 * (CodeRabbit PR #29 - a nested <form> start tag is dropped by the
+	 * browser, and its own _wpnonce field can shadow the post form's).
+	 */
 	public function render_form( int $course_id ): void {
-		echo '<h4>' . \esc_html__( 'Manage enrolment', 'anchor-schema' ) . '</h4>';
-		\printf(
-			'<form method="post" action="%s" class="anchor-courses-enrollment-form">',
-			\esc_url( \admin_url( 'admin-post.php' ) )
-		);
-		\wp_nonce_field( self::NONCE . '_' . $course_id );
-		echo '<input type="hidden" name="action" value="anchor_courses_manage_enrollment" />';
-		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
+		$form_id = 'anchor-courses-manage-enrollment-' . $course_id;
 
+		echo '<h4>' . \esc_html__( 'Manage enrolment', 'anchor-schema' ) . '</h4>';
 		echo '<p>';
-		\wp_dropdown_users(
+
+		// wp_dropdown_users() has no way to add a form="…" attribute itself,
+		// so it is generated off-form and the attribute is spliced into its
+		// one <select> tag.
+		$dropdown = (string) \wp_dropdown_users(
 			[
 				'name'              => 'user_id',
 				'show_option_none'  => \__( '- select a user -', 'anchor-schema' ),
 				'option_none_value' => '0',
 				'number'            => 200,
+				'echo'              => false,
 			]
 		);
-		echo ' <select name="anchor_courses_action">';
+		echo \str_replace( '<select ', '<select form="' . \esc_attr( $form_id ) . '" ', $dropdown );
+
+		\printf( ' <select name="anchor_courses_action" form="%s">', \esc_attr( $form_id ) );
 		$labels = [
 			'cancel'     => \__( 'Cancel enrolment (removes access)', 'anchor-schema' ),
 			'reset'      => \__( 'Reset progress', 'anchor-schema' ),
@@ -71,8 +79,15 @@ final class EnrollmentManager {
 			\printf( '<option value="%s">%s</option>', \esc_attr( $value ), \esc_html( $label ) );
 		}
 		echo '</select> ';
-		\printf( '<button type="submit" class="button">%s</button>', \esc_html__( 'Apply', 'anchor-schema' ) );
-		echo '</p></form>';
+		\printf( '<button type="submit" class="button" form="%s">%s</button>', \esc_attr( $form_id ), \esc_html__( 'Apply', 'anchor-schema' ) );
+		echo '</p>';
+
+		MetaboxForms::queue_form(
+			$form_id,
+			'anchor_courses_manage_enrollment',
+			[ 'course_id' => (string) $course_id ],
+			self::NONCE . '_' . $course_id
+		);
 	}
 
 	public function handle_action(): void {

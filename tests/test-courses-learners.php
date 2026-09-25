@@ -310,7 +310,12 @@ class Test_Courses_Learners extends Anchor_Courses_TestCase {
 		ob_start();
 		( new LearnerReports() )->render_learners( get_post( $this->course ) );
 		$allowed = (string) ob_get_clean();
-		$this->assertStringContainsString( 'anchor_courses_add_learner', $allowed );
+		// The metabox body itself carries no <form> (CodeRabbit PR #29 - a
+		// nested <form> is dropped by the browser); it prints only the
+		// control, bound by form="…" to the real admin-post form MetaboxForms
+		// queues for admin_footer.
+		$this->assertStringContainsString( 'anchor-courses-add-learner-' . $this->course, $allowed );
+		$this->assertStringNotContainsString( '<form', $allowed );
 		$this->assertStringNotContainsString( '<script>alert(1)</script>', $allowed );
 	}
 }

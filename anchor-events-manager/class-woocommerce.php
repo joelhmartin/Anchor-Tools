@@ -1255,7 +1255,7 @@ class WooCommerce {
         // the same authority the storefront rendered from, and it says why.
         $event_state = $this->module->bookability( $event_id );
         if ( ! $this->module->is_bookable( $event_state ) ) {
-            \wp_send_json_error( [ 'messages' => [ $this->bookability_message( $event_state ) ] ] );
+            \wp_send_json_error( [ 'messages' => [ $this->bookability_message( $event_state, '', $event_id ) ] ] );
         }
 
         $meta              = $this->module->get_meta( $event_id );
@@ -1333,7 +1333,7 @@ class WooCommerce {
             // per requested quantity ("2 seats left, 3 asked for" is full).
             $decision = $this->registrations->capacity_decision( $event_id, $meta, $qty, $tier );
             if ( ! $this->module->is_bookable( $decision ) ) {
-                $messages[] = $this->bookability_message( $decision, $label );
+                $messages[] = $this->bookability_message( $decision, $label, $event_id );
                 continue;
             }
 
@@ -1389,9 +1389,10 @@ class WooCommerce {
      *
      * @param string $bookability Non-bookable state from bookability()/capacity_decision().
      * @param string $label       Ticket-tier label, when the answer is about one tier.
+     * @param int    $event_id    The event this answer is about, needed only for 'prerequisite'.
      * @return string
      */
-    private function bookability_message( $bookability, $label = '' ) {
+    private function bookability_message( $bookability, $label = '', $event_id = 0 ) {
         $tier_scoped = ( $label !== '' );
 
         switch ( (string) $bookability ) {
@@ -1400,6 +1401,12 @@ class WooCommerce {
                     /* translators: %s: ticket tier label. */
                     ? \sprintf( \__( '%s is sold out.', 'anchor-schema' ), $label )
                     : \__( 'This event is sold out.', 'anchor-schema' );
+            case 'prerequisite':
+                $entitlements = $this->module->entitlements ?? null;
+                $message      = $entitlements ? $entitlements->prerequisite_message( (int) $event_id ) : '';
+                return $message !== ''
+                    ? $message
+                    : Entitlements::default_prerequisite_message();
             case 'parent':
                 return \__( 'Please choose a date before registering.', 'anchor-schema' );
             case 'disabled':
@@ -1813,14 +1820,18 @@ class WooCommerce {
         foreach ( $lines as $cart_item_key => $line ) {
             // P4 — tier-label the block heading (presentational). Resolve the tier
             // from the line's managed variation; fall back to the event title.
-            $heading   = (string) $line['event_title'];
-            $tier_label = '';
+            $heading        = (string) $line['event_title'];
+            $tier_label     = '';
+            $modality_label = '';
             if ( $this->module->product_sync && (int) $line['variation_id'] > 0 && $this->module->ticket_types ) {
                 $resolved = $this->module->product_sync->tier_for_variation( (int) $line['variation_id'] );
                 if ( ! empty( $resolved['tier_id'] ) ) {
                     $tier = $this->module->ticket_types->find( (int) $line['event_id'], (string) $resolved['tier_id'] );
-                    if ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) {
-                        $tier_label = (string) $tier['label'];
+                    if ( $tier ) {
+                        if ( (string) ( $tier['label'] ?? '' ) !== '' ) {
+                            $tier_label = (string) $tier['label'];
+                        }
+                        $modality_label = Ticket_Types::modality_label( $tier['modality'] ?? 'in_person' );
                     }
                 }
             }
@@ -1830,6 +1841,14 @@ class WooCommerce {
                     \__( '%1$s — %2$s', 'anchor-schema' ),
                     $line['event_title'],
                     $tier_label
+                );
+            }
+            if ( $modality_label !== '' ) {
+                $heading = \sprintf(
+                    /* translators: 1: existing heading (event title, optionally + tier label), 2: modality label (In-person/Livestream). */
+                    \__( '%1$s (%2$s)', 'anchor-schema' ),
+                    $heading,
+                    $modality_label
                 );
             }
             echo '<fieldset class="anchor-event-attendee-line" data-cart-item="' . \esc_attr( $cart_item_key ) . '">';
@@ -2193,6 +2212,23 @@ class WooCommerce {
         // plugin or theme. Only the event id needs a snapshot, because THAT is
         // the fact a re-link/un-link can actually change out from under the line.
         $item->update_meta_data( '_anchor_event_id', $event_id );
+
+        // Visible order-item meta line (no leading underscore, so it shows on
+        // the order screen and the confirmation emails alongside the ticket
+        // tier's own attribute meta) — same tier resolution as the attendee
+        // capture heading, so the two can never disagree.
+        if ( $this->module->product_sync && $variation_id > 0 && $this->module->ticket_types ) {
+            $resolved = $this->module->product_sync->tier_for_variation( $variation_id );
+            if ( ! empty( $resolved['tier_id'] ) ) {
+                $tier = $this->module->ticket_types->find( $event_id, (string) $resolved['tier_id'] );
+                if ( $tier ) {
+                    $item->update_meta_data(
+                        \__( 'Attendance', 'anchor-schema' ),
+                        Ticket_Types::modality_label( $tier['modality'] ?? 'in_person' )
+                    );
+                }
+            }
+        }
     }
 
     /**
@@ -3088,6 +3124,15 @@ class WooCommerce {
                             ] ) );
                             if ( $seat_id ) {
                                 $created[] = $seat_id;
+                                // Resolve the attendee's account at capture time,
+                                // not at grant time: the attendee's email on the
+                                // line may differ from the order's customer.
+                                // ensure_user() returns 0 for an event whose
+                                // access switch is off, so an ordinary paid
+                                // in-person event still creates no accounts.
+                                if ( $this->module->entitlements ) {
+                                    $this->module->entitlements->ensure_user( [ 'id' => (int) $seat_id ] );
+                                }
                             }
                         }
                         $deficit--;
@@ -4005,6 +4050,28 @@ class WooCommerce {
             $tokens
         );
 
+        // {room_link} (fix round 1): a sign-in token is an identity, and this
+        // confirmation's recipient is the BUYER, not any particular seat on
+        // the order — an order routinely covers seats bought for other
+        // people. Resolving "a" seat id here (as this used to) could mint the
+        // token for one of THOSE attendees and hand it to the buyer, who
+        // would then be signed in as somebody else. Resolve the buyer's own
+        // account instead — the registered customer, or (guest checkout) the
+        // WP user whose email matches the billing email — and only tokenise
+        // for them if they ALSO hold a confirmed seat on this event
+        // (Entitlements::has_confirmed_seat()). A buyer who bought seats for
+        // other people but holds none themselves gets the plain, untokenised
+        // room address (room_link_plain_fallback below) instead of nothing
+        // and instead of somebody else's identity.
+        $buyer_user_id = (int) $order->get_customer_id();
+        if ( $buyer_user_id <= 0 ) {
+            $buyer_wp_user = \get_user_by( 'email', \sanitize_email( $to ) );
+            $buyer_user_id = $buyer_wp_user instanceof \WP_User ? (int) $buyer_wp_user->ID : 0;
+        }
+        $buyer_holds_seat = $buyer_user_id > 0
+            && $this->module->entitlements
+            && $this->module->entitlements->has_confirmed_seat( $event_id, $buyer_user_id );
+
         $ctx = [
             'event_id'      => $event_id,
             'name'          => $buyer,
@@ -4016,6 +4083,9 @@ class WooCommerce {
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
             'cta_url'       => \get_permalink( $event_id ),
             'type'          => 'confirmation',
+            'room_user_id'  => $buyer_holds_seat ? $buyer_user_id : 0,
+            'room_link_plain_fallback' => true,
+            'recipient_email' => (string) $to,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
         // finding-13 — the order identity keeps two different buyers on the

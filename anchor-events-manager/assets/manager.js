@@ -91,7 +91,13 @@
 
     function reindexRows(){
       $rows.find('.anchor-event-session-row').each(function(i){
-        $(this).find('input').each(function(){
+        // Includes select, not just input: each row also carries a
+        // <select name="anchor_event_sessions[n][modality]"> (the
+        // per-session stream-modality override). Missing it here left the
+        // modality silently pinned to a stale row index after a removal —
+        // matching admin.js's initSessionsRepeater() (Task 16 fixed that
+        // surface; this one had drifted).
+        $(this).find('input, select').each(function(){
           var name = $(this).attr('name');
           if(!name){ return; }
           name = name.replace(/anchor_event_sessions\[\d+\]/, 'anchor_event_sessions[' + i + ']');

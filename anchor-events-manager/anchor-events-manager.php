@@ -11,6 +11,9 @@ require_once __DIR__ . '/template-tags.php';
 class Module {
     const CPT = 'event';
 
+    /** REST namespace for this module's routes (spec §5.6). */
+    const REST_NS = 'anchor-events/v1';
+
     /**
      * Base events-management capability on a site with no store (audit REG-D20).
      * Roster::CAP is kept as an alias of this for back-compat.
@@ -316,6 +319,22 @@ class Module {
     /** @var Event_Schema|null schema.org/Event JSON-LD data builder (Phase 4, Task 4.1; always loaded, read-only). */
     public $event_schema = null;
 
+    /** @var Entitlements|null Event roles + access (spec §4; always loaded). */
+    public $entitlements = null;
+
+    /**
+     * Request-scoped: set by room_headers() when a sign-in token in the URL
+     * was rejected (invalid or expired), read by render_room()'s logged-out
+     * branch to explain why the visitor is still looking at the sign-in
+     * form. '' the rest of the time. Not a filter default, because the
+     * logged-out branch has no other way to learn a token was even
+     * presented — anchor_events_room_denied_message is a different notice,
+     * for the logged-in-but-not-entitled branch (spec §6.2).
+     *
+     * @var string
+     */
+    private $room_login_notice = '';
+
     /**
      * Seat lifecycle emails queued for the end of this request, `seat_id => type`
      * ('cancellation' | 'promotion').
@@ -399,6 +418,14 @@ class Module {
         require_once $dir . 'class-series.php';
         require_once $dir . 'class-occurrences.php';
         require_once $dir . 'class-event-schema.php';
+        // Stream embed normaliser (virtual-events spec §5.4) — static, no
+        // instance: it holds no state and hooks nothing.
+        require_once $dir . 'class-embed.php';
+        // Room state machine (virtual-events spec §5.3) — pure, static.
+        require_once $dir . 'class-stream-state.php';
+        // Event roles / access (virtual-events spec §4) — free + paid, no
+        // WooCommerce dependency.
+        require_once $dir . 'class-entitlements.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -416,6 +443,11 @@ class Module {
         // (wp_head) is a later task.
         $this->event_schema = new Event_Schema( $this );
 
+        // Event roles / access (virtual-events spec §4) — free + paid, no
+        // WooCommerce dependency. Constructed like Registrations/Roster so
+        // $module->entitlements is the one handle every surface uses.
+        $this->entitlements = new Entitlements( $this );
+
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
         if ( \class_exists( 'WooCommerce' ) ) {
@@ -431,6 +463,16 @@ class Module {
         \add_action( 'init', [ $this, 'register_taxonomies' ] );
         \add_action( 'init', [ $this, 'register_registration_cpt' ] );
         \add_action( 'init', [ $this, 'register_meta' ] );
+        // The room endpoint (spec §5.1): <event permalink>/live/.
+        \add_action( 'init', [ $this, 'register_room_endpoint' ] );
+        // The room's REST endpoint (spec §5.6) — the state block re-decided
+        // server-side, so the embed URL never ships outside its window.
+        \add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
+        // Rewrite flush on a signature change — the pattern Anchor Locations
+        // uses (anchor-locations.php::maybe_flush()), because this module has
+        // no activation hook of its own that survives a PUC upgrade.
+        \add_action( 'init', [ $this, 'maybe_flush_rewrites' ], 99 );
+        \add_action( 'template_redirect', [ $this, 'room_headers' ], 1 );
 
         \add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
@@ -587,6 +629,11 @@ class Module {
         // admin panel — the one reachable terminal state for a soft-closed
         // child once its seats are gone.
         \add_action( 'admin_post_anchor_events_delete_closed_occurrence', [ $this, 'handle_delete_closed_occurrence' ] );
+
+        // Task 19: the console Basics "Event role" panel's Delete role and
+        // Grant-to-current-attendees backfill.
+        \add_action( 'admin_post_anchor_events_delete_role', [ $this, 'handle_delete_role' ] );
+        \add_action( 'admin_post_anchor_events_backfill_role', [ $this, 'handle_backfill_role' ] );
 
         // L14: GDPR personal-data exporter + eraser for attendee PII stored on seats.
         \add_filter( 'wp_privacy_personal_data_exporters', [ $this, 'register_privacy_exporter' ] );
@@ -1466,6 +1513,8 @@ class Module {
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
             'cta_url'       => $tokens['event_url'],
             'type'          => 'reminder',
+            'seat_id'       => (int) ( $seat['id'] ?? 0 ),
+            'recipient_email' => (string) $seat['email'],
         ];
         $html = $this->build_registration_email_html( $ctx );
         // finding-13 — the seat identity keeps two different attendees on the
@@ -2806,6 +2855,23 @@ class Module {
             // paths — only ever by whatever future authoring UI/AJAX handler
             // is built for it (out of scope for this task).
             'recurrence' => [ 'type' => 'array', 'show_in_rest' => false ],
+            // Hosted livestream (virtual-events spec §3.1). Metabox/console
+            // owned, same reason as `sessions` above: show_in_rest=false keeps
+            // a block-editor autosave from racing the metabox save.
+            // The master switch (spec §2 row 8a / §3.1 / §4 preamble). Default
+            // TRUE (owner decision 2026-09-23): every plugin-registered event
+            // grants the role by default. No §4 gating logic exists yet in
+            // this task, so the flip changes only the stored default, not
+            // behaviour.
+            'access_role_enabled' => [ 'type' => 'boolean', 'show_in_rest' => false ],
+            'stream_embed' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'stream_default_modality' => [ 'type' => 'string', 'show_in_rest' => false ],
+            'in_person_includes_stream' => [ 'type' => 'boolean', 'show_in_rest' => false ],
+            'stream_open_before_minutes' => [ 'type' => 'integer', 'show_in_rest' => false ],
+            'stream_close_after_minutes' => [ 'type' => 'integer', 'show_in_rest' => false ],
+            // Prerequisites (§4.6) — role slugs the registrant must already hold.
+            'required_roles' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'required_roles_mode' => [ 'type' => 'string', 'show_in_rest' => false ],
         ];
     }
 
@@ -2869,6 +2935,14 @@ class Module {
             'occurrence_key' => '',
             'occurrence_closed' => false,
             'recurrence' => [],
+            'access_role_enabled' => true,
+            'stream_embed' => [],
+            'stream_default_modality' => 'in_person',
+            'in_person_includes_stream' => true,
+            'stream_open_before_minutes' => 15,
+            'stream_close_after_minutes' => 30,
+            'required_roles' => [],
+            'required_roles_mode' => 'any',
         ];
     }
 
@@ -2968,6 +3042,7 @@ class Module {
                         <th><?php echo esc_html__( 'Quota', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Sale start', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Sale end', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Attendance', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Active', 'anchor-schema' ); ?></th>
                         <th aria-hidden="true"></th>
                     </tr>
@@ -3011,6 +3086,7 @@ class Module {
         $sale_start = $tier['sale_start'] ?? '';
         $sale_end   = $tier['sale_end'] ?? '';
         $active     = $tier ? ! empty( $tier['active'] ) : true;
+        $modality   = ( ( $tier['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person';
 
         \ob_start();
         ?>
@@ -3033,6 +3109,12 @@ class Module {
             </td>
             <td>
                 <input type="date" name="<?php echo esc_attr( $base . '[sale_end]' ); ?>" value="<?php echo esc_attr( $sale_end ); ?>" class="anchor-ticket-sale-end" />
+            </td>
+            <td>
+                <select name="<?php echo esc_attr( $base . '[modality]' ); ?>" class="anchor-ticket-modality">
+                    <option value="in_person" <?php selected( $modality, 'in_person' ); ?>><?php echo esc_html__( 'In person', 'anchor-schema' ); ?></option>
+                    <option value="virtual" <?php selected( $modality, 'virtual' ); ?>><?php echo esc_html__( 'Livestream', 'anchor-schema' ); ?></option>
+                </select>
             </td>
             <td class="anchor-ticket-active-cell">
                 <input type="checkbox" name="<?php echo esc_attr( $base . '[active]' ); ?>" value="1" <?php checked( $active ); ?> class="anchor-ticket-active" />
@@ -3081,11 +3163,395 @@ class Module {
                 <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" class="anchor-session-label" placeholder="<?php echo esc_attr__( 'e.g. Day 1', 'anchor-schema' ); ?>" />
             </td>
             <td>
+                <select name="<?php echo esc_attr( $base . '[modality]' ); ?>" class="anchor-session-modality">
+                    <option value=""><?php echo esc_html__( 'Use event default', 'anchor-schema' ); ?></option>
+                    <option value="in_person" <?php selected( $session['modality'] ?? '', 'in_person' ); ?>><?php echo esc_html__( 'In person', 'anchor-schema' ); ?></option>
+                    <option value="virtual" <?php selected( $session['modality'] ?? '', 'virtual' ); ?>><?php echo esc_html__( 'Livestream only', 'anchor-schema' ); ?></option>
+                    <option value="hybrid" <?php selected( $session['modality'] ?? '', 'hybrid' ); ?>><?php echo esc_html__( 'In person + livestream', 'anchor-schema' ); ?></option>
+                </select>
+            </td>
+            <td>
+                <label class="anchor-session-override-toggle">
+                    <input type="checkbox" class="anchor-session-override" <?php checked( ! empty( $session['stream_embed']['src'] ) ); ?> />
+                    <?php echo esc_html__( 'Use a different stream for this session', 'anchor-schema' ); ?>
+                </label>
+                <input type="text" class="anchor-session-stream widefat" name="<?php echo esc_attr( $base . '[stream_embed]' ); ?>"
+                    value="<?php echo esc_attr( (string) ( $session['stream_embed']['raw'] ?? ( $session['stream_embed']['src'] ?? '' ) ) ); ?>"
+                    <?php echo empty( $session['stream_embed']['src'] ) ? 'hidden' : ''; ?> />
+            </td>
+            <td>
                 <button type="button" class="button-link-delete anchor-event-session-remove" aria-label="<?php echo esc_attr__( 'Remove session', 'anchor-schema' ); ?>">&times;</button>
             </td>
         </tr>
         <?php
         return (string) \ob_get_clean();
+    }
+
+    /** Test seam for the private session-row renderer. */
+    public function event_session_row_html_public( $index, $session = null, $template = false ) {
+        return $this->event_session_row_html( $index, $session, $template );
+    }
+
+    /**
+     * The Livestream group, shared by the wp-admin Location section and the
+     * front-end console (spec §7). One renderer, so the two surfaces cannot
+     * drift on field names — the same pattern render_ticket_types_fields()
+     * already uses.
+     *
+     * @param int   $event_id
+     * @param array $meta
+     * @param bool  $admin True for the metabox styling, false for the console.
+     * @return string '' when the event can never hold a stream.
+     */
+    public function render_livestream_fields( $event_id, array $meta, $admin = true ) {
+        if ( $this->registration_mode( (int) $event_id ) === 'external' ) {
+            return '';
+        }
+        $hint  = $admin ? 'description' : 'anchor-event-hint';
+        $embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
+        $raw   = (string) ( $embed['raw'] ?? ( $embed['src'] ?? '' ) );
+        $room  = $this->room_url( (int) $event_id );
+        // Pre-filled from the RESOLVED default, not the raw stored value
+        // (final review I1): a legacy virtual event has nothing stored, so
+        // the raw read is get_meta_defaults()' in_person — and its first
+        // save posted that back, storing in_person and destroying the
+        // default_modality_for() bridge (no more virtual room). Showing the
+        // value the room actually uses makes a no-change save a no-op.
+        $default_modality = $this->default_modality_for( (int) $event_id, $meta );
+
+        \ob_start();
+        ?>
+        <div class="anchor-event-section anchor-event-livestream" data-step="3">
+            <h3><?php echo esc_html__( 'Livestream', 'anchor-schema' ); ?></h3>
+            <div class="anchor-event-grid">
+                <div class="anchor-event-field" style="grid-column:1/-1;">
+                    <label for="anchor_event_stream_embed"><?php echo esc_html__( 'Stream link or embed code', 'anchor-schema' ); ?></label>
+                    <textarea id="anchor_event_stream_embed" name="anchor_event_stream_embed" rows="3" class="widefat"><?php echo esc_textarea( $raw ); ?></textarea>
+                    <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Paste a Vimeo, YouTube or Zoom link, or the provider\'s iframe embed code. Vimeo domain privacy is set on Vimeo — allow this site\'s domain there.', 'anchor-schema' ); ?></p>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_stream_default_modality"><?php echo esc_html__( 'Default attendance', 'anchor-schema' ); ?></label>
+                    <select id="anchor_event_stream_default_modality" name="anchor_event_stream_default_modality">
+                        <?php foreach ( [
+                            'in_person' => __( 'In person', 'anchor-schema' ),
+                            'virtual'   => __( 'Livestream only', 'anchor-schema' ),
+                            'hybrid'    => __( 'In person + livestream', 'anchor-schema' ),
+                        ] as $key => $label ) : ?>
+                            <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $default_modality, $key ); ?>><?php echo esc_html( $label ); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="anchor-event-field anchor-event-field--check">
+                    <label>
+                        <?php
+                        /*
+                         * Hidden companion (Task 4's review): this is the OTHER
+                         * default-true boolean, so an unticked box needs the
+                         * same "always in the POST" fix as the access switch —
+                         * see render_access_fields() below for the full
+                         * rationale. event_authoring_input() already reads this
+                         * key via ! empty(), so no save-path change is needed:
+                         * PHP's last-wins parsing yields 0 unticked, 1 ticked.
+                         */
+                        ?>
+                        <input type="hidden" name="anchor_event_in_person_includes_stream" value="0" />
+                        <input type="checkbox" id="anchor_event_in_person_includes_stream" name="anchor_event_in_person_includes_stream" value="1" <?php checked( $meta['in_person_includes_stream'] ); ?> />
+                        <?php echo esc_html__( 'In-person registrants also get the stream', 'anchor-schema' ); ?>
+                    </label>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_stream_open_before_minutes"><?php echo esc_html__( 'Open the room (minutes before)', 'anchor-schema' ); ?></label>
+                    <input type="number" min="0" step="1" id="anchor_event_stream_open_before_minutes" name="anchor_event_stream_open_before_minutes" value="<?php echo esc_attr( (int) $meta['stream_open_before_minutes'] ); ?>" />
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_stream_close_after_minutes"><?php echo esc_html__( 'Close the room (minutes after)', 'anchor-schema' ); ?></label>
+                    <input type="number" min="0" step="1" id="anchor_event_stream_close_after_minutes" name="anchor_event_stream_close_after_minutes" value="<?php echo esc_attr( (int) $meta['stream_close_after_minutes'] ); ?>" />
+                </div>
+                <?php /* room_url() needs a resolvable stream as well as the
+                         access switch (Task 11), so the Room URL row appears
+                         the moment a stream is saved and never for an ordinary
+                         in-person event — whose attendees still get the role. */ ?>
+                <?php if ( $room !== '' ) : ?>
+                    <div class="anchor-event-field" style="grid-column:1/-1;">
+                        <span class="anchor-event-field-heading"><?php echo esc_html__( 'Room URL', 'anchor-schema' ); ?></span>
+                        <code><?php echo esc_html( $room ); ?></code>
+                        <a class="<?php echo $admin ? 'button' : 'anchor-event-button-secondary'; ?>" href="<?php echo esc_url( $room ); ?>" target="_blank" rel="noopener"><?php echo esc_html__( 'Open room', 'anchor-schema' ); ?></a>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * Prerequisite roles the picker offers, grouped (spec §4.6): the site's own
+     * editable roles, every event role, and every course role — so a past
+     * event or a completed course is a one-click prerequisite.
+     *
+     * Controller ruling (Task 16 fix round 1): an event must never be offered
+     * its OWN role as a prerequisite for itself — picking it would make the
+     * event unregisterable for everyone, since nobody could hold the role
+     * before they have it. $exclude_event_id, when given, drops that one
+     * event's role (`anchor_event_{$exclude_event_id}`) from the Events
+     * group; every other event's role is still offered.
+     *
+     * @param int $exclude_event_id The event this picker is being rendered
+     *                              for, or 0 to exclude nothing (e.g. a
+     *                              brand-new, not-yet-saved event has no own
+     *                              role to exclude yet).
+     * @return array<string,array<string,string>> Group label => slug => name.
+     */
+    public function prerequisite_role_choices( $exclude_event_id = 0 ) {
+        $exclude_event_id = (int) $exclude_event_id;
+        $own_role         = $exclude_event_id > 0 ? 'anchor_event_' . $exclude_event_id : '';
+        $groups           = [
+            __( 'Site roles', 'anchor-schema' ) => [],
+            __( 'Events', 'anchor-schema' )     => [],
+            __( 'Courses', 'anchor-schema' )    => [],
+        ];
+        foreach ( \wp_roles()->role_names as $slug => $name ) {
+            if ( $own_role !== '' && $slug === $own_role ) {
+                continue;
+            }
+            $name = \translate_user_role( $name );
+            if ( \strpos( $slug, 'anchor_event_' ) === 0 ) {
+                $groups[ __( 'Events', 'anchor-schema' ) ][ $slug ] = $name;
+            } elseif ( \strpos( $slug, 'anchor_course_' ) === 0 ) {
+                $groups[ __( 'Courses', 'anchor-schema' ) ][ $slug ] = $name;
+            } elseif ( isset( \get_editable_roles()[ $slug ] ) ) {
+                $groups[ __( 'Site roles', 'anchor-schema' ) ][ $slug ] = $name;
+            }
+        }
+        return \array_filter( $groups );
+    }
+
+    /**
+     * The Access section: the master switch, then the prerequisite roles and
+     * their any/all mode. Both surfaces (spec §7).
+     *
+     * @param int   $event_id
+     * @param array $meta
+     * @param bool  $admin
+     * @return string
+     */
+    public function render_access_fields( $event_id, array $meta, $admin = true ) {
+        $selected = \is_array( $meta['required_roles'] ?? null ) ? $meta['required_roles'] : [];
+        $hint     = $admin ? 'description' : 'anchor-event-hint';
+        // A saved stream IS the opt-in (spec §3.1), so with one saved the
+        // switch is shown checked and locked rather than as a control that
+        // appears to do nothing.
+        $locked = ! empty( $meta['stream_embed']['src'] );
+        $on     = $locked || ! empty( $meta['access_role_enabled'] );
+        \ob_start();
+        ?>
+        <div class="anchor-event-section anchor-event-access" data-step="4">
+            <h3><?php echo esc_html__( 'Access', 'anchor-schema' ); ?></h3>
+            <div class="anchor-event-grid">
+                <div class="anchor-event-field anchor-event-field--check" style="grid-column:1/-1;">
+                    <?php
+                    /*
+                     * The hidden companion, ALWAYS rendered, and always first:
+                     * an unticked checkbox posts nothing, so without this the
+                     * save rule (Task 4) cannot tell "the author unticked it"
+                     * from "this form never carried the control" and has to
+                     * treat both as "leave it alone". PHP takes the last value
+                     * for a repeated name, so hidden-then-checkbox yields 1
+                     * when ticked and 0 when not.
+                     *
+                     * When the switch is locked the checkbox is disabled and
+                     * posts nothing at all, so the hidden input carries the 1.
+                     * (Task 4 would force it true from the saved stream
+                     * regardless; this just keeps the POST honest.)
+                     */
+                    ?>
+                    <input type="hidden" name="anchor_event_access_role_enabled" value="<?php echo $locked ? '1' : '0'; ?>" />
+                    <label>
+                        <input type="checkbox" id="anchor_event_access_role_enabled"
+                            <?php echo $locked ? '' : 'name="anchor_event_access_role_enabled"'; ?>
+                            value="1" <?php checked( $on ); ?> <?php disabled( $locked ); ?> />
+                        <?php echo esc_html__( 'Give confirmed attendees an account and the event role', 'anchor-schema' ); ?>
+                    </label>
+                    <p class="<?php echo esc_attr( $hint ); ?>">
+                        <?php echo esc_html__( 'On by default, for every event. Each confirmed attendee gets an account and the role "Event: {title}" — which is what lets the Private File Manager hand out recordings, handouts and certificates to the people who attended, and what unlocks the livestream room if this event has a stream. An in-person event with no stream still grants the role; it simply has no room.', 'anchor-schema' ); ?>
+                    </p>
+                    <p class="<?php echo esc_attr( $hint ); ?>">
+                        <?php echo esc_html__( 'Turning it off stops new attendees being given the role from now on. It never removes anyone who already has it — to do that, delete the event role on the Basics tab. To give the role to people who registered while it was off, use "Grant role to current attendees" there.', 'anchor-schema' ); ?>
+                    </p>
+                    <?php if ( $locked ) : ?>
+                        <p class="<?php echo esc_attr( $hint ); ?>">
+                            <?php echo esc_html__( 'This event has a stream, so attendee access is required and cannot be switched off here — the room would have nobody who could enter it. Remove the stream first if you need to turn it off.', 'anchor-schema' ); ?>
+                        </p>
+                    <?php endif; ?>
+                </div>
+                <div class="anchor-event-field" style="grid-column:1/-1;">
+                    <p class="<?php echo esc_attr( $hint ); ?>">
+                        <?php echo esc_html__( 'Require somebody to have attended an earlier event, or completed a course, before they can register for this one.', 'anchor-schema' ); ?>
+                    </p>
+                </div>
+                <div class="anchor-event-field" style="grid-column:1/-1;">
+                    <label for="anchor_event_required_roles"><?php echo esc_html__( 'Prerequisites', 'anchor-schema' ); ?></label>
+                    <select id="anchor_event_required_roles" name="anchor_event_required_roles[]" multiple size="8" class="widefat">
+                        <?php foreach ( $this->prerequisite_role_choices( (int) $event_id ) as $group => $roles ) : ?>
+                            <optgroup label="<?php echo esc_attr( $group ); ?>">
+                                <?php foreach ( $roles as $slug => $name ) : ?>
+                                    <option value="<?php echo esc_attr( $slug ); ?>" <?php selected( in_array( $slug, $selected, true ) ); ?>><?php echo esc_html( $name ); ?></option>
+                                <?php endforeach; ?>
+                            </optgroup>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_required_roles_mode"><?php echo esc_html__( 'Require', 'anchor-schema' ); ?></label>
+                    <select id="anchor_event_required_roles_mode" name="anchor_event_required_roles_mode">
+                        <option value="any" <?php selected( $meta['required_roles_mode'], 'any' ); ?>><?php echo esc_html__( 'Any of them', 'anchor-schema' ); ?></option>
+                        <option value="all" <?php selected( $meta['required_roles_mode'], 'all' ); ?>><?php echo esc_html__( 'All of them', 'anchor-schema' ); ?></option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * The "Event role" panel on the console's Basics step (spec §7).
+     *
+     * Read-only except for one destructive action, which is why it is a POST
+     * with a nonce and a confirm dialog rather than a link.
+     *
+     * An event whose master switch is off gets ONE line saying so and pointing
+     * at where to change it (spec §4 preamble) — not an empty panel, which
+     * reads as a bug, and not a role slug, which does not exist.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function render_event_role_panel( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || ! $this->entitlements || ! Roster::current_user_can_manage() ) {
+            return '';
+        }
+        if ( ! $this->entitlements->enabled( $event_id ) ) {
+            return '<div class="anchor-event-field anchor-event-role-panel anchor-event-role-panel--off" style="grid-column:1/-1;">'
+                . '<span class="anchor-event-field-heading">' . \esc_html__( 'Event role', 'anchor-schema' ) . '</span>'
+                . '<p class="anchor-event-hint">'
+                . \esc_html__( 'Attendee access is off for this event — turn it on in Access.', 'anchor-schema' )
+                . '</p></div>';
+        }
+        $slug     = $this->entitlements->role_for( $event_id, false );
+        $redirect = \remove_query_arg( 'event_manager_notice' );
+        \ob_start();
+        ?>
+        <div class="anchor-event-field anchor-event-role-panel" style="grid-column:1/-1;">
+            <span class="anchor-event-field-heading"><?php echo esc_html__( 'Event role', 'anchor-schema' ); ?></span>
+            <?php if ( $slug === '' ) : ?>
+                <p class="anchor-event-hint"><?php echo esc_html__( 'No role yet — one is created the first time somebody is granted access.', 'anchor-schema' ); ?></p>
+            <?php else : ?>
+                <p>
+                    <code><?php echo esc_html( $slug ); ?></code> —
+                    <strong><?php echo esc_html( $this->entitlements->role_name( $event_id ) ); ?></strong>
+                    <?php
+                    $members = $this->entitlements->role_members( $event_id );
+                    printf(
+                        /* translators: %d: number of people holding the role. */
+                        esc_html( _n( '· %d holder', '· %d holders', $members, 'anchor-schema' ) ),
+                        (int) $members
+                    );
+                    ?>
+                </p>
+                <p class="anchor-event-hint"><?php echo esc_html__( 'The role is kept after the event runs, so you can keep granting access later. Deleting it removes it from everyone who holds it.', 'anchor-schema' ); ?></p>
+                <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>"
+                      onsubmit="return confirm('<?php echo esc_js( __( 'Delete this event role and remove it from every holder? This cannot be undone.', 'anchor-schema' ) ); ?>');">
+                    <input type="hidden" name="action" value="anchor_events_delete_role" />
+                    <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
+                    <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
+                    <?php \wp_nonce_field( 'anchor_events_delete_role_' . $event_id ); ?>
+                    <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Delete role', 'anchor-schema' ); ?></button>
+                </form>
+            <?php endif; ?>
+
+            <?php
+            /*
+             * The backfill (spec §4.4) is offered whether or not the role
+             * exists yet: the event that most needs it is one that was already
+             * selling when this shipped, which by definition has no role.
+             * Not destructive and idempotent, so no confirm dialog — running
+             * it twice is a no-op, which is the point.
+             */
+            ?>
+            <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
+                <input type="hidden" name="action" value="anchor_events_backfill_role" />
+                <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
+                <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
+                <?php \wp_nonce_field( 'anchor_events_backfill_role_' . $event_id ); ?>
+                <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Grant role to current attendees', 'anchor-schema' ); ?></button>
+                <span class="anchor-event-hint"><?php echo esc_html__( 'Gives the role (and an account, where they have none) to everyone with a confirmed seat right now. Safe to run more than once.', 'anchor-schema' ); ?></span>
+            </form>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /** Delete an event role (console Basics panel). */
+    public function handle_delete_role() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        \check_admin_referer( 'anchor_events_delete_role_' . $event_id );
+        if ( ! Roster::current_user_can_manage() || \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
+        }
+        $stripped = $this->entitlements ? $this->entitlements->delete_role( $event_id ) : 0;
+        $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \admin_url();
+        \wp_safe_redirect( \add_query_arg( 'anchor_events_role_deleted', (string) $stripped, $redirect ) );
+        exit;
+    }
+
+    /**
+     * Grant the event role to everyone holding a confirmed seat right now
+     * (spec §4.4 "Backfill").
+     *
+     * Same guard/redirect shape as handle_delete_role(), and the count comes
+     * back through the same query-arg notice mechanism.
+     */
+    public function handle_backfill_role() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        \check_admin_referer( 'anchor_events_backfill_role_' . $event_id );
+        if ( ! Roster::current_user_can_manage() || \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
+        }
+        $enabled  = ( $this->entitlements && $this->entitlements->enabled( $event_id ) );
+        $granted  = $enabled ? $this->entitlements->backfill( $event_id ) : 0;
+        $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \admin_url();
+        \wp_safe_redirect( \add_query_arg( [
+            'anchor_events_role_backfilled' => (string) $granted,
+            'anchor_events_role_enabled'    => $enabled ? '1' : '0',
+        ], $redirect ) );
+        exit;
+    }
+
+    /**
+     * The wording for a finished backfill.
+     *
+     * Its own method so the notice reader and the test say the same thing —
+     * and so "nothing happened" can say WHY, which is the difference between
+     * a useful button and a mysterious one.
+     *
+     * @param int  $granted
+     * @param bool $enabled Whether the event's access switch was on.
+     * @return string
+     */
+    public function backfill_notice_message( $granted, $enabled ) {
+        if ( ! $enabled ) {
+            return \__( 'Attendee access is off for this event, so nobody was granted the role. Turn it on in Access first.', 'anchor-schema' );
+        }
+        if ( (int) $granted === 0 ) {
+            return \__( 'Everyone with a confirmed seat already has the event role.', 'anchor-schema' );
+        }
+        return \sprintf(
+            /* translators: %d: number of attendees newly granted the event role. */
+            \_n( '%d attendee was given the event role.', '%d attendees were given the event role.', (int) $granted, 'anchor-schema' ),
+            (int) $granted
+        );
     }
 
     /**
@@ -3597,6 +4063,8 @@ class Module {
                             <th><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Attendance', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Stream override', 'anchor-schema' ); ?></th>
                             <th aria-hidden="true"></th>
                         </tr>
                     </thead>
@@ -3682,6 +4150,8 @@ class Module {
                 </div>
             </div>
 
+            <?php echo $this->render_livestream_fields( $post->ID, $meta, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+
             <div class="anchor-event-section">
                 <h3><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
@@ -3748,6 +4218,8 @@ class Module {
                     </div>
                 </div>
             </div>
+
+            <?php echo $this->render_access_fields( $post->ID, $meta, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="external">
                 <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
@@ -4263,6 +4735,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'order_number'  => '1042',
             'order_url'     => \home_url( '/my-account/view-order/1042/' ),
             'join_link'     => \home_url( '/sample-join-link/' ),
+            'room_link'     => \home_url( '/sample-event/live/?aek=sample' ),
             'event_url'     => $event_id ? (string) \get_permalink( $event_id ) : \home_url(),
             'event_id'      => (string) (int) $event_id,
         ];
@@ -4465,15 +4938,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * The button an event gets when nobody has set one.
      *
-     * Virtual events point at the room, everything else at the event page. Kept
-     * in one place because the builder's field and the renderer must agree —
-     * if they drifted, the preview would show a different button from the one
-     * that sends.
+     * Stream first, then virtual, then the event page (spec §6.2). Kept in one
+     * place because the builder's field and the renderer must agree — if they
+     * drifted, the preview would show a different button from the one that
+     * sends. Public: called by the CTA resolver already in-class and exercised
+     * directly by tests.
      *
      * @param array $fallback Caller's own label/url, used for a non-virtual event.
      */
-    private function default_email_cta( $event_id, array $fallback = [] ) {
+    public function default_email_cta( $event_id, array $fallback = [] ) {
         $meta = $event_id ? $this->get_meta( (int) $event_id ) : [];
+
+        // Stream first (spec §6.2): a hosted room beats a raw provider link,
+        // because the room is where identity, the countdown and the close-out
+        // all live. The URL is the {room_link} TOKEN, not a resolved link —
+        // the CTA is rendered once per recipient and the token expands there.
+        //
+        // room_url() is BOTH conditions in one expression (Task 11): the
+        // access switch is on for this event AND a stream resolves. Since the
+        // switch defaults on, the second half is what keeps this button off an
+        // in-person workshop's confirmation — a plain event falls through to
+        // exactly the button it sends today.
+        if ( $event_id && $this->room_url( (int) $event_id ) !== '' ) {
+            return [ 'label' => __( 'Join the livestream', 'anchor-schema' ), 'url' => '{room_link}' ];
+        }
         if ( ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
             return [
                 'label' => __( 'Join the event', 'anchor-schema' ),
@@ -5150,10 +5638,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                                                re-derives it here from $src,
      *                                                matching the metabox's own
      *                                                behavior.
+     * @param int         $post_id                   0 for an event that does not exist
+     *                                                yet (console "new"); otherwise the id
+     *                                                being saved, so stream_embed_input()/
+     *                                                access_role_enabled_input() can read
+     *                                                what is already stored.
      * @return array The sanitized authoring input, ready for the caller's own
      *               update_post_meta() loop.
      */
-    private function event_authoring_input( array $src, $current_registration_mode, $start_date = null ) {
+    private function event_authoring_input( array $src, $current_registration_mode, $start_date = null, $post_id = 0 ) {
         $input = [
             'start_date' => $start_date !== null ? $start_date : $this->sanitize_date( $src['anchor_event_start_date'] ?? '' ),
             'end_date' => $this->sanitize_date( $src['anchor_event_end_date'] ?? '' ),
@@ -5193,6 +5686,26 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'gallery' => $this->sanitize_gallery_ids( $src['anchor_event_gallery'] ?? '' ),
             'reminder_offsets' => $this->sanitize_offset_csv( $src['anchor_event_reminder_offsets'] ?? '' ),
             'labels' => $this->labels_input( $src ),
+            // Livestream scalars (spec §3.1). Never unslashed above, so they are
+            // already in the slashed domain and must NOT be wp_slash()ed again.
+            //
+            // access_role_enabled is deliberately NOT written here — no Access
+            // UI exists yet, so there is no form field to read. Task 4 adds
+            // access_role_enabled_input() with the real "absent field keeps
+            // the stored value" rule.
+            'stream_default_modality' => $this->sanitize_modality( $src['anchor_event_stream_default_modality'] ?? '' ),
+            // Stored as an int, not the raw bool ! empty(...) produces: this is
+            // the OTHER default-TRUE boolean in get_meta_defaults() (alongside
+            // access_role_enabled), so it shares that key's exact round-trip
+            // bug — WordPress persists a literal `false` back as '', which
+            // get_meta()'s generic defaulting cannot tell apart from "never
+            // written" and would resurrect as TRUE. `0`/`1` survive the round
+            // trip as the strings '0'/'1'. See get_meta()'s docblock comment
+            // for the value-based (not key-name) guard this depends on.
+            'in_person_includes_stream' => ! empty( $src['anchor_event_in_person_includes_stream'] ) ? 1 : 0,
+            'stream_open_before_minutes' => max( 0, (int) ( $src['anchor_event_stream_open_before_minutes'] ?? 15 ) ),
+            'stream_close_after_minutes' => max( 0, (int) ( $src['anchor_event_stream_close_after_minutes'] ?? 30 ) ),
+            'required_roles_mode' => ( ( $src['anchor_event_required_roles_mode'] ?? '' ) === 'all' ) ? 'all' : 'any',
         ];
 
         // Event-type / registration-mode authoring UI (Task 1.3+1.4).
@@ -5200,7 +5713,135 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // forms; no seats/capacity/tiers/product logic here. The one helper
         // both surfaces already shared, folded in here so the two save paths
         // can never drift on how these six keys are sanitized.
-        return array_merge( $input, $this->sanitize_event_type_input( $src, $current_registration_mode ) );
+        $merged = array_merge( $input, $this->sanitize_event_type_input( $src, $current_registration_mode, $post_id ) );
+
+        // Legacy bridge (spec §3.1): a saved stream IS a virtual event, so
+        // Event_Schema::location_fields(), the "Online" email venue line, the
+        // archive badge and the moved_online status all keep working through
+        // the one flag they already read, with no second branch anywhere.
+        if ( ! empty( $merged['stream_embed']['src'] ) ) {
+            $merged['virtual'] = true;
+        }
+
+        // The master switch (spec §2 row 8a / §3.1 / §4 preamble). Task 1
+        // deliberately left this key out of the authoring input; this is where
+        // it joins, with the full rule.
+        //
+        // Stored as an int, not the raw bool access_role_enabled_input()
+        // returns: the caller's generic update_post_meta() loop persists
+        // whatever type lands here, and WordPress round-trips a literal
+        // `false` back as '' — indistinguishable from a key that was never
+        // written, which is exactly the state get_meta() (and this method's
+        // own Step 1, above) must NOT confuse an explicit un-tick with. `0`
+        // survives the round trip as the string '0'; get_meta()'s is_bool()
+        // cast on the default reads it back as false either way.
+        $merged['access_role_enabled'] = $this->access_role_enabled_input( $src, $post_id, $merged ) ? 1 : 0;
+
+        return $merged;
+    }
+
+    /**
+     * Decide `access_role_enabled` for a save (spec §2 row 8a, §3.1, §4).
+     *
+     * TWO STEPS, in this order.
+     *
+     * 1. Did this form carry the control? isset(), NOT empty(): Task 16 renders
+     *    the checkbox with a hidden `value="0"` companion, so every rendered
+     *    authoring form — metabox and console — always posts the field, and
+     *    its PRESENCE is therefore a reliable "a human looked at this switch".
+     *    Present → take it (0 or 1). Absent → keep the stored value, and fall
+     *    back to the default (TRUE) when the event has nothing stored yet.
+     *    That is what makes a partial or programmatic save harmless in both
+     *    directions: it neither resurrects an event the operator switched off
+     *    nor strips the role from attendees who already hold it.
+     *
+     * 2. Force TRUE when this save stores a stream, a virtual/hybrid session,
+     *    or a virtual/hybrid default modality. Checked AFTER the checkbox, so
+     *    saving a stream with the box unticked turns it back on rather than
+     *    shipping a room nobody can be granted access to.
+     *
+     * Turning it off is forward-looking only: nothing here removes a role or
+     * an account. The only thing that strips holders is `Delete role` on the
+     * console's Basics tab, and the backfill (Task 19) is how an operator
+     * re-grants after switching an event back on.
+     *
+     * The event's own `stream_default_modality` counts as a signal because it
+     * IS the modality of the implicit session a `single` event resolves to
+     * (D7 / Module::resolved_sessions()) — "this event is a livestream" is the
+     * same statement whether it is written on a session row or on the event.
+     *
+     * Tiers are NOT read here: they are written by Ticket_Types::save(), which
+     * runs after this and calls enable_access_role() itself.
+     *
+     * @param array $src     Raw $_POST-shaped input.
+     * @param int   $post_id 0 for an event that does not exist yet.
+     * @param array $merged  The sanitised meta about to be written.
+     * @return bool
+     */
+    private function access_role_enabled_input( array $src, $post_id, array $merged ) {
+        $post_id = (int) $post_id;
+
+        // Step 1 — the form's answer, or the stored one.
+        if ( \array_key_exists( 'anchor_event_access_role_enabled', $src ) ) {
+            $enabled = ! empty( $src['anchor_event_access_role_enabled'] )
+                && (string) \wp_unslash( $src['anchor_event_access_role_enabled'] ) !== '0';
+        } else {
+            // get_post_meta() alone can't tell "never written" apart from
+            // "explicitly stored false": WordPress round-trips a stored
+            // boolean `false` back as '' — the exact same read a brand-new
+            // event returns. metadata_exists() answers the question value
+            // comparison can't: did a row ever get written here at all, even
+            // to a falsy value? Only an ACTUALLY missing row takes the
+            // default (TRUE).
+            $key = $this->meta_key( 'access_role_enabled' );
+            if ( $post_id > 0 && \metadata_exists( 'post', $post_id, $key ) ) {
+                $enabled = ! empty( \get_post_meta( $post_id, $key, true ) );
+            } else {
+                $enabled = true;
+            }
+        }
+
+        // Step 2 — the forced-on signals. A stream is useless without the role.
+        if ( ! empty( $merged['stream_embed']['src'] ) ) {
+            return true;
+        }
+        if ( \in_array( (string) ( $merged['stream_default_modality'] ?? '' ), [ 'virtual', 'hybrid' ], true ) ) {
+            return true;
+        }
+        foreach ( (array) ( $merged['sessions'] ?? [] ) as $row ) {
+            if ( \is_array( $row ) && \in_array( (string) ( $row['modality'] ?? '' ), [ 'virtual', 'hybrid' ], true ) ) {
+                return true;
+            }
+            if ( \is_array( $row ) && ! empty( $row['stream_embed']['src'] ) ) {
+                return true;
+            }
+        }
+
+        return $enabled;
+    }
+
+    /**
+     * Turn the master switch on from outside the save path and leave it on.
+     *
+     * For callers that run AFTER save_meta()'s generic update_post_meta() loop
+     * — Ticket_Types::save() is the only one today — so their write cannot be
+     * clobbered by that loop. Read-then-write, never a blind write, so this
+     * can never be the thing that clears it.
+     *
+     * @param int    $event_id
+     * @param string $reason   Free text for the debug log only; not stored.
+     */
+    public function enable_access_role( $event_id, $reason = '' ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            return;
+        }
+        if ( empty( \get_post_meta( $event_id, $this->meta_key( 'access_role_enabled' ), true ) ) ) {
+            // Int, not bool — matches how event_authoring_input() stores this
+            // key (see its comment), so every writer of this meta uses the
+            // same on-disk representation.
+            \update_post_meta( $event_id, $this->meta_key( 'access_role_enabled' ), 1 );
+        }
     }
 
     public function save_meta( $post_id ) {
@@ -5231,7 +5872,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // shared builder both this metabox save and the front-end console's
         // save_event_manager_fields() call; see event_authoring_input()'s
         // docblock.
-        $input = $this->event_authoring_input( $_POST, $current_registration_mode );
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode, null, $post_id );
 
         if ( ! $input['start_date'] ) {
             $this->queue_group_notice( 'missing_start_date', $post_id );
@@ -5457,11 +6098,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /**
      * Shared sanitizer for the event-type / registration-mode authoring fields
-     * (type, registration_mode, sessions, external_url, external_embed,
-     * external_display_price). Called by BOTH save paths — the admin metabox
-     * save_meta() and the front-end manager form handle_event_manager_save()
-     * (Task 1.5) — so the two forms can never drift out of sync on how these
-     * six keys are sanitized.
+     * (type, registration_mode, sessions, stream_embed, external_url,
+     * external_embed, external_display_price). Called by BOTH save paths — the
+     * admin metabox save_meta() and the front-end manager form
+     * handle_event_manager_save() (Task 1.5) — so the two forms can never
+     * drift out of sync on how these keys are sanitized.
      *
      * $src is a raw, NOT-yet-unslashed input array shaped like $_POST; every
      * value is wp_unslash()ed here (esp. external_embed, unslashed BEFORE it
@@ -5485,31 +6126,121 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                                            registration_mode is missing or
      *                                            invalid — see
      *                                            sanitize_registration_mode().
+     * @param int    $post_id                    0 for an event that does not
+     *                                            exist yet (console "new");
+     *                                            otherwise forwarded to
+     *                                            stream_embed_input() so a
+     *                                            refused paste keeps whatever
+     *                                            is already stored instead of
+     *                                            blanking it.
      * @return array{
      *     type: string,
      *     registration_mode: string,
      *     sessions: array,
+     *     stream_embed: array,
      *     external_url: string,
      *     external_embed: string,
      *     external_display_price: string,
      * }
      */
-    private function sanitize_event_type_input( array $src, $registration_mode_fallback ) {
+    private function sanitize_event_type_input( array $src, $registration_mode_fallback, $post_id = 0 ) {
         $sessions_raw = isset( $src['anchor_event_sessions'] ) && is_array( $src['anchor_event_sessions'] )
             ? \wp_unslash( $src['anchor_event_sessions'] )
             : [];
+        $sessions = $this->sanitize_sessions_rows( $sessions_raw );
+
+        // Normalises the event-level embed AND each session override in place,
+        // queuing a notice (and keeping the stored value) for anything refused.
+        $stream_embed = $this->stream_embed_input( $src, (int) $post_id, $sessions );
 
         return \wp_slash( [
             'type' => $this->sanitize_event_type( \wp_unslash( $src['anchor_event_type'] ?? '' ) ),
             'registration_mode' => $this->sanitize_registration_mode( \wp_unslash( $src['anchor_event_registration_mode'] ?? '' ), $registration_mode_fallback ),
-            'sessions' => $this->sanitize_sessions_rows( $sessions_raw ),
+            'sessions' => $sessions,
+            'stream_embed' => $stream_embed,
+            'required_roles' => $this->sanitize_role_slugs( \wp_unslash( $src['anchor_event_required_roles'] ?? [] ) ),
             'external_url' => esc_url_raw( \wp_unslash( $src['anchor_event_external_url'] ?? '' ) ),
-            // Reuses the SAME wp_kses() allowlist sanitizer as the REST write
-            // path (sanitize_external_embed()) so this field is never stored
-            // raw regardless of which save path wrote it.
             'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
             'external_display_price' => sanitize_text_field( \wp_unslash( $src['anchor_event_external_display_price'] ?? '' ) ),
         ] );
+    }
+
+    /**
+     * Normalise the posted stream embeds (spec §3.1/§3.2/§5.4).
+     *
+     * Event level plus one optional override per session row. Every refusal
+     * queues `stream_embed_invalid` and KEEPS whatever is already stored —
+     * blanking an author's working stream because they pasted the wrong thing
+     * into the box is the one outcome that must not happen. An EMPTY field is
+     * not a refusal: it clears the embed, which is how "this session uses the
+     * event's stream" is expressed.
+     *
+     * @param array $src      Raw $_POST-shaped input (still slashed).
+     * @param int   $post_id  0 when the event does not exist yet (console "new").
+     * @param array $sessions Already-sanitised session rows, mutated in place.
+     * @return array The event-level {provider,kind,src,raw}, or [].
+     */
+    private function stream_embed_input( array $src, $post_id, array &$sessions ) {
+        $stored = ( $post_id > 0 ) ? \get_post_meta( $post_id, $this->meta_key( 'stream_embed' ), true ) : [];
+        $stored = \is_array( $stored ) ? $stored : [];
+
+        $event_embed = $this->normalize_one_embed(
+            \wp_unslash( $src['anchor_event_stream_embed'] ?? '' ),
+            $stored,
+            $post_id,
+            ''
+        );
+
+        $raw_rows = isset( $src['anchor_event_sessions'] ) && is_array( $src['anchor_event_sessions'] )
+            ? \wp_unslash( $src['anchor_event_sessions'] )
+            : [];
+        $stored_rows = ( $post_id > 0 ) ? \get_post_meta( $post_id, $this->meta_key( 'sessions' ), true ) : [];
+        $stored_rows = \is_array( $stored_rows ) ? \array_values( $stored_rows ) : [];
+
+        $i = 0;
+        foreach ( \array_values( $raw_rows ) as $row ) {
+            if ( ! \is_array( $row ) || \sanitize_text_field( $row['date'] ?? '' ) === '' ) {
+                continue; // Dropped by sanitize_sessions_rows() too — indexes stay aligned.
+            }
+            if ( ! isset( $sessions[ $i ] ) ) {
+                break;
+            }
+            $prev = ( \is_array( $stored_rows[ $i ]['stream_embed'] ?? null ) ) ? $stored_rows[ $i ]['stream_embed'] : [];
+            $sessions[ $i ]['stream_embed'] = $this->normalize_one_embed(
+                (string) ( $row['stream_embed'] ?? '' ),
+                $prev,
+                $post_id,
+                (string) ( $sessions[ $i ]['label'] !== '' ? $sessions[ $i ]['label'] : $sessions[ $i ]['date'] )
+            );
+            $i++;
+        }
+
+        return $event_embed;
+    }
+
+    /**
+     * One field's worth of the rule above.
+     *
+     * @param string $raw      Author input.
+     * @param array  $previous Currently stored value for this field.
+     * @param int    $post_id  For the queued notice.
+     * @param string $where    '' for the event field, else the session's name.
+     * @return array
+     */
+    private function normalize_one_embed( $raw, array $previous, $post_id, $where ) {
+        $raw = \trim( (string) $raw );
+        if ( $raw === '' ) {
+            return [];
+        }
+        $normalized = Embed::normalize( $raw );
+        if ( \is_wp_error( $normalized ) ) {
+            $detail = $where === ''
+                ? $normalized->get_error_message()
+                : $where . ': ' . $normalized->get_error_message();
+            $this->queue_group_notice( 'stream_embed_invalid', (int) $post_id, $detail );
+            return $previous;
+        }
+        return $normalized;
     }
 
     /**
@@ -5547,6 +6278,44 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Validate a posted modality against the event/session vocabulary.
+     *
+     * A tier may only be in_person|virtual (Ticket_Types::normalize()); this
+     * one also accepts `hybrid`, which is an EVENT/SESSION-level statement
+     * ("both ways to attend exist"), never a price.
+     *
+     * @param mixed  $raw
+     * @param string $fallback Used for an empty or unrecognised value.
+     * @return string One of in_person|virtual|hybrid.
+     */
+    public function sanitize_modality( $raw, $fallback = 'in_person' ) {
+        $valid = [ 'in_person', 'virtual', 'hybrid' ];
+        $value = \sanitize_key( (string) $raw );
+        if ( \in_array( $value, $valid, true ) ) {
+            return $value;
+        }
+        return \in_array( $fallback, $valid, true ) ? $fallback : 'in_person';
+    }
+
+    /**
+     * Sanitize a posted list of role slugs (the prerequisites picker).
+     * sanitize_key() lowercases, which is what WP_Roles keys are.
+     *
+     * @param mixed $raw
+     * @return string[] De-duplicated, re-indexed, empties dropped.
+     */
+    public function sanitize_role_slugs( $raw ) {
+        $out = [];
+        foreach ( (array) $raw as $slug ) {
+            $slug = \sanitize_key( (string) $slug );
+            if ( $slug !== '' && ! \in_array( $slug, $out, true ) ) {
+                $out[] = $slug;
+            }
+        }
+        return $out;
+    }
+
+    /**
      * Sanitize the posted session-repeater rows (Sessions section,
      * data-when-type="multisession"). Rows with an empty date are dropped —
      * mirrors the normalization get_sessions() already applies on read, kept
@@ -5565,12 +6334,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $date === '' ) {
                 continue;
             }
-            $sessions[] = [
+            $row_out = [
                 'date' => $date,
                 'start_time' => \sanitize_text_field( $row['start_time'] ?? '' ),
                 'end_time' => \sanitize_text_field( $row['end_time'] ?? '' ),
                 'label' => \sanitize_text_field( $row['label'] ?? '' ),
             ];
+            // Optional per-session modality. '' is MEANINGFUL: it means "use the
+            // event's stream_default_modality", resolved on read in
+            // get_sessions() — so it is stored as '' rather than defaulted here.
+            $modality = \sanitize_key( (string) ( $row['modality'] ?? '' ) );
+            $row_out['modality'] = \in_array( $modality, [ 'in_person', 'virtual', 'hybrid' ], true ) ? $modality : '';
+            // Per-session embed override. Already a normalized {provider,src,raw}
+            // array by the time it reaches here (Task 4 normalizes the raw input);
+            // anything else is dropped rather than stored half-formed.
+            $embed = $row['stream_embed'] ?? [];
+            $row_out['stream_embed'] = ( \is_array( $embed ) && ! empty( $embed['src'] ) ) ? [
+                'provider' => \sanitize_key( (string) ( $embed['provider'] ?? '' ) ),
+                'kind'     => ( ( $embed['kind'] ?? 'iframe' ) === 'link' ) ? 'link' : 'iframe',
+                'src'      => \esc_url_raw( (string) $embed['src'] ),
+                'raw'      => \sanitize_textarea_field( (string) ( $embed['raw'] ?? '' ) ),
+            ] : [];
+            $sessions[] = $row_out;
         }
         return $sessions;
     }
@@ -6346,6 +7131,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'level' => 'warning',
                 'message' => \__( 'Some Bcc addresses were not valid email addresses and were not saved.', 'anchor-schema' ),
             ],
+            // Not a guard: the rest of the save went through. The refused field
+            // kept the value it already had — see normalize_one_embed().
+            'stream_embed_invalid' => [
+                'level' => 'warning',
+                'message' => \__( 'That stream link was not recognised, so the previous stream was kept. Paste a Vimeo, YouTube or Zoom link (or the provider\'s iframe embed code).', 'anchor-schema' ),
+            ],
         ];
     }
 
@@ -6890,11 +7681,94 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $this->assets_enqueued = true;
     }
 
+    /** Room-only assets. Enqueued from templates/live-event.php. */
+    public function enqueue_room_assets() {
+        $this->enqueue_frontend_assets();
+        \wp_enqueue_style(
+            'anchor-events-room',
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/room.css' ),
+            [ 'anchor-events-frontend' ],
+            $this->asset_version( 'anchor-events-manager/assets/room.css' )
+        );
+        \wp_enqueue_script(
+            'anchor-events-room',
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/room.js' ),
+            [ 'jquery' ],
+            $this->asset_version( 'anchor-events-manager/assets/room.js' ),
+            true
+        );
+        \wp_localize_script( 'anchor-events-room', 'ANCHOR_EVENTS_ROOM', [
+            'restUrl'     => \rest_url( self::REST_NS . '/events/' ),
+            'nonce'       => \wp_create_nonce( 'wp_rest' ),
+            'eventId'     => (int) \get_the_ID(),
+            'pollSeconds' => 300,
+            'i18n'        => [
+                'refresh' => \__( 'Something went wrong. Refresh the page.', 'anchor-schema' ),
+                'now'     => \__( 'now', 'anchor-schema' ),
+            ],
+        ] );
+    }
+
+    /**
+     * Register this module's REST routes (spec §5.6). Deviation D10: this
+     * module registered none before this task.
+     */
+    public function register_rest_routes() {
+        \register_rest_route( self::REST_NS, '/events/(?P<id>\d+)/room', [
+            'methods'  => 'GET',
+            'args'     => [ 'id' => [ 'required' => true, 'validate_callback' => static function ( $v ) {
+                return \is_numeric( $v ) && (int) $v > 0;
+            } ] ],
+            // Cookie auth only. The room is per-person, so an anonymous or
+            // application-password caller has no business here.
+            'permission_callback' => static function () {
+                return \is_user_logged_in()
+                    ? true
+                    : new \WP_Error( 'rest_forbidden', \__( 'Sign in to join.', 'anchor-schema' ), [ 'status' => 401 ] );
+            },
+            'callback' => [ $this, 'rest_room' ],
+        ] );
+    }
+
+    /**
+     * The room's state block, re-decided server-side. The embed is in the
+     * response ONLY when the window is open — that is the whole reason this
+     * endpoint exists rather than shipping the URL in the page.
+     *
+     * @param \WP_REST_Request $request
+     * @return \WP_REST_Response|\WP_Error
+     */
+    public function rest_room( $request ) {
+        $event_id = (int) $request['id'];
+        // room_url(), the one definition of "has a room": an event with no
+        // stream, one whose switch is off, an external-registration event and
+        // a group parent all have nothing to report, and 404 is the honest
+        // answer for all four. This is what Task 9b's suite asserts for both a
+        // plain event and a switched-off one.
+        if ( \get_post_type( $event_id ) !== self::CPT || $this->room_url( $event_id ) === '' ) {
+            return new \WP_Error( 'anchor_events_room_missing', \__( 'No room for that event.', 'anchor-schema' ), [ 'status' => 404 ] );
+        }
+        $state = Stream_State::for_event( $event_id );
+        if ( ! $this->entitlements || ! $this->entitlements->can_access_stream( $event_id, (int) $state['session_index'], 0 ) ) {
+            return new \WP_Error( 'anchor_events_room_denied', \__( 'This account is not registered for this event.', 'anchor-schema' ), [ 'status' => 403 ] );
+        }
+        $response = new \WP_REST_Response( [
+            'state'         => (string) $state['state'],
+            'session_index' => (int) $state['session_index'],
+            'target_ts'     => (int) $state['target_ts'],
+            'server_now'    => \time(),
+            'html'          => $this->room_state_block( $event_id, $state ),
+        ] );
+        $response->header( 'Cache-Control', 'private, no-store, max-age=0' );
+        return $response;
+    }
+
     public function columns( $columns ) {
         $columns['anchor_event_start'] = __( 'Start Date', 'anchor-schema' );
         $columns['anchor_event_status'] = __( 'Status', 'anchor-schema' );
         $columns['anchor_event_venue'] = __( 'Venue', 'anchor-schema' );
         $columns['anchor_event_capacity'] = __( 'Capacity', 'anchor-schema' );
+        $columns['anchor_event_live'] = __( 'Live', 'anchor-schema' );
         return $columns;
     }
 
@@ -6912,6 +7786,36 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 break;
             case 'anchor_event_capacity':
                 echo esc_html( $meta['capacity'] ? $meta['capacity'] : '-' );
+                break;
+            case 'anchor_event_live':
+                // room_url(), not enabled(): since the switch defaults on,
+                // enabled() is true for nearly every event in this list and
+                // would put a state on every in-person row. The column is
+                // about the ROOM, so it asks the one question that means
+                // "there is a room", and Stream_State is never asked about an
+                // event that has none.
+                if ( $this->room_url( $post_id ) === '' ) {
+                    echo '&mdash;';
+                    break;
+                }
+                $state = Stream_State::for_event( $post_id );
+                $label = [
+                    Stream_State::UNAVAILABLE => __( 'in person', 'anchor-schema' ),
+                    Stream_State::PENDING     => __( 'no stream yet', 'anchor-schema' ),
+                    Stream_State::LIVE        => __( 'LIVE', 'anchor-schema' ),
+                    Stream_State::ENDED       => __( 'ended', 'anchor-schema' ),
+                ][ $state['state'] ] ?? '';
+                if ( in_array( $state['state'], [ Stream_State::COUNTDOWN, Stream_State::BETWEEN ], true ) ) {
+                    $label = sprintf(
+                        /* translators: %s: human time difference, e.g. "3 days". */
+                        __( 'countdown in %s', 'anchor-schema' ),
+                        human_time_diff( time(), (int) $state['target_ts'] )
+                    );
+                }
+                $room = $this->room_url( $post_id );
+                echo $room !== ''
+                    ? '<a href="' . esc_url( $room ) . '">' . esc_html( $label ) . '</a>'
+                    : esc_html( $label );
                 break;
         }
     }
@@ -6988,6 +7892,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function template_include( $template ) {
+        if ( $this->is_room_request() ) {
+            return $this->locate_template( 'live-event.php' );
+        }
         if ( \is_singular( self::CPT ) ) {
             return $this->locate_template( 'single-event.php' );
         }
@@ -6998,6 +7905,277 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $this->locate_template( 'taxonomy-event_series.php' );
         }
         return $template;
+    }
+
+    /** Register the room endpoint. EP_PERMALINK = singular post URLs only. */
+    public function register_room_endpoint() {
+        \add_rewrite_endpoint( 'live', EP_PERMALINK );
+    }
+
+    /**
+     * Flush rewrites when the room endpoint's signature changes.
+     *
+     * Same shape as Anchor_Locations::maybe_flush(): a stored signature, no
+     * activation hook (Plugin Update Checker upgrades never fire one), and a
+     * non-hard flush so .htaccess is left alone.
+     */
+    public function maybe_flush_rewrites() {
+        $sig = 'live|v1|' . ( $this->get_settings()['event_slug'] ?? '' );
+        if ( \get_option( 'anchor_events_rw_sig' ) !== $sig ) {
+            $this->register_room_endpoint();
+            \flush_rewrite_rules( false );
+            \update_option( 'anchor_events_rw_sig', $sig, false );
+        }
+    }
+
+    /**
+     * Is this request the room? Checked on the QUERY VAR's PRESENCE, not its
+     * value: an endpoint with no trailing value resolves to '' and
+     * get_query_var('live') cannot tell that from "absent".
+     *
+     * @return bool
+     */
+    public function is_room_request() {
+        global $wp_query;
+        return \is_singular( self::CPT )
+            && $wp_query instanceof \WP_Query
+            && \array_key_exists( 'live', (array) $wp_query->query_vars );
+    }
+
+    /**
+     * The room URL for an event, or '' when the event has no room.
+     *
+     * TWO conditions, and both are load-bearing since the switch's default
+     * became true (spec §4 preamble):
+     *   - Entitlements::enabled() — the event is in the access feature at all
+     *     (registration mode wc/free, not a group parent, switch on);
+     *   - has_stream() — something actually resolves to watch.
+     * A plain in-person event passes the first and fails the second: its
+     * attendees hold the event role and there is no room.
+     *
+     * '' is how every caller learns that — the metabox prints no Room URL, the
+     * Live column prints a dash, the REST endpoint 404s, Event_Schema falls
+     * back to virtual_url or the permalink, and room_url_for() mints no
+     * sign-in token. This method is THE definition of "has a room"; no caller
+     * re-derives it.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function room_url( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( ! $this->entitlements || ! $this->entitlements->enabled( $event_id ) ) {
+            return '';
+        }
+        if ( ! $this->has_stream( $event_id ) ) {
+            return '';
+        }
+        $permalink = (string) \get_permalink( $event_id );
+        if ( $permalink === '' ) {
+            return '';
+        }
+        // The Global Constraint's trailingslashit()+'live/' form is the
+        // PRETTY-permalink shape of the EP_PERMALINK endpoint. It only works
+        // when the permalink has a path to append the segment to. A plain
+        // permalink (Plain permalink setting, or any CPT URL WordPress never
+        // rewrote) is itself a query string — trailingslashit() on that
+        // yields '?event=slug/live/', which sets no query var at all, so
+        // is_room_request() could never be true for it. add_rewrite_endpoint()
+        // also registers 'live' as a public query var for exactly this case,
+        // so '?event=slug&live=1' resolves the same request the pretty form
+        // does; is_room_request() routes on that var's PRESENCE either way.
+        if ( \strpos( $permalink, '?' ) !== false ) {
+            return \add_query_arg( 'live', '1', $permalink );
+        }
+        return \trailingslashit( $permalink ) . 'live/';
+    }
+
+    /**
+     * Does any of this event's sessions resolve to a stream to watch?
+     *
+     * The second half of "has a room". Kept separate from enabled() because
+     * the two answer different questions and the default-true switch made
+     * that difference load-bearing (spec §4 preamble): a plain in-person
+     * event IS enabled — its attendees hold the event role — and still has
+     * nothing to show at /live/.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function has_stream( $event_id ) {
+        foreach ( $this->resolved_sessions( (int) $event_id ) as $row ) {
+            if ( ! empty( $row['stream_embed']['src'] ) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The room-request header/redirect DECISION, as pure data — no header(),
+     * nocache_headers() or exit calls — so it is unit-testable without a real
+     * HTTP response. room_headers() is the thin wrapper that applies it.
+     *
+     * Empty (all defaults, 'redirect' === '') when this isn't a room request
+     * at all — room_headers() has nothing to do on any other page. A non-''
+     * 'redirect' means "302 there instead of rendering": an
+     * external-registration event, a group parent (its dates each have their
+     * own room), an event whose access switch is off, or — the common case
+     * now that the switch defaults on — an ordinary in-person event with no
+     * stream. All four are "this URL is not a page". One predicate for all
+     * of them: room_url() is the definition.
+     *
+     * @param int $event_id
+     * @return array{headers:array<string,string>,nocache:bool,redirect:string}
+     */
+    public function room_header_list( $event_id ) {
+        if ( ! $this->is_room_request() ) {
+            return [ 'headers' => [], 'nocache' => false, 'redirect' => '' ];
+        }
+        $event_id = (int) $event_id;
+        if ( $this->room_url( $event_id ) === '' ) {
+            // nocache on the redirect too (final review I6): a page cache
+            // must not pin a "no room here" 302 onto an event that later
+            // gains a stream.
+            return [
+                'headers'  => [],
+                'nocache'  => true,
+                'redirect' => (string) \get_permalink( $event_id ),
+            ];
+        }
+        return [
+            'headers' => [
+                'Cache-Control' => 'private, no-store, max-age=0',
+                'X-Robots-Tag'  => 'noindex, nofollow',
+            ],
+            'nocache'  => true,
+            'redirect' => '',
+        ];
+    }
+
+    /**
+     * The `?aek=` one-click sign-in DECISION for a room request, as pure data
+     * — the same split as room_header_list(): room_headers() applies it, and
+     * tests assert it without a real HTTP response.
+     *
+     *   - No token in the URL, not a room request, or no room: nothing.
+     *   - LOGGED OUT with a valid token: sign that user in, then 302 to the
+     *     clean room URL.
+     *   - LOGGED OUT with a bad or expired token: no redirect, a notice for
+     *     the sign-in form.
+     *   - LOGGED IN with any token: 302 to the clean room URL and sign NO
+     *     ONE in — a token never switches an already-signed-in account, and
+     *     the arg is stripped so it never lingers in the address bar, browser
+     *     history, a Referer header or an analytics hit (final review I6).
+     *
+     * Every redirect is uncached (I6): the response to a URL carrying a
+     * sign-in token must never be stored by a page cache or proxy.
+     *
+     * @param int $event_id
+     * @return array{redirect:string,nocache:bool,sign_in:int,notice:string}
+     */
+    public function room_token_decision( $event_id ) {
+        $none = [ 'redirect' => '', 'nocache' => false, 'sign_in' => 0, 'notice' => '' ];
+        if ( ! $this->is_room_request() || empty( $_GET[ Entitlements::TOKEN_ARG ] ) || ! $this->entitlements ) {
+            return $none;
+        }
+        $event_id = (int) $event_id;
+        $room     = $this->room_url( $event_id );
+        if ( $room === '' ) {
+            return $none; // room_header_list() redirects to the event page.
+        }
+        if ( \is_user_logged_in() ) {
+            return [ 'redirect' => $room, 'nocache' => true, 'sign_in' => 0, 'notice' => '' ];
+        }
+        $token   = \sanitize_text_field( \wp_unslash( $_GET[ Entitlements::TOKEN_ARG ] ) );
+        $user_id = $this->entitlements->verify_login_token( $token, $event_id );
+        if ( $user_id > 0 ) {
+            return [ 'redirect' => $room, 'nocache' => true, 'sign_in' => $user_id, 'notice' => '' ];
+        }
+        return [
+            'redirect' => '',
+            'nocache'  => false,
+            'sign_in'  => 0,
+            'notice'   => \__( 'That sign-in link has expired. Sign in below, or ask us for a new link.', 'anchor-schema' ),
+        ];
+    }
+
+    /**
+     * The one way room_headers() leaves: nocache first (guarded — see the
+     * headers_sent() note in room_headers()), then the 302, then exit.
+     *
+     * @param string $url
+     * @param bool   $nocache
+     */
+    private function room_redirect( $url, $nocache ) {
+        if ( $nocache && ! \headers_sent() ) {
+            \nocache_headers();
+        }
+        \wp_safe_redirect( $url, 302 );
+        exit;
+    }
+
+    /**
+     * Private, uncacheable, unindexed — and a parent redirects to itself
+     * (its dates each have their own room). Applies room_header_list()'s
+     * decision, and — since Task 13 — also carries the aek one-click
+     * sign-in branch: it does have logic of its own now, not just the
+     * decision's headers/redirect.
+     */
+    public function room_headers() {
+        if ( ! $this->is_room_request() ) {
+            return;
+        }
+        $event_id = (int) \get_queried_object_id();
+
+        // One-click sign-in (spec §6.2) — see room_token_decision(). It runs
+        // BEFORE the roomless/entitlement decision below so a valid link
+        // signs the visitor in and lands them on the clean room URL rather
+        // than being bounced by a guard that has no idea a token was even
+        // presented.
+        $token = $this->room_token_decision( $event_id );
+        if ( $token['sign_in'] > 0 ) {
+            $user = \get_userdata( $token['sign_in'] );
+            \wp_set_current_user( $token['sign_in'] );
+            \wp_set_auth_cookie( $token['sign_in'], false );
+            // A token sign-in is a sign-in: session limiters, audit logs and
+            // last-login trackers all listen here (final review minor).
+            \do_action( 'wp_login', $user->user_login, $user );
+        }
+        if ( $token['redirect'] !== '' ) {
+            $this->room_redirect( $token['redirect'], $token['nocache'] );
+        }
+        if ( $token['notice'] !== '' ) {
+            // Invalid or expired: fall through to the sign-in form. This
+            // visitor is logged OUT, so anchor_events_room_denied_message
+            // (applied only in render_room()'s logged-IN-but-not-entitled
+            // branch) would never reach them — record it instead, for
+            // render_room()'s logged-out branch to print above the form.
+            $this->room_login_notice = $token['notice'];
+        }
+
+        $decision = $this->room_header_list( $event_id );
+        if ( $decision['redirect'] !== '' ) {
+            $this->room_redirect( $decision['redirect'], $decision['nocache'] );
+        }
+        // headers_sent() guard: under the PHPUnit CLI SAPI (and any other
+        // context where output has already started) header()/nocache_headers()
+        // would emit "headers already sent" warnings. Skipping them there is
+        // also a legitimate production guard — a theme or plugin that has
+        // already flushed output shouldn't get a fatal-adjacent warning for
+        // a best-effort cache header. The redirect/exit path above and the
+        // wp_head robots-meta hook below are unaffected either way.
+        if ( ! \headers_sent() ) {
+            if ( $decision['nocache'] ) {
+                \nocache_headers();
+            }
+            foreach ( $decision['headers'] as $name => $value ) {
+                \header( $name . ': ' . $value, true );
+            }
+        }
+        \add_action( 'wp_head', static function () {
+            echo '<meta name="robots" content="noindex, nofollow" />' . "\n";
+        }, 1 );
     }
 
     private function locate_template( $file ) {
@@ -7503,8 +8681,32 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * group_notice_map(), the same map admin_notices() renders.
      */
     private function render_event_manager_notice() {
+        // The Basics "Event role" panel's two actions (Task 19) redirect with
+        // their own query args rather than folding into the comma-separated
+        // event_manager_notice vocabulary below, because one of them (the
+        // backfill) carries a count that has to be interpolated into the
+        // sentence, not selected from a fixed map.
+        $out = '';
+        if ( isset( $_GET['anchor_events_role_deleted'] ) ) {
+            $stripped = (int) $_GET['anchor_events_role_deleted'];
+            $message  = $stripped > 0
+                ? sprintf(
+                    /* translators: %d: number of people the role was removed from. */
+                    _n( 'Event role deleted. Removed from %d holder.', 'Event role deleted. Removed from %d holders.', $stripped, 'anchor-schema' ),
+                    $stripped
+                )
+                : __( 'There was no role to delete.', 'anchor-schema' );
+            $out .= '<div class="anchor-event-manager-notice is-ok">' . esc_html( $message ) . '</div>';
+        }
+        if ( isset( $_GET['anchor_events_role_backfilled'] ) ) {
+            $granted = (int) $_GET['anchor_events_role_backfilled'];
+            $enabled = isset( $_GET['anchor_events_role_enabled'] ) && (string) $_GET['anchor_events_role_enabled'] !== '0';
+            $class   = $enabled ? 'is-ok' : 'is-warning';
+            $out    .= '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $this->backfill_notice_message( $granted, $enabled ) ) . '</div>';
+        }
+
         if ( empty( $_GET['event_manager_notice'] ) ) {
-            return '';
+            return $out;
         }
         $map = [
             'saved'   => [ 'ok',  __( 'Event saved.', 'anchor-schema' ) ],
@@ -7524,7 +8726,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         $raw = sanitize_text_field( wp_unslash( $_GET['event_manager_notice'] ) );
-        $out = '';
         foreach ( array_unique( array_filter( array_map( 'trim', explode( ',', $raw ) ) ) ) as $notice ) {
             if ( ! isset( $map[ $notice ] ) ) {
                 continue;
@@ -7977,6 +9178,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                             <option value="private" <?php selected( $status, 'private' ); ?>><?php echo esc_html__( 'Private', 'anchor-schema' ); ?></option>
                         </select>
                     </div>
+                    <?php if ( $is_edit ) : ?>
+                        <?php echo $this->render_event_role_panel( $event_id ); ?>
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -8057,6 +9261,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                             <th><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Attendance', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Stream override', 'anchor-schema' ); ?></th>
                             <th aria-hidden="true"></th>
                         </tr>
                     </thead>
@@ -8117,6 +9323,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 </div>
             </div>
 
+            <?php echo $this->render_livestream_fields( $event_id, $meta, false ); // already escaped ?>
+
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Whether people can still sign up. Closing it keeps the event page online but takes the sign-up form off it.', 'anchor-schema' ); ?></p>
@@ -8152,6 +9360,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 </div>
 
             </div>
+
+            <?php echo $this->render_access_fields( $event_id, $meta, false ); // already escaped ?>
 
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>
@@ -8694,7 +9904,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // save_meta() call; see event_authoring_input()'s docblock. $start_date
         // is passed through (already sanitized from this same $_POST key by
         // handle_event_manager_save(), before the post itself existed).
-        $input = $this->event_authoring_input( $_POST, $current_registration_mode, $start_date );
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode, $start_date, $saved_id );
 
         $status_raw = sanitize_text_field( $_POST['anchor_event_status'] ?? 'auto' );
         if ( $status_raw === 'auto' ) {
@@ -9122,6 +10332,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'registration_success' => __( 'Registration received.', 'anchor-schema' ),
             'registration_waitlisted' => __( 'This event is full — you have been added to the waitlist. We will be in touch if a seat opens up.', 'anchor-schema' ),
             'registration_closed' => __( 'Registration is closed for this event.', 'anchor-schema' ),
+            'registration_prerequisite' => Entitlements::default_prerequisite_message(),
             'registration_invalid' => __( 'Please complete all required registration fields.', 'anchor-schema' ),
             'registration_error' => __( 'Registration could not be processed. Please try again.', 'anchor-schema' ),
         ];
@@ -9158,8 +10369,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $is_linked = ( $this->woocommerce && $this->woocommerce->event_is_linked( $post_id ) );
 
         if ( empty( $meta['registration_enabled'] ) && ! $is_linked ) {
-            // Informational public event — nothing gated behind the link.
+            // Informational public event — nothing is gated behind the link, so
+            // it stays visible to everyone. DELIBERATELY kept ahead of the
+            // delegation below: can_access_stream() answers false for a
+            // logged-out visitor, and this branch is precisely the case where
+            // that is the wrong answer.
             return true;
+        }
+
+        // An event WITH a room: the ONE access question (spec §4.5), so the
+        // event page's "Join here" and the room can never disagree.
+        //
+        // An event with NO room keeps the pre-room seat check below (final
+        // review I2). can_access_stream() needs the role, a confirmed seat
+        // and a resolvable embed; delegating unconditionally took the link
+        // away from registrants who predate the role (nobody backfilled
+        // them), from pending seats (which have always seen it), and from
+        // every event whose virtual_url is on a host the embed allowlist
+        // does not know (Teams, Meet, Webex …) — none of which has a room
+        // for the room's answer to agree with in the first place.
+        if ( $this->entitlements && $this->room_url( $post_id ) !== '' ) {
+            return $this->entitlements->can_access_stream( $post_id, 0, 0 );
         }
 
         if ( Roster::current_user_can_manage() ) {
@@ -9209,6 +10439,177 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output .= $rendered_content;
 
         return $output;
+    }
+
+    /**
+     * The "View the event page" link the room prints in every branch that
+     * has nothing else to show (denied, in-person/UNAVAILABLE, ENDED) —
+     * factored out so the three copies can't drift.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    private function event_page_link( $event_id ) {
+        return '<a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
+            . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a>';
+    }
+
+    /**
+     * The room's body. Three branches (spec §5.5): locked-out, denied, entitled.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function render_room( $event_id ) {
+        $event_id = (int) $event_id;
+        $title    = \get_the_title( $event_id );
+
+        if ( ! \is_user_logged_in() ) {
+            /**
+             * The notice shown above the sign-in form when a rejected
+             * (invalid or expired) one-click token brought this logged-out
+             * visitor here (spec §6.2). room_headers() is what sets the
+             * value this starts from; '' the rest of the time, which prints
+             * nothing. Kept as its own filter — not
+             * anchor_events_room_denied_message — because that one only
+             * ever runs in the logged-IN-but-not-entitled branch below and
+             * would never reach a logged-out visitor.
+             *
+             * @param string $message
+             * @param int    $event_id
+             */
+            $login_notice = (string) \apply_filters( 'anchor_events_room_login_notice', $this->room_login_notice, $event_id );
+            $notice_html  = $login_notice === '' ? '' : '<p class="anchor-room-notice" role="status">' . \esc_html( $login_notice ) . '</p>';
+
+            \ob_start();
+            \wp_login_form( [ 'redirect' => $this->room_url( $event_id ), 'echo' => true ] );
+            $form = (string) \ob_get_clean();
+            return '<div class="anchor-room anchor-room--locked">'
+                . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
+                . '<p class="anchor-room-lede">' . \esc_html__( 'Sign in to join', 'anchor-schema' ) . '</p>'
+                . $notice_html
+                . $form
+                . '<p class="anchor-room-hint">' . \esc_html__( 'Registered but no account? Use the link in your confirmation email.', 'anchor-schema' ) . '</p>'
+                . '</div>';
+        }
+
+        $state = Stream_State::for_event( $event_id );
+        if ( ! $this->entitlements || ! $this->entitlements->can_access_stream( $event_id, (int) $state['session_index'], 0 ) ) {
+            $default = \__( "This account isn't registered for this event.", 'anchor-schema' );
+            /**
+             * The wording shown to a signed-in visitor with no entitlement.
+             *
+             * @param string $message
+             * @param int    $event_id
+             */
+            $message = (string) \apply_filters( 'anchor_events_room_denied_message', $default, $event_id );
+            // wp_kses_post(), not esc_html(): a filter is free to hand back a
+            // short HTML fragment (e.g. a link), and esc_html() would also
+            // entity-encode a plain apostrophe in the default copy above.
+            return '<div class="anchor-room anchor-room--denied">'
+                . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
+                . '<p class="anchor-room-lede">' . \wp_kses_post( $message ) . '</p>'
+                . '<p>' . $this->event_page_link( $event_id ) . '</p>'
+                . '<p class="anchor-room-hint">' . \esc_html__( 'Registered under a different email? Contact us.', 'anchor-schema' ) . '</p>'
+                . '</div>';
+        }
+
+        $staff = '';
+        if ( Roster::current_user_can_manage() ) {
+            $staff = '<p class="anchor-room-staff">'
+                . '<a href="' . \esc_url( \add_query_arg( 'anchor_room_preview', '1', $this->room_url( $event_id ) ) ) . '">'
+                . \esc_html__( 'Preview as attendee', 'anchor-schema' ) . '</a> · '
+                . '<a href="' . \esc_url( $this->roster->roster_url( $event_id ) ) . '">'
+                . \esc_html__( 'Open event console', 'anchor-schema' ) . '</a></p>';
+        }
+
+        return '<div class="anchor-room anchor-room--open">'
+            . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
+            . $this->room_state_block( $event_id, $state )
+            . $this->render_room_schedule( $event_id, $state )
+            . $staff
+            . '</div>';
+    }
+
+    /**
+     * The one block the REST endpoint re-renders (spec §5.6). Carries the
+     * countdown's target and the server clock so room.js can correct for skew.
+     *
+     * @param int   $event_id
+     * @param array $state Stream_State result.
+     * @return string
+     */
+    public function room_state_block( $event_id, array $state ) {
+        $copy = [
+            Stream_State::UNAVAILABLE => \__( 'This event is in person.', 'anchor-schema' ),
+            Stream_State::PENDING     => \__( 'Stream details will appear here before the session.', 'anchor-schema' ),
+            Stream_State::COUNTDOWN   => \__( "You're registered. The stream opens in", 'anchor-schema' ),
+            Stream_State::LIVE        => \__( 'Live now', 'anchor-schema' ),
+            Stream_State::BETWEEN     => \__( 'This session has ended. The next one starts in', 'anchor-schema' ),
+            Stream_State::ENDED       => \__( 'This session has ended.', 'anchor-schema' ),
+        ];
+        $state_key = (string) $state['state'];
+
+        $body = '';
+        if ( $state_key === Stream_State::LIVE && ! empty( $state['embed'] ) ) {
+            $body = Embed::render( (array) $state['embed'], (string) \get_the_title( $event_id ) );
+        } elseif ( \in_array( $state_key, [ Stream_State::COUNTDOWN, Stream_State::BETWEEN ], true ) ) {
+            $body = '<p class="anchor-room-countdown" role="timer" aria-live="polite"></p>';
+        } elseif ( $state_key === Stream_State::UNAVAILABLE ) {
+            $meta = $this->get_meta( $event_id );
+            $body = $meta['venue'] !== ''
+                ? '<p class="anchor-room-venue">' . \esc_html( $meta['venue'] ) . '</p>'
+                : '';
+            $body .= '<p>' . $this->event_page_link( $event_id ) . '</p>';
+        } elseif ( $state_key === Stream_State::ENDED ) {
+            $body = '<p>' . $this->event_page_link( $event_id ) . '</p>';
+        }
+
+        return '<div class="anchor-room-state" data-state="' . \esc_attr( $state_key ) . '"'
+            . ' data-event-id="' . (int) $event_id . '"'
+            . ' data-session-index="' . (int) $state['session_index'] . '"'
+            . ' data-target-ts="' . (int) $state['target_ts'] . '"'
+            . ' data-server-now="' . (int) \time() . '">'
+            . '<p class="anchor-room-status">' . \esc_html( $copy[ $state_key ] ?? '' ) . '</p>'
+            . $body
+            . '</div>';
+    }
+
+    /**
+     * The schedule list: each session's label, local time in the event's zone,
+     * and a modality badge. The live one is marked.
+     *
+     * @param int   $event_id
+     * @param array $state
+     * @return string
+     */
+    private function render_room_schedule( $event_id, array $state ) {
+        $sessions = $this->resolved_sessions( $event_id );
+        if ( \count( $sessions ) < 1 ) {
+            return '';
+        }
+        $meta   = $this->get_meta( $event_id );
+        $tz     = $this->event_timezone( $meta );
+        $badges = [
+            'in_person' => \__( 'In person', 'anchor-schema' ),
+            'virtual'   => \__( 'Livestream', 'anchor-schema' ),
+            'hybrid'    => \__( 'In person + livestream', 'anchor-schema' ),
+        ];
+
+        $out = '<ol class="anchor-room-schedule">';
+        foreach ( $sessions as $i => $row ) {
+            $is_live = ( (string) $state['state'] === Stream_State::LIVE && (int) $state['session_index'] === (int) $i );
+            $when    = $row['start_ts']
+                ? \wp_date( \get_option( 'date_format' ) . ' ' . \get_option( 'time_format' ), (int) $row['start_ts'], $tz )
+                : '';
+            $out .= '<li class="anchor-room-session' . ( $is_live ? ' is-live' : '' ) . '">'
+                . '<span class="anchor-room-session-label">' . \esc_html( $row['label'] !== '' ? $row['label'] : \get_the_title( $event_id ) ) . '</span> '
+                . '<time datetime="' . \esc_attr( \gmdate( 'c', (int) $row['start_ts'] ) ) . '">' . \esc_html( $when ) . '</time> '
+                . '<span class="anchor-room-badge anchor-room-badge--' . \esc_attr( $row['modality'] ) . '">'
+                . \esc_html( $badges[ $row['modality'] ] ?? '' ) . '</span>'
+                . '</li>';
+        }
+        return $out . '</ol>';
     }
 
     /**
@@ -9464,6 +10865,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         if ( $status === 'full' ) {
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'This event is full.', 'anchor-schema' ) . '</div>';
+        }
+        if ( $status === 'prerequisite' ) {
+            $message = $this->entitlements ? $this->entitlements->prerequisite_message( $post_id ) : '';
+            return '<div class="anchor-event-registration anchor-event-registration-blocked">'
+                . '<p class="anchor-event-notice">' . esc_html( $message ) . '</p>'
+                . ( \is_user_logged_in() ? '' : '<p><a class="anchor-event-button" href="'
+                    . esc_url( \wp_login_url( \get_permalink( $post_id ) ) ) . '">'
+                    . esc_html__( 'Sign in', 'anchor-schema' ) . '</a></p>' )
+                . '</div>';
         }
         $notice = '';
         if ( $status === 'waitlist' ) {
@@ -9874,6 +11284,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 ? \__( 'Date passed', 'anchor-schema' )
                 : \__( 'Registration closed', 'anchor-schema' );
         }
+        if ( $state === 'prerequisite' ) {
+            // Same short, badge-style vocabulary as the rest of this hint —
+            // is_bookable() already keeps the CTA beside it on "Details"
+            // (Occurrences::picker_state()), so this is the piece that used to
+            // fall through to "Open"/"N spots left" and contradict it.
+            return \__( 'Prerequisite required', 'anchor-schema' );
+        }
 
         // 'open' — and 'parent', which is now the ONE container state that
         // reaches this line: a group with nothing left to book answers
@@ -10015,6 +11432,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $decision = $this->get_registration_status( $event_id, $meta, $party_size, $tier );
         if ( $decision === 'closed' || $decision === 'full' ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
+            exit;
+        }
+        // Prerequisites (spec §4.6): the form itself already refuses to render
+        // for a signed-out or ineligible visitor (render_registration_form()),
+        // but REG_NONCE is a bare action nonce (see the external-mode guard
+        // above), so a stale or forged POST can still reach here. Without this,
+        // 'prerequisite' matched neither arm above and fell straight through to
+        // claim_seats() — the one path in the whole module that would have
+        // minted a real seat for someone capacity_decision() had just refused.
+        if ( $decision === 'prerequisite' ) {
+            \wp_safe_redirect( $this->with_message( $redirect, 'registration_prerequisite' ) );
             exit;
         }
 
@@ -10385,7 +11813,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         // v1.1 lifecycle email settings. Always shown (free + paid registrations).
         \add_settings_section( 'anchor_events_lifecycle_emails', __( 'Lifecycle Emails', 'anchor-schema' ), function() {
-            echo '<p>' . esc_html__( 'Automated emails for registration reminders, cancellations, and organizer roster digests. Apply to both free (internal) and paid (WooCommerce) registrations. Available tokens: {event_title}, {event_url}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}, {remaining}, {seat_count}, {order_number}, {order_url}, {status}, {site_name}.', 'anchor-schema' ) . '</p>';
+            echo '<p>' . esc_html__( 'Automated emails for registration reminders, cancellations, and organizer roster digests. Apply to both free (internal) and paid (WooCommerce) registrations. Available tokens: {event_title}, {event_url}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}, {room_link}, {remaining}, {seat_count}, {order_number}, {order_url}, {status}, {site_name}.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
 
         \add_settings_field( 'reminder_enabled', __( 'Send reminders', 'anchor-schema' ), function() {
@@ -10417,7 +11845,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $opts = $this->get_settings();
             ?>
             <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[reminder_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['reminder_intro'] ); ?></textarea>
-            <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}.', 'anchor-schema' ); ?></p>
+            <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}, {room_link}.', 'anchor-schema' ); ?></p>
             <?php
         }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
 
@@ -11039,7 +12467,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $defaults as $key => $value ) {
             $stored = \get_post_meta( $post_id, $this->meta_key( $key ), true );
             if ( $stored === '' ) {
-                $stored = $value;
+                // Task 4 (spec §2 row 8a): for a boolean whose DEFAULT IS TRUE
+                // (access_role_enabled, in_person_includes_stream — the only
+                // two in this list), '' == "never written" is unsafe: WordPress
+                // round-trips a stored `false` back as '' too, so this loop
+                // would otherwise resurrect an explicit un-tick as the default.
+                // metadata_exists() tells the two apart by presence rather than
+                // value. This is a VALUE check ($value === true), not a
+                // key-name allow-list, so it automatically covers any future
+                // default-true boolean added to get_meta_defaults() without
+                // needing to be told its name. Every default-FALSE boolean
+                // already reads the same via '' as it would via its default,
+                // so it never needs this check.
+                if ( $value === true && \metadata_exists( 'post', $post_id, $this->meta_key( $key ) ) ) {
+                    $stored = false;
+                } else {
+                    $stored = $value;
+                }
             }
             if ( is_bool( $value ) ) {
                 $stored = (bool) $stored;
@@ -11112,6 +12556,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $stored;
         }
         return $this->derive_registration_mode( $event_id );
+    }
+
+    /**
+     * May this event hold a hosted stream at all? (spec §2 decision 1)
+     *
+     * Only events registered THROUGH this plugin: we only know who someone is
+     * when we took the registration. External-registration events never get a
+     * room, and neither does a group PARENT — each of its dates has its own.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function stream_capable( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            return false;
+        }
+        if ( $this->occurrences && $this->occurrences->is_group_parent( $event_id ) ) {
+            return false;
+        }
+        return \in_array( $this->registration_mode( $event_id ), [ 'wc', 'free' ], true );
     }
 
     /**
@@ -11204,13 +12669,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Normalized session rows for a multisession event.
      *
      * @param int $event_id
-     * @return array<int,array{date:string,start_time:string,end_time:string,label:string}>
+     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,modality:string,stream_embed:array,start_ts:int,end_ts:int}>
      */
     public function get_sessions( $event_id ) {
         $stored = \get_post_meta( $event_id, $this->meta_key( 'sessions' ), true );
         if ( ! is_array( $stored ) ) {
             return [];
         }
+
+        $meta       = $this->get_meta( $event_id );
+        $default_mo = $this->default_modality_for( $event_id, $meta );
+        $event_embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
+        $tz         = $this->event_timezone( $meta );
 
         $sessions = [];
         foreach ( $stored as $row ) {
@@ -11221,14 +12691,135 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $date === '' ) {
                 continue;
             }
+            $start_time = \sanitize_text_field( $row['start_time'] ?? '' );
+            $end_time   = \sanitize_text_field( $row['end_time'] ?? '' );
+            $row_embed  = ( \is_array( $row['stream_embed'] ?? null ) && ! empty( $row['stream_embed']['src'] ) )
+                ? $row['stream_embed']
+                : $event_embed;
             $sessions[] = [
                 'date' => $date,
-                'start_time' => \sanitize_text_field( $row['start_time'] ?? '' ),
-                'end_time' => \sanitize_text_field( $row['end_time'] ?? '' ),
+                'start_time' => $start_time,
+                'end_time' => $end_time,
                 'label' => \sanitize_text_field( $row['label'] ?? '' ),
+                // Resolved, never empty (spec §3.2): the room, the theme and the
+                // state machine read ONE shape.
+                'modality' => $this->sanitize_modality( $row['modality'] ?? '', $default_mo ),
+                'stream_embed' => \is_array( $row_embed ) ? $row_embed : [],
+                'start_ts' => $this->to_timestamp( $date, $start_time !== '' ? $start_time : '00:00', $tz ),
+                'end_ts' => $this->to_timestamp( $date, $end_time !== '' ? $end_time : '23:59', $tz ),
             ];
         }
         return $sessions;
+    }
+
+    /**
+     * The event-level embed, WITH the legacy virtual_url fallback resolved.
+     *
+     * The ONE place resolved_sessions() reads "what does this event embed when
+     * a row doesn't say otherwise" — both the multisession back-fill and the
+     * implicit single-row branch call this so the fallback logic exists once
+     * (spec §3.1, "Legacy fields stay"). An event authored before the
+     * Livestream field existed has only `virtual_url`; this treats it as the
+     * embed input so a Zoom link still renders as a "Join on Zoom" button in
+     * the room without a data migration. Only when no real embed is saved,
+     * and only when the normaliser accepts the host — an unknown host leaves
+     * the embed empty. get_sessions() itself does NOT call this: it never
+     * resolves the event-level embed's legacy fallback.
+     *
+     * @param array $meta get_meta() result.
+     * @return array {provider,kind,src,raw} or [].
+     */
+    private function event_level_embed( array $meta ) {
+        $event_embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
+        if ( empty( $event_embed['src'] ) && ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
+            $fallback = Embed::normalize( (string) $meta['virtual_url'] );
+            if ( ! \is_wp_error( $fallback ) && ! empty( $fallback['src'] ) ) {
+                $event_embed = $fallback;
+            }
+        }
+        return \is_array( $event_embed ) ? $event_embed : [];
+    }
+
+    /**
+     * The event's default session modality, WITH the legacy `virtual` bridge
+     * resolved (spec §3.1, amended 2026-09-24).
+     *
+     * An event authored before `stream_default_modality` existed only ever
+     * set the legacy `virtual` checkbox, so `stream_default_modality` was
+     * NEVER WRITTEN for it — get_meta_defaults() reads that absence back as
+     * `in_person`, which would silently deny its existing registrants the
+     * join link they have today (a regression, not a fresh default). This is
+     * a NEVER-STORED check, not a value check: metadata_exists() tells
+     * "nobody ever saved this field" apart from "somebody explicitly chose
+     * in_person", so an author who deliberately sets in_person on a virtual-
+     * flagged legacy event (unusual, but their call) is never overridden.
+     *
+     * Deliberately NOT folded into get_meta_defaults(): that method has no
+     * per-post identity to run metadata_exists() against at the point it
+     * assembles the defaults array. The readers are the sessions resolver
+     * (room/access) AND the authoring UI's pre-filled "Default attendance"
+     * select (render_livestream_fields(), final review I1) — the UI must
+     * show the resolved value, or the first save of a legacy virtual event
+     * writes in_person back and ends the bridge. The save-time forced-on
+     * check reads the POSTED value, which that pre-fill now makes right.
+     *
+     * @param int   $event_id
+     * @param array $meta     get_meta() result for the same event.
+     * @return string in_person|virtual|hybrid
+     */
+    private function default_modality_for( $event_id, array $meta ) {
+        $event_id = (int) $event_id;
+        $key      = $this->meta_key( 'stream_default_modality' );
+        if ( ! \metadata_exists( 'post', $event_id, $key ) && ! empty( $meta['virtual'] ) ) {
+            return 'virtual';
+        }
+        return $this->sanitize_modality( $meta['stream_default_modality'] ?? '' );
+    }
+
+    /**
+     * The sessions the ROOM reasons about — always at least one row.
+     *
+     * A multisession event returns get_sessions(), with every row whose own
+     * embed override is empty back-filled from event_level_embed() (spec
+     * §3.1's legacy virtual_url fallback reaches EVERY resolved row, not just
+     * the implicit one). Everything else returns one implicit session [0]
+     * spanning the event's own start_ts..end_ts with the event's default
+     * modality and embed, which is what lets Stream_State treat a single
+     * event, a group child and a three-day course identically (spec §3.2).
+     * get_sessions() itself deliberately stays empty for a non-multisession
+     * event — render_sessions_list() would otherwise print a one-row
+     * "Sessions" table on every single event.
+     *
+     * @param int $event_id
+     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,modality:string,stream_embed:array,start_ts:int,end_ts:int}>
+     */
+    public function resolved_sessions( $event_id ) {
+        $event_id = (int) $event_id;
+        $meta        = $this->get_meta( $event_id );
+        $event_embed = $this->event_level_embed( $meta );
+
+        if ( $this->event_type( $event_id ) === 'multisession' ) {
+            $rows = $this->get_sessions( $event_id );
+            if ( ! empty( $rows ) ) {
+                foreach ( $rows as $i => $row ) {
+                    if ( empty( $row['stream_embed']['src'] ) ) {
+                        $rows[ $i ]['stream_embed'] = $event_embed;
+                    }
+                }
+                return $rows;
+            }
+        }
+
+        return [ [
+            'date' => (string) $meta['start_date'],
+            'start_time' => (string) $meta['start_time'],
+            'end_time' => (string) $meta['end_time'],
+            'label' => '',
+            'modality' => $this->default_modality_for( $event_id, $meta ),
+            'stream_embed' => $event_embed,
+            'start_ts' => (int) $meta['start_ts'],
+            'end_ts' => (int) $meta['end_ts'],
+        ] ];
     }
 
     /**
@@ -12576,7 +14167,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $seats   = $this->get_registration_status( $event_id, $meta, 1, $tier );
         $enabled = ! empty( $meta['registration_enabled'] );
 
-        if ( $seats === 'closed' || $seats === 'full' ) {
+        if ( $seats === 'closed' || $seats === 'full' || $seats === 'prerequisite' ) {
             return $seats;
         }
         if ( $seats === Registrations::STATUS_WAITLIST ) {
@@ -13354,6 +14945,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'cta_label'     => __( 'View event details', 'anchor-schema' ),
             'cta_url'       => $event_link,
             'type'          => 'confirmation',
+            'seat_id'       => (int) $seat_id,
+            'recipient_email' => (string) $email,
         ] );
         // finding-13 — the seat identity keeps two different attendees on the
         // same event from collapsing into one deduped error row.
@@ -13568,6 +15161,95 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return \str_replace( $search, $replace, (string) $template );
     }
 
+    /**
+     * The {room_link} token (Task 14) for ONE recipient — the "who does this
+     * sign-in token belong to" resolution shared by email_tokens() and
+     * build_registration_email_html() (fix round 1: these used to duplicate
+     * the same three steps independently, which is exactly the kind of
+     * drift that lets one of them mint a token for the wrong person).
+     *
+     * A sign-in token is an identity: this method NEVER guesses one. It
+     * returns '' whenever there is no room (room_url() === ''), the
+     * recipient's own status is not CONFIRMED, or no account can be
+     * identified for them — never a token for somebody else's seat.
+     *
+     * $ctx:
+     *   - 'seat'         (array|null) A seat DTO (or a minimal ['id' => N]).
+     *                     Its 'status' is authoritative when present (a
+     *                     seat's own record beats whatever the caller
+     *                     separately tracked); its 'user_id' is used if set,
+     *                     else Entitlements::ensure_user() resolves/creates
+     *                     one FOR THAT SEAT.
+     *   - 'status'       (string) The recipient's status, used only when no
+     *                     'seat' is given.
+     *   - 'room_user_id' (int) A user id the CALLER has already resolved AND
+     *                     verified holds a confirmed seat on this event
+     *                     (Entitlements::has_confirmed_seat()) — used only
+     *                     when no seat is given. This is the WooCommerce
+     *                     buyer-confirmation path: the buyer is not
+     *                     necessarily any particular seat, so the caller
+     *                     identifies and vets them itself before handing the
+     *                     id here. Passing an unvetted id would mint a
+     *                     sign-in token for someone other than its holder.
+     *   - 'recipient_email' (string) The address this mail is going to.
+     *                     Defaults to the seat's own email. A token is
+     *                     minted ONLY when the resolved account's user_email
+     *                     is this address (case-insensitive) — final review
+     *                     C1's second safeguard: whatever resolved the
+     *                     account (a seat bound before the ensure_user() fix,
+     *                     a caller's room_user_id), the token can only ever
+     *                     reach the inbox of the person it signs in. On a
+     *                     mismatch the recipient gets the plain room URL.
+     *
+     * @param int   $event_id
+     * @param array $ctx
+     * @return string
+     */
+    private function room_link_for_recipient( $event_id, array $ctx ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || $this->room_url( $event_id ) === '' ) {
+            return '';
+        }
+        $seat = isset( $ctx['seat'] ) && is_array( $ctx['seat'] ) ? $ctx['seat'] : null;
+        // A full seat DTO's own 'status' is authoritative when present. A
+        // minimal seat (build_registration_email_html()'s `['id' => N]`, which
+        // carries no status of its own — the caller already resolved one at
+        // the top of that method) falls back to the ctx-level status instead
+        // of reading a missing key as "not confirmed".
+        $status = ( $seat !== null && \array_key_exists( 'status', $seat ) )
+            ? (string) $seat['status']
+            : (string) ( $ctx['status'] ?? '' );
+        if ( $status !== Registrations::STATUS_CONFIRMED ) {
+            return '';
+        }
+        $user_id = 0;
+        if ( $seat ) {
+            $user_id = (int) ( $seat['user_id'] ?? 0 );
+            if ( $user_id <= 0 && ! empty( $seat['id'] ) ) {
+                $user_id = $this->entitlements->ensure_user( $seat );
+            }
+        } else {
+            $user_id = (int) ( $ctx['room_user_id'] ?? 0 );
+        }
+        if ( $user_id <= 0 ) {
+            return '';
+        }
+
+        $recipient = (string) ( $ctx['recipient_email'] ?? '' );
+        if ( $recipient === '' && $seat ) {
+            $recipient = (string) ( $seat['email'] ?? '' );
+            if ( $recipient === '' && ! empty( $seat['id'] ) ) {
+                $recipient = (string) \get_post_meta( (int) $seat['id'], '_anchor_event_email', true );
+            }
+        }
+        $user = \get_userdata( $user_id );
+        if ( ! $user instanceof \WP_User || $recipient === ''
+            || \strcasecmp( \trim( $recipient ), (string) $user->user_email ) !== 0 ) {
+            return $this->room_url( $event_id ); // Never another person's token.
+        }
+        return $this->entitlements->room_url_for( $user_id, $event_id );
+    }
+
     /** Documented token set for all event emails (spec §9). */
     public function email_tokens( array $ctx ) {
         $event_id = (int) ( $ctx['event_id'] ?? 0 );
@@ -13595,6 +15277,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $days_until = ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '';
 
+        // The room, tokenised for THIS recipient (spec §6.2). See
+        // room_link_for_recipient() for the shared resolution rules — {join_link}
+        // keeps meaning the raw provider URL so legacy templates are untouched.
+        $room_link = $this->room_link_for_recipient( $event_id, [ 'seat' => $seat ] );
+
         return [
             'event_title'  => $event_id ? \get_the_title( $event_id ) : \get_bloginfo( 'name' ),
             'event_url'    => $event_id ? \get_permalink( $event_id ) : \home_url(),
@@ -13604,6 +15291,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'days_until'   => $days_until,
             'attendee_name'=> (string) ( $seat['name'] ?? '' ),
             'join_link'    => $join,
+            'room_link'    => $room_link,
             'remaining'    => (string) $remaining,
             'seat_count'   => (string) (int) ( $ctx['seat_count'] ?? 0 ),
             'order_number' => $order ? (string) $order->get_order_number() : '',
@@ -14322,6 +16010,10 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'cta_label'     => __( 'View event details', 'anchor-schema' ),
             'cta_url'       => '',
             'type'          => 'confirmation',
+            'seat_id'       => 0,
+            'room_user_id'  => 0,
+            'room_link_plain_fallback' => false,
+            'recipient_email' => '',
         ] );
 
         $event_id    = (int) $ctx['event_id'];
@@ -14351,6 +16043,31 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         if ( $event_id && $status === 'confirmed' ) {
             if ( ! empty( $event_meta['virtual'] ) && ! empty( $event_meta['virtual_url'] ) ) {
                 $join_url = (string) $event_meta['virtual_url'];
+            }
+        }
+
+        // {room_link}: shared per-recipient resolution — see
+        // room_link_for_recipient(). A bare seat_id normalizes to the same
+        // minimal seat shape ensure_user() already re-derives everything
+        // else from (customer_id/email off the seat post itself), so this is
+        // byte-identical to the pre-extraction behaviour for the seat-bearing
+        // send paths (confirmation, reminder).
+        $room_link = $this->room_link_for_recipient( $event_id, [
+            'status'          => $status,
+            'seat'            => ! empty( $ctx['seat_id'] ) ? [ 'id' => (int) $ctx['seat_id'] ] : null,
+            'room_user_id'    => (int) ( $ctx['room_user_id'] ?? 0 ),
+            'recipient_email' => (string) $ctx['recipient_email'],
+        ] );
+        // WooCommerce buyer confirmation only (fix round 1): a sign-in token
+        // is an identity, so a buyer who is not themselves a confirmed
+        // attendee never gets one minted in their name — they get the same
+        // plain, untokenised room address anyone reading the event page
+        // would see, instead of nothing and instead of somebody else's seat.
+        if ( $room_link === '' && ! empty( $ctx['room_link_plain_fallback'] )
+            && $status === Registrations::STATUS_CONFIRMED ) {
+            $plain_room_url = $this->room_url( $event_id );
+            if ( $plain_room_url !== '' ) {
+                $room_link = $plain_room_url;
             }
         }
 
@@ -14395,6 +16112,25 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             }
         }
 
+        // default_email_cta()'s stream branch (and any CTA override an author
+        // types verbatim as `{room_link}`) hands back the literal TOKEN, not a
+        // URL — the button is rendered once per recipient and the token is
+        // meant to expand here, before it ever reaches tpl_block_cta_button().
+        // That renderer runs its argument through esc_url(), which strips
+        // curly braces; expanding first (once) means it esc_url()'s a real
+        // URL instead of mangling the placeholder into a dead link. A preview
+        // has no seat to mint an account for, so it gets the same stand-in the
+        // {room_link} scalar uses.
+        if ( '{room_link}' === $cta['url'] || '{room_link}' === $cta2['url'] ) {
+            $cta_room_link = $room_link !== '' ? $room_link : ( $preview ? (string) ( $samples['room_link'] ?? '' ) : '' );
+            if ( '{room_link}' === $cta['url'] ) {
+                $cta['url'] = $cta_room_link;
+            }
+            if ( '{room_link}' === $cta2['url'] ) {
+                $cta2['url'] = $cta_room_link;
+            }
+        }
+
         $paragraphs = $this->tpl_block_intro( $message );
 
         // Task 3.1 — resolve the template (per-event override -> global option ->
@@ -14431,6 +16167,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'attendee_name' => esc_html( $name ),
             'status'        => esc_html( $status ),
             'join_link'     => esc_url( $join_url ),
+            'room_link'     => esc_url( $room_link ),
             'event_url'     => esc_url( $event_id ? \get_permalink( $event_id ) : \home_url() ),
             'event_date'    => esc_html( $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '' ),
             'event_time'    => esc_html( ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '' ),
@@ -14467,7 +16204,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
                 if ( ! isset( $tokens[ $key ] ) || \trim( (string) $tokens[ $key ] ) !== '' ) {
                     continue;
                 }
-                $tokens[ $key ] = \in_array( $key, [ 'join_link', 'event_url', 'order_url' ], true )
+                $tokens[ $key ] = \in_array( $key, [ 'join_link', 'room_link', 'event_url', 'order_url' ], true )
                     ? \esc_url( $sample )
                     : \esc_html( $sample );
             }
@@ -14477,7 +16214,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // would push markup into a line the inbox reads as plain text.
         $scalars = \array_intersect_key( $tokens, \array_flip( [
             'event_id', 'event_title', 'site_name', 'attendee_name', 'status', 'join_link',
-            'event_url', 'event_date', 'event_time', 'venue', 'days_until',
+            'room_link', 'event_url', 'event_date', 'event_time', 'venue', 'days_until',
         ] ) );
         $tokens['preheader'] = $this->tpl_block_preheader( $this->expand_email_tokens(
             $this->get_email_field( $event_id, $type, 'preheader', '' ),

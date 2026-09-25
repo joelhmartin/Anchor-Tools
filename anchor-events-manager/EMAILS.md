@@ -16,6 +16,22 @@ There are two token systems, used in two different places (both driven by the sa
    HTML body** templates edited in the Emails builder metabox. See "Editable Email
    Templates" below for that (larger, overlapping) token set.
 
+> **CTA default order.** With no per-event override, the button resolves
+> **stream > virtual > event page**, on one condition: `Module::room_url()` is
+> non-empty, i.e. the event's access switch is on *and* a stream resolves. Such
+> an event gets "Join the livestream" pointing at `{room_link}`; a legacy
+> virtual event gets "Join the event" pointing at `virtual_url`; everything
+> else gets "View event details". The stream half of that condition is what
+> matters most now that `access_role_enabled` defaults to **on**: an ordinary
+> in-person event's attendees hold the event role and its confirmation is
+> still byte-identical to the one it sends today, because it has no room to
+> link to. `{join_link}` still means the raw provider URL, so existing
+> templates are untouched. **A pre-existing `virtual=1` event with a
+> `virtual_url` on a recognised host now also qualifies** (see "Hosted
+> livestream room" in `EVENTS.md`) — no author action needed, its next send
+> switches from "Join the event" to "Join the livestream" pointing at
+> `{room_link}`.
+
 ---
 
 ## Email Templates & Tokens
@@ -32,6 +48,7 @@ All emails expand placeholders from the documented token set below. Each token i
 | `{days_until}` | Days remaining until event start | Past event |
 | `{attendee_name}` | Registered attendee name | Organizer/roster context (no attendee) |
 | `{join_link}` | Virtual event URL for confirmed virtual attendees | Not a virtual event, or attendee not confirmed |
+| `{room_link}` | Hosted room URL, carrying a one-click sign-in token for a seat-holding recipient. In the WooCommerce **buyer** confirmation the token is minted only for the buyer's own account, and only when a confirmed seat on this event resolves to the buyer (`class-woocommerce.php`'s buyer resolution + `Entitlements::has_confirmed_seat()`, which also counts seats bound to the buyer's customer id) — the token is always the buyer's own identity, never an attendee's, and a buyer holding no seat themselves is turned away at the room because they hold no event role (`Module::room_link_for_recipient()`) | No room (no stream saved, or `access_role_enabled` off), attendee/buyer not confirmed, or no account to sign in |
 | `{remaining}` | Remaining seats from `get_event_summary()` | — |
 | `{seat_count}` | Confirmed attendees (roster) or total seats in order (confirmation) | — |
 | `{order_number}` | WooCommerce order number | Free seat or WooCommerce not installed |
@@ -157,6 +174,7 @@ a custom template can't become a stored-injection vector):
 | `{attendee_name}` | Registered attendee name |
 | `{status}` | Attendee registration status |
 | `{join_link}` | Virtual-event join URL (confirmed attendees of a virtual event only) |
+| `{room_link}` | The hosted room URL, carrying a one-click sign-in token (`?aek=`) **for this recipient**. **Empty for any event with no room — which is every event that has no stream saved, and every event whose `access_role_enabled` was switched off — and resolving it then touches nothing: no account is looked up, none is created.** Otherwise confirmed seats only, so a waitlisted recipient gets an empty string exactly like `{join_link}`. **In the WooCommerce buyer confirmation specifically, the token is minted only for the buyer's own account, and only when a confirmed seat on this event resolves to the buyer** (`class-woocommerce.php`'s buyer resolution, gated on `Entitlements::has_confirmed_seat()`, which also counts seats bound to the buyer's customer id) — a token is an identity and is never minted for someone other than the recipient. A buyer who bought seats only for other people may therefore still receive a token for their own account; it signs them in but the room turns them away because they hold no event role (`Module::room_link_for_recipient()`). In every email the token is minted only when the resolved account's email is the recipient's address (case-insensitive), and never for staff (`edit_posts` or the events capability) — otherwise the recipient gets the plain room URL. Expires at the last session's end + 7 days. Requires an account; when `anchor_events_create_account` is filtered off and the recipient has none, it is empty. |
 | `{event_url}` | Event permalink |
 | `{event_date}` | Localized date from `start_ts` |
 | `{event_time}` | Localized time from `start_ts` (empty for all-day events) |

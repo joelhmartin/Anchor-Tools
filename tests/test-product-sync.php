@@ -370,4 +370,64 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 			'The synced variation must use the SAME default label Ticket_Types itself falls back to.'
 		);
 	}
+
+	/** The managed variation carries the tier's modality. */
+	public function test_variation_carries_modality() {
+		$this->require_wc();
+		$event_id = $this->make_event();
+		$tiers    = $this->ticket_types()->save( $event_id, [
+			[ 'label' => 'Livestream', 'price' => '99', 'active' => 1, 'modality' => 'virtual' ],
+		] );
+		$this->product_sync()->sync_event( $event_id );
+
+		$variation_id = $this->product_sync()->variation_for_tier( $event_id, $tiers[0]['id'] );
+		$this->assertGreaterThan( 0, $variation_id );
+		$this->assertSame( 'virtual', wc_get_product( $variation_id )->get_meta( '_anchor_evt_modality' ) );
+	}
+
+	/**
+	 * Fix round 1 — the "removed/inactive tier but still holds confirmed
+	 * seats" branch freezes price/label from the existing variation, but
+	 * used to omit modality: write_variation()'s `$spec['modality'] ?? 'in_person'`
+	 * default then silently flipped a virtual seat's variation back to
+	 * in_person on the very next sync. Modality must freeze the same way
+	 * price/label already do.
+	 */
+	public function test_removed_tier_with_seats_keeps_its_frozen_modality() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Paid Event' ],
+			[
+				[ 'label' => 'General', 'price' => '10', 'active' => 1 ],
+				[ 'label' => 'Livestream', 'price' => '50', 'active' => 1, 'modality' => 'virtual' ],
+			]
+		);
+		$tiers = $this->ticket_types()->get( $event_id );
+		$ga    = $tiers[0];
+		$virt  = $tiers[1];
+
+		$this->product_sync()->sync_event( $event_id );
+		$virt_vid = $this->product_sync()->variation_for_tier( $event_id, $virt['id'] );
+		$this->assertGreaterThan( 0, $virt_vid );
+		$this->assertSame( 'virtual', wc_get_product( $virt_vid )->get_meta( '_anchor_evt_modality' ) );
+
+		// Seat the virtual tier so its variation is deactivated, not deleted,
+		// once dropped below.
+		$this->make_seat( $event_id, [ 'ticket_type_id' => $virt['id'] ] );
+
+		// Drop the virtual tier entirely.
+		$this->ticket_types()->save(
+			$event_id,
+			[ [ 'id' => $ga['id'], 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+
+		\wp_cache_flush();
+		$frozen = wc_get_product( $virt_vid );
+		$this->assertSame( 'private', $frozen->get_status(), 'Precondition: the seated tier was deactivated, not deleted.' );
+		$this->assertSame(
+			'virtual',
+			$frozen->get_meta( '_anchor_evt_modality' ),
+			'The frozen variation must keep its modality, not reset to in_person.'
+		);
+	}
 }

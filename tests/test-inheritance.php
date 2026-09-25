@@ -350,4 +350,92 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 		$this->assertFalse( (bool) get_post_meta( $child_id, '_anchor_event_registration_enabled', true ) );
 		$this->assertTrue( (bool) get_post_meta( $child_id, '_anchor_event_sold_out', true ) );
 	}
+
+	/* ------------------------------------------------------------------
+	 * 5. Livestream + prerequisite keys (virtual-events spec §3.4)
+	 * ------------------------------------------------------------------ */
+
+	/** Children inherit every §3.1 stream key from their parent. */
+	public function test_children_inherit_stream_keys() {
+		$parent_id = $this->make_event( [
+			'type' => 'offering',
+			'access_role_enabled'       => true,
+			'stream_default_modality'   => 'hybrid',
+			'in_person_includes_stream' => false,
+			'stream_open_before_minutes' => 20,
+			'stream_close_after_minutes' => 45,
+			'required_roles'             => [ 'subscriber' ],
+			'required_roles_mode'        => 'all',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/55', 'raw' => '' ],
+		] );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'A' ],
+		] );
+		$children = $this->module()->occurrences->reconcile( $parent_id );
+		$child    = $this->module()->get_meta( $children[0] );
+
+		$this->assertTrue( $child['access_role_enabled'], 'A date grants the role exactly when its offering says to.' );
+		$this->assertSame( 'hybrid', $child['stream_default_modality'] );
+		$this->assertFalse( $child['in_person_includes_stream'] );
+		$this->assertSame( 20, $child['stream_open_before_minutes'] );
+		$this->assertSame( 45, $child['stream_close_after_minutes'] );
+		$this->assertSame( [ 'subscriber' ], $child['required_roles'] );
+		$this->assertSame( 'all', $child['required_roles_mode'] );
+		$this->assertSame( 'https://player.vimeo.com/video/55', $child['stream_embed']['src'] );
+	}
+
+	/** A switched-off offering's dates are switched off too — inheritance carries the OFF. */
+	public function test_children_of_a_switched_off_offering_are_inert() {
+		// Explicitly off: the default is ON (spec §3.1), so an ordinary
+		// offering's dates DO grant the role.
+		$parent_id = $this->make_event( [
+			'type'                => 'offering',
+			'registration_mode'   => 'free',
+			'access_role_enabled' => false,
+		] );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'A' ],
+		] );
+		$children = $this->module()->occurrences->reconcile( $parent_id );
+
+		$this->assertFalse( $this->module()->get_meta( $children[0] )['access_role_enabled'] );
+		$this->assertSame( '', $this->module()->room_url( $children[0] ) );
+	}
+
+	/** An ordinary offering's dates each grant the role, and still have no room. */
+	public function test_children_of_an_ordinary_offering_grant_the_role() {
+		$parent_id = $this->make_event( [ 'type' => 'offering', 'registration_mode' => 'free' ] );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'A' ],
+		] );
+		$children = $this->module()->occurrences->reconcile( $parent_id );
+
+		$this->assertTrue( $this->module()->get_meta( $children[0] )['access_role_enabled'] );
+		$this->assertTrue( $this->module()->entitlements->enabled( $children[0] ), 'Each date is its own bookable thing with its own role.' );
+		$this->assertSame( '', $this->module()->room_url( $children[0] ), 'No stream, so still no room.' );
+		remove_role( 'anchor_event_' . $children[0] );
+	}
+
+	/** A child's own stream override survives the next reconcile. */
+	public function test_child_stream_override_survives_reconcile() {
+		$parent_id = $this->make_event( [
+			'type' => 'offering',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/55', 'raw' => '' ],
+		] );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'A' ],
+		] );
+		$children = $this->module()->occurrences->reconcile( $parent_id );
+		update_post_meta( $children[0], '_anchor_event_stream_embed', [
+			'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/66', 'raw' => '',
+		] );
+
+		$this->module()->occurrences->reconcile( $parent_id );
+
+		$this->assertSame(
+			'https://player.vimeo.com/video/55',
+			$this->module()->get_meta( $children[0] )['stream_embed']['src'],
+			'Inheritance is symmetric: the parent re-asserts the shared stream on every reconcile.'
+		);
+	}
 }

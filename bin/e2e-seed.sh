@@ -141,6 +141,58 @@ wp rewrite flush --hard >/dev/null
 log "Pretty permalinks enabled."
 
 # ---------------------------------------------------------------------------
+# E2E clock override for the hosted stream room (Task 21).
+#
+# anchor_events_stream_now (Stream_State::for_event()) lets a caller move the
+# room's clock without sleeping through a real countdown. Nothing in the
+# plugin itself ever filters it — only this mu-plugin, and only on THIS
+# install: it no-ops unless ANCHOR_TOOLS_E2E is defined true, a constant only
+# .wp-env.json's `config` block sets (see that file), so the same file can
+# never ship active on a real site. Re-written on every seed run (cheap,
+# idempotent) so a fresh wp-env volume always has it.
+# ---------------------------------------------------------------------------
+MU_PLUGINS_DIR="$(wp eval 'echo \WPMU_PLUGIN_DIR;')"
+mkdir -p "${MU_PLUGINS_DIR}"
+cat > "${MU_PLUGINS_DIR}/anchor-e2e-stream-clock.php" <<'MUPLUGIN'
+<?php
+/**
+ * E2E-only clock override for the hosted stream room (Task 21).
+ *
+ * Maps ?anchor_stream_now=start|after on a room URL onto the
+ * anchor_events_stream_now filter, so Playwright can drive the room from
+ * countdown -> live -> ended without sleeping. Guarded by ANCHOR_TOOLS_E2E
+ * (defined only by the wp-env config used for E2E runs) so this file is
+ * inert if it were ever present anywhere else.
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+if ( ! defined( 'ANCHOR_TOOLS_E2E' ) || ! ANCHOR_TOOLS_E2E ) {
+	return;
+}
+
+add_filter( 'anchor_events_stream_now', function ( $now, $event_id ) {
+	$mode = isset( $_GET['anchor_stream_now'] ) ? sanitize_key( wp_unslash( $_GET['anchor_stream_now'] ) ) : '';
+	if ( $mode === '' ) {
+		return $now;
+	}
+	$event_id = (int) $event_id;
+	$start    = (int) get_post_meta( $event_id, '_anchor_event_start_ts', true );
+	$end      = (int) get_post_meta( $event_id, '_anchor_event_end_ts', true );
+	if ( $mode === 'start' && $start > 0 ) {
+		return $start;
+	}
+	if ( $mode === 'after' && $end > 0 ) {
+		return $end + ( 2 * DAY_IN_SECONDS );
+	}
+	return $now;
+}, 10, 2 );
+MUPLUGIN
+log "mu-plugin: anchor-e2e-stream-clock.php written to ${MU_PLUGINS_DIR}."
+
+# ---------------------------------------------------------------------------
 # Create (or reuse) the published paid event with two ticket tiers.
 # ---------------------------------------------------------------------------
 EVENT_SLUG="e2e-test-event"
@@ -488,6 +540,213 @@ COMPLIANCE_PAGE_ID="$(wp eval '
 log "Compliance page #${COMPLIANCE_PAGE_ID}"
 
 # ---------------------------------------------------------------------------
+# Hosted stream room fixtures (Task 21 — e2e/live-room.spec.js).
+#
+# Every one of these three events is saved THROUGH Module::save_event_
+# manager_fields() (via Reflection, since it's `protected` — same pattern
+# tests/test-event-manager-save.php uses), never via `wp post meta update`
+# for the stream fields. That save path is what normalizes a pasted URL into
+# the {provider,kind,src,raw} shape room_url()/has_stream() actually read
+# (Embed::normalize()) and what flips access_role_enabled back on for a
+# virtual/hybrid event. A fixture that poked `_anchor_event_stream_embed` in
+# directly would carry an un-normalized value, has_stream() would find no
+# `src`, room_url() would return '', and every one of these specs would fail
+# on a fixture bug rather than a code bug.
+#
+# save_event_manager_fields.php reads its $_POST shape from environment
+# variables (rather than being interpolated into a `wp eval` one-liner) so
+# the values below never have to survive three layers of shell/PHP quoting.
+# ---------------------------------------------------------------------------
+SAVE_EVENT_PHP="$(mktemp)"
+cat > "${SAVE_EVENT_PHP}" <<'PHP'
+<?php
+$module   = \Anchor\Events\Module::instance();
+$event_id = (int) getenv( 'ANCHOR_E2E_EVENT_ID' );
+
+$_POST = [
+	'anchor_event_start_date'                => getenv( 'ANCHOR_E2E_START_DATE' ),
+	'anchor_event_start_time'                => getenv( 'ANCHOR_E2E_START_TIME' ),
+	'anchor_event_end_date'                  => getenv( 'ANCHOR_E2E_END_DATE' ),
+	'anchor_event_end_time'                  => getenv( 'ANCHOR_E2E_END_TIME' ),
+	'anchor_event_timezone'                  => 'UTC',
+	'anchor_event_registration_enabled'      => '1',
+	'anchor_event_type'                      => 'single',
+	'anchor_event_registration_mode'         => 'free',
+	'anchor_event_stream_default_modality'   => getenv( 'ANCHOR_E2E_MODALITY' ),
+	'anchor_event_stream_embed'              => getenv( 'ANCHOR_E2E_EMBED' ),
+	'anchor_event_in_person_includes_stream' => getenv( 'ANCHOR_E2E_IN_PERSON_TOGGLE' ),
+];
+
+$fallback = $module->registration_mode( $event_id );
+$method   = new ReflectionMethod( $module, 'save_event_manager_fields' );
+$method->setAccessible( true );
+$method->invoke( $module, $event_id, getenv( 'ANCHOR_E2E_START_DATE' ), $fallback );
+unset( $_POST );
+
+echo "saved event #{$event_id}, room_url=" . $module->room_url( $event_id ) . "\n";
+PHP
+
+# Creates (or reuses, matched by email) a CONFIRMED seat on the given ticket
+# tier, resolves the account it entitles (create_seat()'s
+# anchor_events_seat_created hook already does this, but a re-run against an
+# existing seat needs the same resolution without inserting a second one),
+# and prints the room URL carrying that account's one-click sign-in token
+# (Entitlements::room_url_for()) — the tokenised link is ALWAYS minted this
+# way, never hand-built from the room URL + a guessed query string.
+SEAT_TOKEN_PHP="$(mktemp)"
+cat > "${SEAT_TOKEN_PHP}" <<'PHP'
+<?php
+$module   = \Anchor\Events\Module::instance();
+$event_id = (int) getenv( 'ANCHOR_E2E_EVENT_ID' );
+$email    = getenv( 'ANCHOR_E2E_EMAIL' );
+$name     = getenv( 'ANCHOR_E2E_NAME' );
+$tier     = getenv( 'ANCHOR_E2E_TICKET_TYPE_ID' ) ?: 'primary';
+
+$existing = get_posts( [
+	'post_type'      => \Anchor\Events\Module::REG_CPT,
+	'post_status'    => 'publish',
+	'posts_per_page' => 1,
+	'fields'         => 'ids',
+	'meta_query'     => [
+		'relation' => 'AND',
+		[ 'key' => '_anchor_event_id', 'value' => $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+		[ 'key' => '_anchor_event_email', 'value' => $email ],
+	],
+] );
+
+if ( ! empty( $existing ) ) {
+	$seat_id = (int) $existing[0];
+} else {
+	$seat_id = (int) $module->registrations->create_seat( [
+		'event_id'       => $event_id,
+		'name'           => $name,
+		'email'          => $email,
+		'status'         => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+		'ticket_type_id' => $tier,
+	] );
+}
+
+$user_id = (int) get_post_meta( $seat_id, '_anchor_event_user_id', true );
+if ( $user_id <= 0 ) {
+	// A re-run against a pre-existing seat whose hook never fired for some
+	// reason (or the seat existed before this fixture did): resolve/grant
+	// explicitly rather than leaving the seat entitled to nobody.
+	$user_id = $module->entitlements->ensure_user( [ 'id' => $seat_id ] );
+	$module->entitlements->grant( $event_id, $user_id, \Anchor\Events\Entitlements::SOURCE_SEAT );
+}
+
+echo $module->entitlements->room_url_for( $user_id, $event_id );
+PHP
+
+# --- Fixture A: free virtual stream event, one confirmed (untiered) seat. ---
+STREAM_SLUG="e2e-stream-event"
+STREAM_EVENT_ID="$(wp post list --post_type=event --post_status=any --name="${STREAM_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${STREAM_EVENT_ID}" ]; then
+  STREAM_EVENT_ID="$(wp post create \
+    --post_type=event \
+    --post_status=publish \
+    --post_title='E2E Stream Event' \
+    --post_name="${STREAM_SLUG}" \
+    --post_content='Automated end-to-end hosted-stream-room fixture event.' \
+    --porcelain)"
+  log "Created stream event #${STREAM_EVENT_ID}."
+else
+  wp post update "${STREAM_EVENT_ID}" --post_status=publish >/dev/null
+  log "Reusing stream event #${STREAM_EVENT_ID}."
+fi
+
+# start_ts two hours out, so the untouched clock reads countdown (the first
+# spec) while ?anchor_stream_now=start|after (the second spec) can still
+# drive it live/ended without waiting.
+STREAM_NOW_TS="$(date -u +%s)"
+STREAM_START_TS=$(( STREAM_NOW_TS + ( 2 * 3600 ) ))
+STREAM_END_TS=$(( STREAM_START_TS + 3600 ))
+STREAM_START_DATE="$(date -u -d "@${STREAM_START_TS}" +%Y-%m-%d)"
+STREAM_START_TIME="$(date -u -d "@${STREAM_START_TS}" +%H:%M)"
+STREAM_END_DATE="$(date -u -d "@${STREAM_END_TS}" +%Y-%m-%d)"
+STREAM_END_TIME="$(date -u -d "@${STREAM_END_TS}" +%H:%M)"
+
+ANCHOR_E2E_EVENT_ID="${STREAM_EVENT_ID}" \
+ANCHOR_E2E_START_DATE="${STREAM_START_DATE}" \
+ANCHOR_E2E_START_TIME="${STREAM_START_TIME}" \
+ANCHOR_E2E_END_DATE="${STREAM_END_DATE}" \
+ANCHOR_E2E_END_TIME="${STREAM_END_TIME}" \
+ANCHOR_E2E_MODALITY="virtual" \
+ANCHOR_E2E_EMBED="https://vimeo.com/76979871" \
+ANCHOR_E2E_IN_PERSON_TOGGLE="1" \
+wp eval-file "${SAVE_EVENT_PHP}"
+
+STREAM_TOKEN_URL="$(ANCHOR_E2E_EVENT_ID="${STREAM_EVENT_ID}" \
+  ANCHOR_E2E_EMAIL="e2e-stream-attendee@example.test" \
+  ANCHOR_E2E_NAME="E2E Stream Attendee" \
+  ANCHOR_E2E_TICKET_TYPE_ID="primary" \
+  wp eval-file "${SEAT_TOKEN_PHP}")"
+STREAM_EVENT_URL="$(wp eval 'echo get_permalink('"${STREAM_EVENT_ID}"');')"
+STREAM_ROOM_URL="$(wp eval '$m = \Anchor\Events\Module::instance(); echo $m ? $m->room_url('"${STREAM_EVENT_ID}"') : "";')"
+log "Stream event #${STREAM_EVENT_ID}: room=${STREAM_ROOM_URL}"
+
+# --- Fixtures B/C: in-person-tier events, "in-person also gets the stream" toggle off/on. ---
+declare -A TOGGLE_EMBED=( [off]="https://vimeo.com/76979872" [on]="https://vimeo.com/76979873" )
+declare -A TOGGLE_FLAG=( [off]="0" [on]="1" )
+declare -A TOGGLE_ROOM_URL=()
+
+for VARIANT in off on; do
+  TOGGLE_SLUG="e2e-in-person-toggle-${VARIANT}-event"
+  TOGGLE_EVENT_ID="$(wp post list --post_type=event --post_status=any --name="${TOGGLE_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+  if [ -z "${TOGGLE_EVENT_ID}" ]; then
+    TOGGLE_EVENT_ID="$(wp post create \
+      --post_type=event \
+      --post_status=publish \
+      --post_title="E2E In-Person Toggle ${VARIANT^^} Event" \
+      --post_name="${TOGGLE_SLUG}" \
+      --post_content='Automated end-to-end in-person-tier stream-toggle fixture event.' \
+      --porcelain)"
+    log "Created in-person toggle-${VARIANT} event #${TOGGLE_EVENT_ID}."
+  else
+    wp post update "${TOGGLE_EVENT_ID}" --post_status=publish >/dev/null
+    log "Reusing in-person toggle-${VARIANT} event #${TOGGLE_EVENT_ID}."
+  fi
+
+  TOGGLE_NOW_TS="$(date -u +%s)"
+  TOGGLE_START_TS=$(( TOGGLE_NOW_TS + ( 2 * 3600 ) ))
+  TOGGLE_END_TS=$(( TOGGLE_START_TS + 3600 ))
+  TOGGLE_START_DATE="$(date -u -d "@${TOGGLE_START_TS}" +%Y-%m-%d)"
+  TOGGLE_START_TIME="$(date -u -d "@${TOGGLE_START_TS}" +%H:%M)"
+  TOGGLE_END_DATE="$(date -u -d "@${TOGGLE_END_TS}" +%Y-%m-%d)"
+  TOGGLE_END_TIME="$(date -u -d "@${TOGGLE_END_TS}" +%H:%M)"
+
+  ANCHOR_E2E_EVENT_ID="${TOGGLE_EVENT_ID}" \
+  ANCHOR_E2E_START_DATE="${TOGGLE_START_DATE}" \
+  ANCHOR_E2E_START_TIME="${TOGGLE_START_TIME}" \
+  ANCHOR_E2E_END_DATE="${TOGGLE_END_DATE}" \
+  ANCHOR_E2E_END_TIME="${TOGGLE_END_TIME}" \
+  ANCHOR_E2E_MODALITY="hybrid" \
+  ANCHOR_E2E_EMBED="${TOGGLE_EMBED[$VARIANT]}" \
+  ANCHOR_E2E_IN_PERSON_TOGGLE="${TOGGLE_FLAG[$VARIANT]}" \
+  wp eval-file "${SAVE_EVENT_PHP}"
+
+  # In-person + virtual tiers, same idiom as the paid-event fixture above.
+  # Written directly (not through the save path): Ticket_Types::get()
+  # normalizes on READ regardless of how the row was written, so this is not
+  # the embed-normalization concern the save-path note above is about.
+  wp post meta update "${TOGGLE_EVENT_ID}" _anchor_event_ticket_types \
+    '[{"id":"in_person","label":"In Person","price":"0","quota":0,"active":true,"modality":"in_person"},{"id":"virtual","label":"Livestream","price":"0","quota":0,"active":true,"modality":"virtual"}]' \
+    --format=json >/dev/null
+
+  TOGGLE_ROOM_URL["${VARIANT}"]="$(ANCHOR_E2E_EVENT_ID="${TOGGLE_EVENT_ID}" \
+    ANCHOR_E2E_EMAIL="e2e-in-person-toggle-${VARIANT}@example.test" \
+    ANCHOR_E2E_NAME="E2E In-Person Toggle ${VARIANT^^}" \
+    ANCHOR_E2E_TICKET_TYPE_ID="in_person" \
+    wp eval-file "${SEAT_TOKEN_PHP}")"
+  log "In-person toggle-${VARIANT} event #${TOGGLE_EVENT_ID}: room=${TOGGLE_ROOM_URL[$VARIANT]}"
+done
+
+IN_PERSON_TOGGLE_OFF_ROOM_URL="${TOGGLE_ROOM_URL[off]}"
+IN_PERSON_TOGGLE_ON_ROOM_URL="${TOGGLE_ROOM_URL[on]}"
+
+rm -f "${SAVE_EVENT_PHP}" "${SEAT_TOKEN_PHP}"
+
+# ---------------------------------------------------------------------------
 # Emit the fixture for the Playwright specs (written via WP so the path is
 # correct inside the container; the bind mount surfaces it on the host).
 # ---------------------------------------------------------------------------
@@ -512,4 +771,47 @@ log "Recurring event URL: ${RECURRING_EVENT_URL}"
 log "Gallery page URL: ${GALLERY_PAGE_URL}"
 log "Compliance page URL: ${COMPLIANCE_PAGE_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
+
+# ---------------------------------------------------------------------------
+# Merge the stream-room fixture URLs into the .seed.json just written.
+#
+# A separate merge step (rather than one giant JSON literal like the block
+# above) because these three URLs are pre-built, already-encoded query
+# strings (?aek=... tokens) coming out of bash variables — splicing them
+# into a `wp eval '...'` PHP string literal the way the ids above are
+# spliced would break the instant one contained a character PHP's string
+# syntax cares about. getenv() sidesteps that entirely.
+# ---------------------------------------------------------------------------
+MERGE_STREAM_PHP="$(mktemp)"
+cat > "${MERGE_STREAM_PHP}" <<'PHP'
+<?php
+$path = getenv( 'ANCHOR_E2E_SEED_JSON_PATH' );
+$data = json_decode( (string) file_get_contents( $path ), true );
+if ( ! is_array( $data ) ) {
+	$data = [];
+}
+$data['stream_event_id']               = (int) getenv( 'ANCHOR_E2E_STREAM_EVENT_ID' );
+$data['stream_event_url']              = getenv( 'ANCHOR_E2E_STREAM_EVENT_URL' );
+$data['stream_event_room_url']         = getenv( 'ANCHOR_E2E_STREAM_ROOM_URL' );
+$data['stream_event_token_url']        = getenv( 'ANCHOR_E2E_STREAM_TOKEN_URL' );
+$data['in_person_toggle_off_room_url'] = getenv( 'ANCHOR_E2E_TOGGLE_OFF_ROOM_URL' );
+$data['in_person_toggle_on_room_url']  = getenv( 'ANCHOR_E2E_TOGGLE_ON_ROOM_URL' );
+file_put_contents( $path, json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );
+echo "merged stream-room fixtures into {$path}\n";
+PHP
+
+ANCHOR_E2E_SEED_JSON_PATH="${PLUGIN_DIR}/e2e/.seed.json" \
+ANCHOR_E2E_STREAM_EVENT_ID="${STREAM_EVENT_ID}" \
+ANCHOR_E2E_STREAM_EVENT_URL="${STREAM_EVENT_URL}" \
+ANCHOR_E2E_STREAM_ROOM_URL="${STREAM_ROOM_URL}" \
+ANCHOR_E2E_STREAM_TOKEN_URL="${STREAM_TOKEN_URL}" \
+ANCHOR_E2E_TOGGLE_OFF_ROOM_URL="${IN_PERSON_TOGGLE_OFF_ROOM_URL}" \
+ANCHOR_E2E_TOGGLE_ON_ROOM_URL="${IN_PERSON_TOGGLE_ON_ROOM_URL}" \
+wp eval-file "${MERGE_STREAM_PHP}"
+rm -f "${MERGE_STREAM_PHP}"
+
+log "Stream event URL: ${STREAM_EVENT_URL}"
+log "Stream event token URL: ${STREAM_TOKEN_URL}"
+log "In-person toggle-off room URL: ${IN_PERSON_TOGGLE_OFF_ROOM_URL}"
+log "In-person toggle-on room URL: ${IN_PERSON_TOGGLE_ON_ROOM_URL}"
 log "Seed complete."

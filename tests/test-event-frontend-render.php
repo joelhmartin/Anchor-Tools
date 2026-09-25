@@ -893,4 +893,79 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 			"frontend.css has no rule for: " . implode( ', ', $missing )
 		);
 	}
+
+	/* -----------------------------------------------------------------
+	 * Final review I2: the event page's "Join here" delegates to the room's
+	 * access question ONLY for an event that has a room. A roomless virtual
+	 * event (a Teams/Meet link the embed allowlist does not know) keeps the
+	 * pre-room behaviour: any active seat — pending included, role or not.
+	 * --------------------------------------------------------------- */
+
+	private function teams_event() {
+		return $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => true,
+			'virtual'             => true,
+			'virtual_url'         => 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc',
+		] );
+	}
+
+	public function test_a_roomless_virtual_event_shows_join_here_to_a_pending_seat() {
+		$event_id = $this->teams_event();
+		$this->assertSame( '', $this->module()->room_url( $event_id ), 'Sanity: Teams has no room.' );
+
+		$user_id = self::factory()->user->create( [ 'user_email' => 'pending-teams@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'pending-teams@example.test', 'status' => \Anchor\Events\Registrations::STATUS_PENDING ] );
+
+		wp_set_current_user( $user_id );
+		$html = $this->module()->render_single_content( $event_id );
+		$this->assertStringContainsString( 'Join here', $html );
+		$this->assertStringContainsString( 'teams.microsoft.com', $html );
+
+		wp_set_current_user( 0 );
+		$this->assertStringNotContainsString( 'Join here', $this->module()->render_single_content( $event_id ), 'The paywall still holds for a logged-out visitor.' );
+	}
+
+	/** A pre-deploy registrant: a confirmed seat, but never granted the role. */
+	public function test_a_roomless_virtual_event_shows_join_here_to_a_roleless_registrant() {
+		$event_id = $this->teams_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'old-teams@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'old-teams@example.test' ] );
+		$this->module()->entitlements->revoke( $event_id, $user_id );
+		$this->assertFalse( $this->module()->entitlements->holds_role( $event_id, $user_id ), 'Sanity: no role.' );
+		$this->assertSame( 'confirmed', get_post_meta( $seat_id, '_anchor_event_reg_status', true ) );
+
+		wp_set_current_user( $user_id );
+		$this->assertStringContainsString( 'Join here', $this->module()->render_single_content( $event_id ) );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** An event WITH a room asks the room's one access question, both ways. */
+	public function test_a_room_event_delegates_join_here_to_can_access_stream() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => true,
+			'virtual'             => true,
+			'virtual_url'         => 'https://vimeo.com/76979871',
+		] );
+		$this->assertNotSame( '', $this->module()->room_url( $event_id ), 'Sanity: a Vimeo virtual_url gets a room.' );
+
+		// Pending seat: the old check says yes, the room says no — the room wins.
+		$user_id = self::factory()->user->create( [ 'user_email' => 'pending-vimeo@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'pending-vimeo@example.test', 'status' => \Anchor\Events\Registrations::STATUS_PENDING ] );
+		wp_set_current_user( $user_id );
+		$this->assertStringNotContainsString( 'Join here', $this->module()->render_single_content( $event_id ) );
+
+		// No seat at all, but the room's filter says yes — the room wins again.
+		wp_set_current_user( self::factory()->user->create() );
+		add_filter( 'anchor_events_can_access_stream', '__return_true' );
+		try {
+			$html = $this->module()->render_single_content( $event_id );
+		} finally {
+			remove_filter( 'anchor_events_can_access_stream', '__return_true' );
+		}
+		$this->assertStringContainsString( 'Join here', $html );
+		wp_set_current_user( 0 );
+		remove_role( 'anchor_event_' . $event_id );
+	}
 }

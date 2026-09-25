@@ -56,9 +56,24 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * one that genuinely never landed still gets created - but it never re-runs
  * the hook, which is not idempotent and may already have fired once for
  * this row with nothing recorded to prove it.
- * Repair is not itself serialised: two simultaneous repairs of a failed
- * hook could both fire it (the credit/certificate/role effects stay single
- * via their unique keys and idempotency).
+ *
+ * Effect execution itself IS serialised per (user, course) (Codex review,
+ * PR #32 finding 1): a caller that flips a fresh row and a caller that then
+ * finds it already complete and takes the repair branch can both reach
+ * `run_effects()` for the same enrolment before the first one's effects
+ * finish - the pipeline gate above guards the ROW transition, not that. Both
+ * `complete()` branches take the same kind of MySQL named lock
+ * `start_attempt()` uses (`GET_LOCK`, site-scoped name, short timeout,
+ * released in `finally` - see `lock_name()`) around "read state -> run
+ * pending effects -> save state"; a caller that cannot get it returns
+ * `false` without running anything, because the pipeline that already holds
+ * it owns this row's effects right now. Effects claimed for this run are
+ * marked `running` with a timestamp before any of them execute, so a
+ * pipeline that crashes mid-run leaves that shape behind rather than looking
+ * untouched: the next call to hold the lock treats a `running` claim older
+ * than `EFFECTS_RUNNING_STALE_SECONDS` as `pending` (the claimant is dead)
+ * and a fresh one as still owned (left alone, since this caller already
+ * holds the lock, that can only be its own claim).
  */
 final class CompletionService {
 
@@ -86,19 +101,54 @@ final class CompletionService {
 	/** Enrolment metadata key holding the per-effect state. */
 	public const EFFECTS_META = 'completion_effects';
 
+	/** Enrolment metadata key holding when the current `running` claim was made. */
+	public const EFFECTS_CLAIMED_META = 'completion_effects_claimed_at';
+
 	/** The tracked effects, in pipeline order. */
 	public const EFFECTS = [ 'credit', 'certificate', 'completion_role', 'hook' ];
 
 	public const EFFECT_PENDING = 'pending';
+	public const EFFECT_RUNNING = 'running';
 	public const EFFECT_DONE    = 'done';
 	public const EFFECT_FAILED  = 'failed';
 	public const EFFECT_NA      = 'n/a';
 
 	/**
+	 * How long a `running` claim may stand before a repair treats it as
+	 * orphaned by a crashed pipeline and re-runs it as `pending` (Codex
+	 * review, finding 1). Running the whole effects pipeline is one request;
+	 * five minutes - the same window `QuizService::STALE_CLAIM_SECONDS` uses
+	 * for an orphaned submit claim - is far past any real one.
+	 */
+	public const EFFECTS_RUNNING_STALE_SECONDS = 300;
+
+	/** Seconds complete() waits for the per-(user,course) effects lock (filterable). */
+	public const EFFECTS_LOCK_TIMEOUT = 5;
+
+	/**
+	 * The MySQL named-lock key for one learner's completion effects pipeline
+	 * in one course (Codex review, PR #32 finding 1) - the same shape as
+	 * `QuizService::attempt_lock_name()` (audit F07): `GET_LOCK()` names are
+	 * server-wide, not scoped by database, so the site is folded into the key
+	 * or two installs sharing one MySQL server would contend on it whenever a
+	 * learner and course happen to share ids. MySQL lock names are at most 64
+	 * characters.
+	 */
+	public static function lock_name( int $user_id, int $course_id ): string {
+		global $wpdb;
+		$site = \md5( DB_NAME . $wpdb->prefix );
+		$name = 'anchor_courses_completion_' . $site . '_' . $user_id . '_' . $course_id;
+		return \strlen( $name ) <= 64 ? $name : 'anchor_courses_completion_' . \md5( $name );
+	}
+
+	/**
 	 * The per-effect completion state for this learner and course.
 	 *
-	 * @return array<string,string> effect => pending|done|failed|n/a; [] when the
-	 *                              row is not completed or predates tracking.
+	 * @return array<string,string> effect => pending|running|done|failed|n/a
+	 *                              (`running` = claimed by a pipeline that has
+	 *                              not yet settled it - see EFFECTS_CLAIMED_META,
+	 *                              Codex review finding 1); [] when the row is
+	 *                              not completed or predates tracking.
 	 */
 	public function effects( int $user_id, int $course_id ): array {
 		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
@@ -123,8 +173,9 @@ final class CompletionService {
 		if ( $enrollment->is_complete() ) {
 			// Not a second transition (see class docblock for what guards
 			// that) - but any effect the first run left pending or failed is
-			// re-run now (audit F02).
-			if ( ! $this->run_effects( $enrollment, false ) ) {
+			// re-run now (audit F02), serialised against the fresh pipeline
+			// or another repair (Codex review, finding 1).
+			if ( ! $this->run_effects_locked( $enrollment, false ) ) {
 				Log::write( 'completion_effects_untracked', [ 'user' => $user_id, 'course' => $course_id ] );
 			}
 			return false;
@@ -160,11 +211,50 @@ final class CompletionService {
 		/** This action is documented in EnrollmentService::set_status(). */
 		\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, 'completed' );
 
-		if ( ! $this->run_effects( $updated, true ) ) {
+		// Serialised against a repair call that reads this same row as
+		// already-complete a moment later (Codex review, finding 1): whichever
+		// of the two gets the lock first runs the effects; the other backs off.
+		if ( ! $this->run_effects_locked( $updated, true ) ) {
 			Log::write( 'completion_effects_untracked', [ 'user' => $user_id, 'course' => $course_id ] );
 		}
 
 		return true;
+	}
+
+	/**
+	 * `run_effects()`, serialised per (user, course) by a MySQL named lock
+	 * (Codex review, PR #32 finding 1 - see class docblock and `lock_name()`).
+	 * A caller that cannot get the lock within
+	 * `anchor_courses_completion_lock_timeout` seconds runs nothing and
+	 * returns false: the pipeline that holds the lock owns this row's effects
+	 * right now, so re-running them here would double-fire `award()`/
+	 * `issue()`'s hooks or the completion hook.
+	 *
+	 * @return bool False on a lock timeout, or whatever run_effects() returns.
+	 */
+	private function run_effects_locked( Enrollment $enrollment, bool $fresh ): bool {
+		global $wpdb;
+
+		$lock = self::lock_name( $enrollment->user_id, $enrollment->course_id );
+		/**
+		 * Seconds complete() waits for another pipeline's effects to finish
+		 * for the same learner and course.
+		 *
+		 * @param int $seconds
+		 * @param int $user_id
+		 * @param int $course_id
+		 */
+		$timeout = \max( 0, (int) \apply_filters( 'anchor_courses_completion_lock_timeout', self::EFFECTS_LOCK_TIMEOUT, $enrollment->user_id, $enrollment->course_id ) );
+		if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock, $timeout ) ) ) {
+			Log::write( 'completion_effects_lock_busy', [ 'user' => $enrollment->user_id, 'course' => $enrollment->course_id ] );
+			return false;
+		}
+
+		try {
+			return $this->run_effects( $enrollment, $fresh );
+		} finally {
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
+		}
 	}
 
 	/**
@@ -178,7 +268,8 @@ final class CompletionService {
 	 *              the row can look completed with no tracked state. That
 	 *              shape - and a row that predates tracking entirely - is
 	 *              handled by the `$untracked` branch below, not treated as
-	 *              "nothing to do" (CodeRabbit PR #32).
+	 *              "nothing to do" (CodeRabbit PR #32). Called only while
+	 *              this enrolment's completion lock is held (`run_effects_locked()`).
 	 */
 	private function run_effects( Enrollment $enrollment, bool $fresh ): bool {
 		$stored = (array) ( $enrollment->metadata[ self::EFFECTS_META ] ?? [] );
@@ -200,6 +291,23 @@ final class CompletionService {
 			}
 		} else {
 			$state = $stored;
+
+			// A `running` effect left behind by a pipeline that never
+			// finished (Codex review, finding 1): only a caller holding the
+			// completion lock ever reaches this branch, so a `running` entry
+			// here is never a second concurrent pipeline - it is either this
+			// same claim continuing after a nested call (left alone; still
+			// fresh) or a prior claimant that crashed before clearing it
+			// (stale past EFFECTS_RUNNING_STALE_SECONDS - re-run as pending).
+			$claimed_at = (string) ( $enrollment->metadata[ self::EFFECTS_CLAIMED_META ] ?? '' );
+			$stale      = '' === $claimed_at || Clock::to_timestamp( $claimed_at ) <= Clock::timestamp() - self::EFFECTS_RUNNING_STALE_SECONDS;
+			if ( $stale ) {
+				foreach ( $state as $effect => $status ) {
+					if ( self::EFFECT_RUNNING === $status ) {
+						$state[ $effect ] = self::EFFECT_PENDING;
+					}
+				}
+			}
 		}
 
 		$todo = \array_values( \array_filter(
@@ -207,13 +315,18 @@ final class CompletionService {
 			static fn ( string $effect ): bool => \in_array( $state[ $effect ] ?? '', [ self::EFFECT_PENDING, self::EFFECT_FAILED ], true )
 		) );
 		if ( [] === $todo ) {
-			return true; // Nothing outstanding.
+			return true; // Nothing outstanding - including a still-fresh `running` claim, left alone above.
 		}
 
-		$tracked = true;
-		if ( $fresh || $untracked ) {
-			$tracked = $this->save_effects( $enrollment->id, $state );
+		// Claim what is about to run as `running`, timestamped, BEFORE any of
+		// it executes (Codex review, finding 1): a crash partway through the
+		// loop below leaves exactly this shape - some effects settled, the
+		// rest still marked `running` - for the staleness check above to
+		// resolve on the next call.
+		foreach ( $todo as $effect ) {
+			$state[ $effect ] = self::EFFECT_RUNNING;
 		}
+		$tracked = $this->save_effects( $enrollment->id, $state, Clock::now() );
 
 		$user_id   = $enrollment->user_id;
 		$course_id = $enrollment->course_id;
@@ -221,8 +334,11 @@ final class CompletionService {
 			// The certificate snapshots and links the awarded credit, so it
 			// waits (stays pending) until the credit effect is settled - a
 			// certificate issued past a failed credit would vouch for 0 CE
-			// credits for good.
+			// credits for good. It was claimed `running` above on the
+			// assumption it would run this pass; put it back since it did not.
 			if ( 'certificate' === $effect && ! \in_array( $state['credit'] ?? '', [ self::EFFECT_DONE, self::EFFECT_NA ], true ) ) {
+				$state[ $effect ] = self::EFFECT_PENDING;
+				$tracked          = $this->save_effects( $enrollment->id, $state ) && $tracked;
 				continue;
 			}
 			try {
@@ -308,15 +424,24 @@ final class CompletionService {
 	/**
 	 * Merge the effect state into the row's metadata.
 	 *
+	 * @param string|null $claimed_at When given, also (re)stamps
+	 *                                EFFECTS_CLAIMED_META - the moment a
+	 *                                `running` claim in $state was made
+	 *                                (Codex review, finding 1). Omitted on
+	 *                                every other save, which leaves whatever
+	 *                                claim timestamp is already stored alone.
 	 * @return bool False when EnrollmentRepository::update() reports a
 	 *              database error (re-review, audit F02) - a fresh read of
 	 *              the row with the OLD metadata would otherwise look
 	 *              identical to a successful write.
 	 */
-	private function save_effects( int $enrollment_id, array $state ): bool {
+	private function save_effects( int $enrollment_id, array $state, ?string $claimed_at = null ): bool {
 		$current  = EnrollmentRepository::find_by_id( $enrollment_id );
 		$metadata = $current instanceof Enrollment ? $current->metadata : [];
 		$metadata[ self::EFFECTS_META ] = $state;
+		if ( null !== $claimed_at ) {
+			$metadata[ self::EFFECTS_CLAIMED_META ] = $claimed_at;
+		}
 
 		if ( ! EnrollmentRepository::update( $enrollment_id, [ 'metadata' => $metadata ] ) instanceof Enrollment ) {
 			Log::write( 'completion_effects_save_failed', [ 'enrollment' => $enrollment_id ] );

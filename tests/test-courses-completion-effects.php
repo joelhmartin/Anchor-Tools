@@ -43,6 +43,9 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 	/** @var array<string,int> */
 	private array $fired = [];
 
+	/** A second real MySQL connection, standing in for a parallel pipeline (Codex review, finding 1). */
+	private ?mysqli $other = null;
+
 	public function set_up() {
 		parent::set_up();
 		$this->enrollments = new EnrollmentService();
@@ -68,6 +71,11 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		remove_all_actions( 'anchor_courses_ce_credit_awarded' );
 		remove_all_actions( 'anchor_courses_certificate_issued' );
 		remove_all_actions( 'add_user_role' );
+		remove_all_filters( 'anchor_courses_completion_lock_timeout' );
+		if ( $this->other ) {
+			$this->other->close();
+			$this->other = null;
+		}
 		parent::tear_down();
 	}
 
@@ -368,6 +376,131 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$this->assertSame(
 			[ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'n/a' ],
 			$this->completion->effects( $this->user, $this->course )
+		);
+	}
+
+	/* --- Codex review, PR #32 finding 1: effect execution is serialised --- */
+
+	/**
+	 * A second caller that finds the row already complete - because the
+	 * first caller's transition landed but its effects have not finished -
+	 * must never run the same pending effects concurrently. Both reach for
+	 * the same MySQL named lock; a real second connection holds it here,
+	 * standing in for the still-running first pipeline, so this call must
+	 * back off and run nothing.
+	 */
+	public function test_a_concurrent_caller_backs_off_while_another_pipeline_holds_the_completion_lock() {
+		// Leave a real pending effect behind, exactly like the audit F02
+		// reproduction: the credit insert fails once, healed afterward, so
+		// the row is genuinely complete with credit still outstanding.
+		$this->break_queries( '/^INSERT IGNORE INTO \S*anchor_courses_ce_credits/' );
+		$this->finish_lesson();
+		$this->heal();
+		$this->assertSame( 'failed', $this->effects()['credit'], 'Precondition: a real effect is outstanding.' );
+
+		$name = CompletionService::lock_name( $this->user, $this->course );
+		$this->other = new mysqli();
+		$host        = explode( ':', DB_HOST );
+		$this->other->real_connect( $host[0], DB_USER, DB_PASSWORD, DB_NAME, isset( $host[1] ) ? (int) $host[1] : 3306 );
+		$this->assertSame(
+			'1',
+			(string) $this->other->query( "SELECT GET_LOCK('" . $this->other->real_escape_string( $name ) . "', 0)" )->fetch_row()[0],
+			'Precondition: the lock is held by the "other" pipeline.'
+		);
+
+		// `hook` already ran (and fired once) on the fresh transition above -
+		// only `credit` (and, by dependency, `certificate`) is outstanding.
+		// Snapshot the counts here so the assertion below is about what the
+		// LOCKED-OUT call itself did, not the whole test.
+		$before_fired = $this->fired;
+
+		add_filter( 'anchor_courses_completion_lock_timeout', static fn () => 0 );
+		$result = $this->completion->complete( $this->user, $this->course );
+
+		$this->assertFalse( $result, 'A repair call must back off, not run effects, while the lock is held elsewhere.' );
+		$this->assertNull( CreditRepository::find( $this->user, $this->course ), 'Nothing ran without the lock.' );
+		$this->assertSame( $before_fired, $this->fired, 'No hook fired for the caller that could not get the lock.' );
+		$this->assertSame( 'failed', $this->effects()['credit'], 'The stored state is untouched by the caller that never ran.' );
+
+		// Release the lock: an ordinary retry now completes it, same as any
+		// other repair.
+		$this->other->query( "SELECT RELEASE_LOCK('" . $this->other->real_escape_string( $name ) . "')" );
+		remove_all_filters( 'anchor_courses_completion_lock_timeout' );
+		$this->completion->complete( $this->user, $this->course );
+		$this->assert_all_done_once();
+	}
+
+	/**
+	 * A `running` claim left behind by a crashed pipeline is exactly what
+	 * `save_effects()` wrote right before the crash - stale once older than
+	 * EFFECTS_RUNNING_STALE_SECONDS, so the next repair (itself holding the
+	 * lock, so this can never be a second live pipeline) treats it as
+	 * pending and finishes the job.
+	 */
+	public function test_a_stale_running_claim_is_treated_as_pending_and_repaired() {
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		EnrollmentRepository::complete( $enrollment->id, gmdate( 'Y-m-d H:i:s' ) );
+		EnrollmentRepository::update(
+			$enrollment->id,
+			[
+				'metadata' => [
+					CompletionService::EFFECTS_META         => [
+						'credit'          => CompletionService::EFFECT_RUNNING,
+						'certificate'     => CompletionService::EFFECT_PENDING,
+						'completion_role' => CompletionService::EFFECT_DONE,
+						'hook'            => CompletionService::EFFECT_DONE,
+					],
+					CompletionService::EFFECTS_CLAIMED_META => gmdate( 'Y-m-d H:i:s', time() - CompletionService::EFFECTS_RUNNING_STALE_SECONDS - 1 ),
+				],
+			]
+		);
+
+		$this->completion->complete( $this->user, $this->course );
+
+		$this->assertSame(
+			[ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'done' ],
+			$this->effects(),
+			"A crashed pipeline's stale claim is re-run as pending, not left running forever."
+		);
+		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ) );
+		$this->assertNotNull( CertificateRepository::find( $this->user, $this->course ) );
+		$this->assertSame( [ 'credit' => 1, 'certificate' => 1, 'course' => 0 ], $this->fired, 'Only the two re-run effects fire; completion_role/hook were already done and are untouched.' );
+	}
+
+	/**
+	 * The counterpart: a claim younger than EFFECTS_RUNNING_STALE_SECONDS is
+	 * left alone. The caller here holds the completion lock, so a `running`
+	 * entry that fresh can only be this same claim, never a second
+	 * concurrent pipeline - repair must not re-run it out from under
+	 * whatever is presumed to still be settling it.
+	 */
+	public function test_a_fresh_running_claim_is_left_alone_by_repair() {
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		EnrollmentRepository::complete( $enrollment->id, gmdate( 'Y-m-d H:i:s' ) );
+		EnrollmentRepository::update(
+			$enrollment->id,
+			[
+				'metadata' => [
+					CompletionService::EFFECTS_META         => [
+						'credit'          => CompletionService::EFFECT_RUNNING,
+						'certificate'     => CompletionService::EFFECT_PENDING,
+						'completion_role' => CompletionService::EFFECT_DONE,
+						'hook'            => CompletionService::EFFECT_DONE,
+					],
+					CompletionService::EFFECTS_CLAIMED_META => gmdate( 'Y-m-d H:i:s', time() - 10 ),
+				],
+			]
+		);
+
+		$result = $this->completion->complete( $this->user, $this->course );
+
+		$this->assertFalse( $result );
+		$this->assertNull( CreditRepository::find( $this->user, $this->course ), 'A still-fresh claim is not re-run.' );
+		$this->assertSame( [ 'credit' => 0, 'certificate' => 0, 'course' => 0 ], $this->fired );
+		$this->assertSame(
+			[ 'credit' => 'running', 'certificate' => 'pending', 'completion_role' => 'done', 'hook' => 'done' ],
+			$this->effects(),
+			'credit stays claimed; certificate - which depends on it - is put back to pending rather than left running for something it never got to do.'
 		);
 	}
 }

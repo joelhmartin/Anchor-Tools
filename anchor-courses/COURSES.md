@@ -192,6 +192,25 @@ one." for an enrolled learner locked by progression.
   `repair_incomplete` accordingly; the earlier `repair_not_tracked` code (a
   distinct "nothing could be determined" outcome) can no longer occur
   through this path and was removed.
+- **Effect execution is serialised per (user, course)** (Codex review, PR #32
+  finding 1): both the fresh transition's own run and any repair take the
+  same kind of MySQL named lock `start_attempt()` uses
+  (`CompletionService::lock_name( $user_id, $course_id )`, `GET_LOCK`,
+  `anchor_courses_completion_lock_timeout` seconds, default 5, released in
+  `finally`) around "read state → run pending effects → save state" - a
+  second caller that finds the row already complete while the first
+  caller's effects are still running cannot get the lock and returns `false`
+  having run nothing, rather than re-running the same pending effects
+  concurrently and double-firing `award()`/`issue()`'s hooks or
+  `anchor_courses_course_completed`. Before any claimed effect actually
+  runs, `run_effects()` marks it `running` in `completion_effects` with a
+  timestamp in `completion_effects_claimed_at`, so a pipeline that crashes
+  mid-run leaves that exact shape behind. The next call to hold the lock
+  treats a `running` entry older than
+  `CompletionService::EFFECTS_RUNNING_STALE_SECONDS` (300s) as `pending` (the
+  claimant is dead - repair re-runs it) and one still within that window as
+  still owned (left alone - since this caller already holds the lock, it can
+  only be its own claim, never a second live pipeline).
 - **The effect-tracking write is itself checked** (re-review, audit F02):
   `CompletionService::save_effects()` returns `false` and `Log::write()`s
   `completion_effects_save_failed` when `EnrollmentRepository::update()`
@@ -309,6 +328,7 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_can_access_lesson` | `bool, $user_id, $course_id, $item_id, $item_type` | item availability (lessons and quizzes) |
 | `anchor_courses_can_start_quiz` | `true\|WP_Error, $user_id, $quiz_id, $course_id` | may this attempt start/resume |
 | `anchor_courses_attempt_lock_timeout` | `5, $user_id, $quiz_id, $course_id` | seconds `start_attempt()` waits for the per-learner start lock before `attempt_busy` |
+| `anchor_courses_completion_lock_timeout` | `5, $user_id, $course_id` | seconds `complete()` waits for the per-(user,course) completion-effects lock before backing off |
 | `anchor_courses_quiz_result` | `array $result, QuizAttempt $attempt` | graded result before it is stored |
 | `anchor_courses_course_completion_status` | `bool, $user_id, $course_id` | does the course count as complete |
 | `anchor_courses_ce_credit_amount` | `float, $user_id, $course_id` | credit amount before the record |

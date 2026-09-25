@@ -1291,8 +1291,11 @@ class Registrations {
      * @param bool   $include_customer Whether to also match the WooCommerce
      *                        order's buyer/customer id (default true — the
      *                        behavior EMAILS.md documents for
-     *                        has_confirmed_seat() and the existing behavior
-     *                        of user_has_active_seat()). Pass false for an
+     *                        Entitlements::buyer_resolves_to_seat() and the
+     *                        existing behavior of user_has_active_seat()).
+     *                        Entitlements::has_confirmed_seat() — every
+     *                        keep/revoke decision about a role — passes
+     *                        false (audit F01). Pass false for an
      *                        OWNER-ONLY match: the buyer's customer id is
      *                        stamped on every seat in the order, including
      *                        seats bought FOR someone else, so a caller that

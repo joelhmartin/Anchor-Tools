@@ -110,58 +110,60 @@ final class QuizService {
 		return true;
 	}
 
+	/** Seconds start_attempt() waits for the per-learner lock (filterable). */
+	public const ATTEMPT_LOCK_TIMEOUT = 5;
+
+	/**
+	 * The MySQL named-lock key for one learner's starts at one quiz in one
+	 * course (audit F07). MySQL lock names are at most 64 characters.
+	 */
+	public static function attempt_lock_name( int $user_id, int $course_id, int $quiz_id ): string {
+		$name = 'anchor_courses_attempt_' . $user_id . '_' . $course_id . '_' . $quiz_id;
+		return \strlen( $name ) <= 64 ? $name : 'anchor_courses_attempt_' . \md5( $name );
+	}
+
 	/**
 	 * Begin (or resume) an attempt.
+	 *
+	 * Serialised per (user, course, quiz) by a MySQL named lock (audit F07):
+	 * the preflight (can_start(): open attempt, allowance, retry delay) and
+	 * the create run inside one critical section, so two tabs or two direct
+	 * requests cannot both pass the preflight and both create. A caller that
+	 * cannot get the lock within `anchor_courses_attempt_lock_timeout`
+	 * seconds gets WP_Error('attempt_busy') (REST 409) - a controlled
+	 * conflict, never a second attempt. QuizAttemptRepository::create()'s
+	 * conditional INSERT is the database-level backstop. The started side
+	 * effects run after the lock is released.
 	 *
 	 * @return QuizAttempt|\WP_Error
 	 */
 	public function start_attempt( int $user_id, int $quiz_id, int $course_id ) {
-		$allowed = $this->can_start( $user_id, $quiz_id, $course_id );
-		if ( \is_wp_error( $allowed ) ) {
-			return $allowed;
+		global $wpdb;
+
+		$lock = self::attempt_lock_name( $user_id, $course_id, $quiz_id );
+		/**
+		 * Seconds to wait for another start of the same attempt to finish.
+		 *
+		 * @param int $seconds
+		 * @param int $user_id
+		 * @param int $quiz_id
+		 * @param int $course_id
+		 */
+		$timeout = \max( 0, (int) \apply_filters( 'anchor_courses_attempt_lock_timeout', self::ATTEMPT_LOCK_TIMEOUT, $user_id, $quiz_id, $course_id ) );
+		if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock, $timeout ) ) ) {
+			return new \WP_Error( 'attempt_busy', \__( 'This quiz is already being started. Please try again.', 'anchor-schema' ) );
 		}
 
-		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
-		if ( $open instanceof QuizAttempt ) {
-			// Scoped by the query; asserted anyway so no future change to the
-			// lookup can hand course B a course-A attempt (audit F05).
-			return $open->course_id === $course_id
-				? $open
-				: new \WP_Error( 'attempt_course_mismatch', \__( 'That attempt belongs to a different course.', 'anchor-schema' ) );
+		try {
+			$result = $this->start_attempt_locked( $user_id, $quiz_id, $course_id );
+		} finally {
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
 		}
 
-		$settings = $this->settings( $quiz_id );
-
-		$attempt = QuizAttemptRepository::create(
-			[
-				'user_id'         => $user_id,
-				'course_id'       => $course_id,
-				'quiz_id'         => $quiz_id,
-				'points_possible' => Questions::points_possible( $quiz_id ),
-				// Pinned now, read by deadline()/enforce_timer()/submit() for the
-				// life of this attempt - never the live setting again (Task 24
-				// review, ruling R3).
-				'metadata'        => [
-					'time_limit_seconds' => (int) $settings['time_limit_seconds'],
-					'on_timer_expiry'    => (string) $settings['on_timer_expiry'],
-				],
-			]
-		);
-
-		// A genuine insert vs. a unique-key collision with a concurrent start on
-		// the same (user, quiz) that raced past the open_attempt() check above
-		// (Task 24 review, ruling R1). Only a genuine insert gets the
-		// side effects below; a collision resolves to the winner's row exactly
-		// like the ordinary resume path.
-		$created = $attempt instanceof QuizAttempt;
-		if ( ! $created ) {
-			$attempt = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
+		if ( ! \is_array( $result ) ) {
+			return $result; // WP_Error.
 		}
-
-		if ( ! $attempt instanceof QuizAttempt ) {
-			return new \WP_Error( 'attempt_failed', \__( 'The attempt could not be started.', 'anchor-schema' ) );
-		}
-
+		[ $attempt, $created ] = $result;
 		if ( ! $created ) {
 			return $attempt;
 		}
@@ -173,7 +175,7 @@ final class QuizService {
 
 		/**
 		 * Fires when a new quiz attempt begins (never on a resume - see
-		 * start_attempt()'s open-attempt short-circuit above, nor on a
+		 * start_attempt_locked()'s open-attempt short-circuit, nor on a
 		 * collision resolving to another request's winning row).
 		 *
 		 * @param QuizAttempt $attempt
@@ -184,6 +186,66 @@ final class QuizService {
 		\do_action( 'anchor_courses_quiz_started', $attempt, $user_id, $quiz_id, $course_id );
 
 		return $attempt;
+	}
+
+	/**
+	 * The critical section of start_attempt(): preflight, resume or create.
+	 *
+	 * @return array{0:QuizAttempt,1:bool}|\WP_Error [ attempt, newly created ].
+	 */
+	private function start_attempt_locked( int $user_id, int $quiz_id, int $course_id ) {
+		$allowed = $this->can_start( $user_id, $quiz_id, $course_id );
+		if ( \is_wp_error( $allowed ) ) {
+			return $allowed;
+		}
+
+		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
+		if ( $open instanceof QuizAttempt ) {
+			// Scoped by the query; asserted anyway so no future change to the
+			// lookup can hand course B a course-A attempt (audit F05).
+			return $open->course_id === $course_id
+				? [ $open, false ]
+				: new \WP_Error( 'attempt_course_mismatch', \__( 'That attempt belongs to a different course.', 'anchor-schema' ) );
+		}
+
+		$settings = $this->settings( $quiz_id );
+
+		$attempt = QuizAttemptRepository::create(
+			[
+				'user_id'         => $user_id,
+				'course_id'       => $course_id,
+				'quiz_id'         => $quiz_id,
+				'points_possible' => Questions::points_possible( $quiz_id ),
+				'max_attempts'    => (int) $settings['max_attempts'],
+				// Pinned now, read by deadline()/enforce_timer()/submit() for the
+				// life of this attempt - never the live setting again (Task 24
+				// review, ruling R3).
+				'metadata'        => [
+					'time_limit_seconds' => (int) $settings['time_limit_seconds'],
+					'on_timer_expiry'    => (string) $settings['on_timer_expiry'],
+				],
+			]
+		);
+
+		// A genuine insert vs. nothing inserted: a unique-key collision
+		// (Task 24 review, ruling R1) or create()'s own guard finding an open
+		// attempt or a used-up allowance written by a start that raced past
+		// the preflight above (audit F07). Only a genuine insert gets the
+		// side effects; otherwise the winner's open row is resumed exactly
+		// like the ordinary resume path - and if there is none, the allowance
+		// is what refused it.
+		if ( $attempt instanceof QuizAttempt ) {
+			return [ $attempt, true ];
+		}
+
+		$attempt = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
+		if ( $attempt instanceof QuizAttempt ) {
+			return [ $attempt, false ];
+		}
+		if ( 0 === $this->attempts_remaining( $user_id, $quiz_id, $course_id ) ) {
+			return new \WP_Error( 'no_attempts_remaining', \__( 'You have used all your attempts.', 'anchor-schema' ) );
+		}
+		return new \WP_Error( 'attempt_failed', \__( 'The attempt could not be started.', 'anchor-schema' ) );
 	}
 
 	/** Attempts counted against max_attempts in THIS course (audit F05). */

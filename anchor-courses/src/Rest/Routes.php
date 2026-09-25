@@ -99,7 +99,8 @@ final class Routes {
 	 * attempt_not_yours); 404 for "that id does not exist" (no_attempt,
 	 * no_course, no_user); 409 for a state conflict on an otherwise-valid
 	 * request (attempt_closed, no_questions, attempt_course_mismatch - audit
-	 * F05, save_conflict - audit F06); 503 for a write the server
+	 * F05, save_conflict - audit F06, attempt_busy - audit F07); 503 for a
+	 * write the server
 	 * could not persist, safe to retry (save_failed - audit F03); 400 for a
 	 * malformed request (unknown_question) and the fallback for anything
 	 * unlisted.
@@ -123,6 +124,7 @@ final class Routes {
 			'save_failed'             => 503,
 			'attempt_course_mismatch' => 409,
 			'save_conflict'           => 409,
+			'attempt_busy'            => 409,
 		];
 
 		$code = (string) $error->get_error_code();

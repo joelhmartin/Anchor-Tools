@@ -56,10 +56,13 @@ final class QuizAttemptRepository {
 	 * @param array $data user_id, course_id, quiz_id, points_possible, metadata
 	 *                    (the pinned time_limit_seconds/on_timer_expiry, brief
 	 *                    T24 ruling R3 - stored as-is, this repository does not
-	 *                    interpret it).
-	 * @return QuizAttempt|null Null on a genuine unique-key collision (ruling
-	 *                          R1) - the caller resolves it via open_attempt(),
-	 *                          never this method.
+	 *                    interpret it), and max_attempts (0 = unlimited).
+	 * @return QuizAttempt|null Null when nothing was inserted: a unique-key
+	 *                          collision (ruling R1), or - the database-level
+	 *                          guard (audit F07) - an attempt is already open
+	 *                          for this (user, course, quiz), or max_attempts
+	 *                          counted attempts already exist. The caller
+	 *                          resolves it via open_attempt(), never this method.
 	 */
 	public static function create( array $data ): ?QuizAttempt {
 		global $wpdb;
@@ -71,28 +74,58 @@ final class QuizAttemptRepository {
 		$metadata  = Json::encode( (array) ( $data['metadata'] ?? [] ) );
 		$table     = self::table();
 
+		$max          = \max( 0, (int) ( $data['max_attempts'] ?? 0 ) );
+		$placeholders = \implode( ', ', \array_fill( 0, \count( self::COUNTED_STATUSES ), '%s' ) );
+
 		// One statement: the next number is computed inside the INSERT, so two
 		// concurrent starts cannot both read the same MAX(). IGNORE turns the
 		// expected unique-key collision (ruling R1) into a silent no-op instead
 		// of a raised wpdb error - insert_id then stays 0 and create() returns
 		// null exactly as it would for any other rejected duplicate.
+		//
+		// The HAVING clause is the database-level half of audit F07: the row is
+		// only inserted while no attempt is open for this (user, course, quiz)
+		// and fewer than max_attempts counted attempts exist - re-checked by
+		// the INSERT itself, not by a read some time before it. A unique number
+		// alone never stopped a second open attempt (it just got number 2).
+		// QuizService::start_attempt() also serialises the whole start under
+		// a named lock; this holds even for a caller that bypasses it.
 		$wpdb->query(
 			$wpdb->prepare(
 				"INSERT IGNORE INTO {$table}
 				 (user_id, course_id, quiz_id, attempt_number, status, points_possible, started_at, answers, grading_data, metadata, created_at, updated_at)
 				 SELECT %d, %d, %d, COALESCE(MAX(a.attempt_number), 0) + 1, 'in_progress', %f, %s, '[]', '[]', %s, %s, %s
-				 FROM {$table} a WHERE a.user_id = %d AND a.course_id = %d AND a.quiz_id = %d", // phpcs:ignore WordPress.DB.PreparedSQL
-				$user_id,
-				$course_id,
-				$quiz_id,
-				(float) ( $data['points_possible'] ?? 0 ),
-				$now,
-				$metadata,
-				$now,
-				$now,
-				$user_id,
-				$course_id,
-				$quiz_id
+				 FROM {$table} a WHERE a.user_id = %d AND a.course_id = %d AND a.quiz_id = %d
+				 HAVING NOT EXISTS (
+				     SELECT 1 FROM {$table} o WHERE o.user_id = %d AND o.course_id = %d AND o.quiz_id = %d AND o.status = 'in_progress'
+				 )
+				 AND ( %d = 0 OR (
+				     SELECT COUNT(*) FROM {$table} c WHERE c.user_id = %d AND c.course_id = %d AND c.quiz_id = %d AND c.status IN ({$placeholders})
+				 ) < %d )", // phpcs:ignore WordPress.DB.PreparedSQL
+				\array_merge(
+					[
+						$user_id,
+						$course_id,
+						$quiz_id,
+						(float) ( $data['points_possible'] ?? 0 ),
+						$now,
+						$metadata,
+						$now,
+						$now,
+						$user_id,
+						$course_id,
+						$quiz_id,
+						$user_id,
+						$course_id,
+						$quiz_id,
+						$max,
+						$user_id,
+						$course_id,
+						$quiz_id,
+					],
+					self::COUNTED_STATUSES,
+					[ $max ]
+				)
 			)
 		);
 

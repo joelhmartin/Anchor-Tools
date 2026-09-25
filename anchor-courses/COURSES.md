@@ -196,6 +196,16 @@ one." for an enrolled learner locked by progression.
   `QuizService::STALE_CLAIM_SECONDS` (300) was orphaned by a crashed request
   and is re-opened, answers intact, by `QuizService::reopen_stale_claims()` -
   run by the daily sweep and by the learner's own next start.
+- **Starting an attempt is serialised** (audit F07): `start_attempt()` takes the
+  MySQL named lock `QuizService::attempt_lock_name( $user, $course, $quiz )`
+  (`GET_LOCK`, `anchor_courses_attempt_lock_timeout` seconds, default 5) around
+  the preflight and the create, released in `finally`; a caller that cannot get
+  it receives `WP_Error('attempt_busy')` (REST 409). As a database-level
+  backstop, `QuizAttemptRepository::create()` inserts only while no attempt is
+  open for (user, course, quiz) and fewer than `max_attempts` counted attempts
+  exist; nothing inserted resolves to the open attempt, or to
+  `no_attempts_remaining`. Two simultaneous starts therefore share one attempt
+  or one gets a controlled conflict - never two open attempts.
 - **Answer autosave is a compare-and-swap** (audit F06): `quiz_attempts.revision`
   (1.3.0) is bumped by every answers write;
   `QuizAttemptRepository::save_answers( $id, $answers, $expected_revision )`
@@ -263,6 +273,7 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_role_loss_policy` | `'keep', $user_id, $course_id, $role, $source, $source_id` | see Loss policy |
 | `anchor_courses_can_access_lesson` | `bool, $user_id, $course_id, $item_id, $item_type` | item availability (lessons and quizzes) |
 | `anchor_courses_can_start_quiz` | `true\|WP_Error, $user_id, $quiz_id, $course_id` | may this attempt start/resume |
+| `anchor_courses_attempt_lock_timeout` | `5, $user_id, $quiz_id, $course_id` | seconds `start_attempt()` waits for the per-learner start lock before `attempt_busy` |
 | `anchor_courses_quiz_result` | `array $result, QuizAttempt $attempt` | graded result before it is stored |
 | `anchor_courses_course_completion_status` | `bool, $user_id, $course_id` | does the course count as complete |
 | `anchor_courses_ce_credit_amount` | `float, $user_id, $course_id` | credit amount before the record |
@@ -310,7 +321,8 @@ Service errors map through `Routes::error_response()`:
 403 `not_enrolled`, `locked`, `not_in_course`, `course_closed`,
 `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`,
 `attempt_not_yours`; 404 `no_attempt`, `no_course`, `no_user`; 409
-`attempt_closed`, `no_questions`, `attempt_course_mismatch`, `save_conflict`; 503 `save_failed` (retry); 400
+`attempt_closed`, `no_questions`, `attempt_course_mismatch`, `save_conflict`,
+`attempt_busy`; 503 `save_failed` (retry); 400
 `unknown_question` and anything unlisted.
 Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 `show_score` is off, grading data only with `show_correct_answers`).

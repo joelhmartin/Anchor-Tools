@@ -187,6 +187,58 @@ class Test_Assets extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( 'anchor-event-checkout-attendees', wp_scripts()->registered );
 	}
 
+	/**
+	 * Audit finding (b), 2026-09-25: room.css/room.js used to be enqueued
+	 * from templates/live-event.php, AFTER get_header() had already run
+	 * wp_head() (and so already printed whatever was queued) — an unstyled
+	 * flash. frontend_assets(), the module's own wp_enqueue_scripts callback,
+	 * must enqueue them itself on a room request, before that print pass.
+	 */
+	public function test_room_assets_enqueued_from_wp_enqueue_scripts_on_a_room_request() {
+		$event_id = $this->make_event( [
+			'registration_mode'       => 'free',
+			'access_role_enabled'    => true,
+			'timezone'               => 'UTC',
+			'stream_default_modality' => 'virtual',
+			'stream_embed'           => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '' ],
+		] );
+		$this->module()->register_room_endpoint();
+		$this->go_to( $this->module()->room_url( $event_id ) );
+		$this->assertTrue( $this->module()->is_room_request(), 'Sanity: this must resolve as a room request.' );
+
+		wp_dequeue_style( 'anchor-events-room' );
+		wp_deregister_style( 'anchor-events-room' );
+		wp_dequeue_script( 'anchor-events-room' );
+		wp_deregister_script( 'anchor-events-room' );
+
+		$this->module()->frontend_assets();
+
+		$this->assertTrue( wp_style_is( 'anchor-events-room', 'enqueued' ), 'room.css was not enqueued by frontend_assets() on a room request.' );
+		$this->assertTrue( wp_script_is( 'anchor-events-room', 'enqueued' ), 'room.js was not enqueued by frontend_assets() on a room request.' );
+	}
+
+	/** On a normal (non-room) event page, the room assets are never enqueued. */
+	public function test_room_assets_not_enqueued_on_a_normal_event_page() {
+		$event_id = $this->make_event( [
+			'registration_mode'       => 'free',
+			'access_role_enabled'    => true,
+			'stream_default_modality' => 'virtual',
+			'stream_embed'           => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '' ],
+		] );
+		$this->go_to( get_permalink( $event_id ) );
+		$this->assertFalse( $this->module()->is_room_request() );
+
+		wp_dequeue_style( 'anchor-events-room' );
+		wp_deregister_style( 'anchor-events-room' );
+		wp_dequeue_script( 'anchor-events-room' );
+		wp_deregister_script( 'anchor-events-room' );
+
+		$this->module()->frontend_assets();
+
+		$this->assertFalse( wp_style_is( 'anchor-events-room', 'enqueued' ) );
+		$this->assertFalse( wp_script_is( 'anchor-events-room', 'enqueued' ) );
+	}
+
 	/** room.js is source, jQuery-IIFE, and ships no ES module syntax. */
 	public function test_room_js_is_source_jquery() {
 		$path = dirname( __DIR__ ) . '/anchor-events-manager/assets/room.js';

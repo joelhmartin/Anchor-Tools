@@ -7671,6 +7671,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( \is_admin() ) {
             return;
         }
+        // A room request used to enqueue room.css/room.js from inside
+        // templates/live-event.php, AFTER get_header() had already run
+        // wp_head() (which prints the styles/scripts queued so far) — the
+        // same unstyled-flash shape as RENDER-D18 below, just for the room
+        // instead of the archive (audit finding b, 2026-09-25). Enqueuing
+        // here, on wp_enqueue_scripts itself, lands them in the normal head
+        // pass regardless of what the active template does.
+        if ( $this->is_room_request() ) {
+            $this->enqueue_room_assets();
+            return;
+        }
         // RENDER-D18: a series archive (templates/taxonomy-event_series.php)
         // was missing from this gate, so frontend.css/.js were enqueued only
         // from inside that template — after wp_head — and WordPress prints

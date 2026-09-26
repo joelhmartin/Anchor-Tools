@@ -814,4 +814,16 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		);
 		$this->assertSame( 1, $recompleted, 'The reopened row starts a new cycle: course_recompleted fires once.' );
 	}
+
+	/** CodeRabbit: a throwing status listener must not escape uncomplete() once the reopen is committed. */
+	public function test_uncomplete_contains_a_throwing_status_listener() {
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ), 'fixture: completed' );
+		add_action( 'anchor_courses_enrollment_status_changed', static function () { throw new \RuntimeException( 'listener boom' ); } );
+
+		$result = $this->completion->uncomplete( $this->user, $this->course );
+
+		$this->assertTrue( $result, 'uncomplete() reports the committed reopen despite the listener' );
+		$this->assertSame( 'in_progress', $this->enrollments->get( $this->user, $this->course )->status );
+	}
 }

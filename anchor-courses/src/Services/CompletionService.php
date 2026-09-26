@@ -626,7 +626,13 @@ final class CompletionService {
 				return false;
 			}
 
-			\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, 'completed', 'in_progress' );
+			// The reopen is already committed; a throwing listener must not mask it
+			// (the admin handler would never redirect). Same containment as complete().
+			try {
+				\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, 'completed', 'in_progress' );
+			} catch ( \Throwable $e ) {
+				Log::write( 'completion_status_hook_failed', [ 'user' => $user_id, 'course' => $course_id, 'error' => $e->getMessage() ] );
+			}
 			return true;
 		} finally {
 			$this->release_lock( $lock );

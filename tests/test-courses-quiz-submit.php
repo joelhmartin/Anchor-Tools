@@ -515,4 +515,63 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 
 		$this->assertSame( [ [ 'expired', $this->user, $this->quiz, $this->course ] ], $seen );
 	}
+
+	/**
+	 * Round 6 finding B: if the re-read right after a successful
+	 * in_progress -> submitted claim fails, submit() must NOT grade its
+	 * pre-claim snapshot - an autosave committed between the first read and
+	 * the claim is missing from it and would be dropped from both the grade
+	 * and the stored answers. It releases the claim and returns `read_failed`
+	 * (503 at REST); the autosaved answer is intact and a retry grades it.
+	 *
+	 * Sequenced through the `query` filter: the autosave runs just before
+	 * the claim UPDATE reaches MySQL (so after submit()'s first read), and the
+	 * first read of the row after the claim is turned into a real database
+	 * error, once.
+	 */
+	public function test_a_failed_read_after_the_claim_releases_it_and_never_grades_the_pre_claim_snapshot() {
+		global $wpdb;
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+		$this->quizzes->save_answer( $attempt->id, $this->q1, 'a2' );
+
+		$fired = 0;
+		add_action( 'anchor_courses_quiz_submitted', function () use ( &$fired ) { $fired++; }, 10, 4 );
+
+		$autosaved = false;
+		$claimed   = false;
+		$broken    = false;
+		$wpdb->suppress_errors( true );
+		$break = function ( $query ) use ( $attempt, &$autosaved, &$claimed, &$broken ) {
+			$query = (string) $query;
+			if ( ! $autosaved && \preg_match( "/^UPDATE \\S*anchor_courses_quiz_attempts SET status = 'submitted'/", $query ) ) {
+				$autosaved = true;
+				$this->assertNotWPError( $this->quizzes->save_answer( $attempt->id, $this->q2, 'b1' ), 'The autosave between the first read and the claim is acknowledged.' );
+				$claimed = true;
+				return $query;
+			}
+			if ( $claimed && ! $broken && \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = \d+$/', $query ) ) {
+				$broken = true;
+				return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+		$result = $this->quizzes->submit( $attempt->id, [] );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertTrue( $autosaved && $broken, 'Precondition: the autosave and the failed re-read both happened.' );
+		$this->assertWPError( $result );
+		$this->assertSame( 'read_failed', $result->get_error_code() );
+		$this->assertSame( 0, $fired, 'Nothing graded, nothing fired.' );
+
+		$row = QuizAttemptRepository::find( $attempt->id );
+		$this->assertSame( 'in_progress', $row->status, 'The claim is released.' );
+		$this->assertSame( [ $this->q1 => [ 'a2' ], $this->q2 => [ 'b1' ] ], $row->answers, 'The autosaved answer is intact.' );
+
+		$graded = $this->quizzes->submit( $attempt->id, [] );
+		$this->assertSame( 'graded', $graded->status );
+		$this->assertSame( 100.0, $graded->score, 'The retry grades the autosaved answer too.' );
+		$this->assertSame( 1, $fired );
+	}
 }

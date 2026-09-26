@@ -596,9 +596,18 @@ final class QuizService {
 		// `in_progress` on the write) - so what is graded below is exactly
 		// every acknowledged save plus this request's own answers.
 		$claimed = QuizAttemptRepository::find( $attempt_id );
-		if ( $claimed instanceof QuizAttempt ) {
-			$attempt = $claimed;
+		if ( ! $claimed instanceof QuizAttempt ) {
+			// Never grade the PRE-claim snapshot (Codex, PR #32 Round 6): an
+			// autosave committed between the first read and the claim is not
+			// in it, so grading it would drop that answer from the grade AND
+			// overwrite it in the stored answers. Release the claim - the
+			// row still holds every acknowledged save - and let the learner's
+			// retry (or the sweep) grade the real row.
+			QuizAttemptRepository::transition( $attempt_id, 'submitted', 'in_progress' );
+			Log::write( 'quiz_submit_read_failed', [ 'attempt' => $attempt_id ] );
+			return new \WP_Error( 'read_failed', \__( 'The attempt could not be read back for grading. Please submit again.', 'anchor-schema' ) );
 		}
+		$attempt = $claimed;
 
 		// In-window: merge the submitted answers over what was saved.
 		// Late + auto_submit: grade ONLY what was saved before the deadline.

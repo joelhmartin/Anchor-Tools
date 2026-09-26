@@ -103,7 +103,9 @@ final class Routes {
 	 * write OR a read the server could not complete, safe to retry
 	 * (save_failed - audit F03; read_failed - CodeRabbit PR #32 re-review,
 	 * QuizService::submit()'s expire branch when the row it just
-	 * transitioned to `expired` could not be re-read even after a retry);
+	 * transitioned to `expired` could not be re-read even after a retry, and
+	 * its grading branch when the row it just claimed could not be re-read -
+	 * the claim is released first, Round 6);
 	 * 400 for a malformed request (unknown_question) and the fallback for
 	 * anything unlisted.
 	 */

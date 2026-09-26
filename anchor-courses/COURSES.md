@@ -400,6 +400,27 @@ one." for an enrolled learner locked by progression.
   chance to see it. Only if BOTH reads come back empty does `submit()`
   return `WP_Error('read_failed')` (REST 503, safe to retry) - never the
   stale `in_progress` object, and logged as `quiz_expire_read_failed`.
+- **The expiry effects run even when BOTH post-transition reads fail**
+  (Round 10, Codex re-review, PR #32 finding - closes the gap the point
+  above left open): before this fix, a double read-back failure returned
+  `read_failed` immediately after logging it - BEFORE recording the failed
+  quiz progress, firing `anchor_courses_quiz_expired`, or recalculating the
+  course. A "just retry" recovery does not exist for this: `submit_tracked()`'s
+  own "already closed" short-circuit refuses any later call on this same
+  attempt once it is no longer `in_progress`, and `sweep_expired_attempts()`
+  already counts this call `transitioned` - so a skipped effect here was
+  permanently skipped, not merely delayed. `QuizService::fire_expiry_effects()`
+  (record the failed progress, fire the hook, recalculate) now runs from
+  BOTH the confirmed-read path and the double-failure path, in the latter
+  case against a SYNTHESISED `QuizAttempt` built from the pre-transition
+  object with `status` overridden to `'expired'` - the `in_progress ->
+  expired` transition already committed for real, so this is the truth even
+  though nothing could confirm it just now, and no `in_progress` object ever
+  reaches the hook. `submit()`'s public return value is unchanged
+  (`WP_Error('read_failed')`, still logged as `quiz_expire_read_failed`) -
+  only the effects that follow a confirmed expiry are now guaranteed to run
+  exactly once, regardless of which of the two post-transition reads (if
+  either) actually landed.
 - **Grading reads the claimed row, never the pre-claim snapshot** (Round 6,
   PR #32): after the `in_progress -> submitted` claim `submit()` re-reads
   the row, so an autosave acknowledged between its first read and the

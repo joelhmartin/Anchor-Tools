@@ -497,19 +497,42 @@ final class QuizService {
 	 * @return QuizAttempt|\WP_Error
 	 */
 	public function submit( int $attempt_id, array $answers = [], ?int $expected_user_id = null ) {
+		return $this->submit_tracked( $attempt_id, $answers, $expected_user_id )['result'];
+	}
+
+	/**
+	 * submit()'s real implementation, plus an explicit signal of whether THIS
+	 * call durably transitioned the attempt's status (Round 8, CodeRabbit,
+	 * COURSES.md ~:350 / `sweep_expired_attempts()`).
+	 *
+	 * Neither the result's TYPE nor a before/after status compare says this
+	 * safely on its own: a `WP_Error` does not always mean nothing happened -
+	 * the `expire` policy's `read_failed` follows a transition that already
+	 * committed, before either of its own re-reads runs - and a `QuizAttempt`
+	 * result does not always mean THIS call transitioned anything either -
+	 * the generic claim-then-grade path's `read_failed`/`save_failed` ROLLS
+	 * BACK its own `in_progress -> submitted` claim before returning (net: no
+	 * change), and a lost-race short-circuit returns the winner's row without
+	 * this call having touched it at all. `sweep_expired_attempts()` reads
+	 * `transitioned` instead of inferring it, either of which double-counts a
+	 * rollback as closed.
+	 *
+	 * @return array{result: QuizAttempt|\WP_Error, transitioned: bool}
+	 */
+	private function submit_tracked( int $attempt_id, array $answers, ?int $expected_user_id ): array {
 		$attempt = QuizAttemptRepository::find( $attempt_id );
 		if ( ! $attempt instanceof QuizAttempt ) {
-			return new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) );
+			return [ 'result' => new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) ), 'transitioned' => false ];
 		}
 		if ( null !== $expected_user_id && $expected_user_id !== $attempt->user_id ) {
-			return new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) );
+			return [ 'result' => new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) ), 'transitioned' => false ];
 		}
 		if ( ! $attempt->is_open() ) {
-			return $attempt; // Already graded / expired: nothing to do, nothing to fire.
+			return [ 'result' => $attempt, 'transitioned' => false ]; // Already graded / expired: nothing to do, nothing to fire.
 		}
 		$not_enrolled = $this->refuse_unenrolled( $attempt, $expected_user_id );
 		if ( null !== $not_enrolled ) {
-			return $not_enrolled;
+			return [ 'result' => $not_enrolled, 'transitioned' => false ];
 		}
 
 		$settings = $this->settings( $attempt->quiz_id );
@@ -522,8 +545,10 @@ final class QuizService {
 			// Claim the attempt first (atomic): a concurrent submit or sweep
 			// that got here too loses the UPDATE and returns the winner's row.
 			if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'expired' ) ) {
-				return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
+				return [ 'result' => QuizAttemptRepository::find( $attempt_id ) ?? $attempt, 'transitioned' => false ]; // Lost the race - another caller transitioned it, not this one.
 			}
+			// Committed from here on: whatever follows (a failed detail write,
+			// a failed re-read), THIS call is the one that closed the attempt.
 			$saved = QuizAttemptRepository::update(
 				$attempt_id,
 				[
@@ -560,7 +585,9 @@ final class QuizService {
 				// one). Report it as a retryable server error rather than
 				// letting the wrong status escape.
 				Log::write( 'quiz_expire_read_failed', [ 'attempt' => $attempt_id ] );
-				return new \WP_Error( 'read_failed', \__( 'The attempt expired, but its record could not be read back. Try again.', 'anchor-schema' ) );
+				// The transition above landed for real (Codex, Round 8): this
+				// still counts, even though nothing could read it back.
+				return [ 'result' => new \WP_Error( 'read_failed', \__( 'The attempt expired, but its record could not be read back. Try again.', 'anchor-schema' ) ), 'transitioned' => true ];
 			}
 			$this->progress->record_item( $attempt->user_id, $attempt->course_id, $attempt->quiz_id, 'quiz', 'failed' );
 
@@ -579,7 +606,7 @@ final class QuizService {
 			\do_action( 'anchor_courses_quiz_expired', $expired, $attempt->user_id, $attempt->quiz_id, $attempt->course_id );
 
 			$this->progress->recalculate_course( $attempt->user_id, $attempt->course_id );
-			return $expired;
+			return [ 'result' => $expired, 'transitioned' => true ];
 		}
 
 		// Claim the attempt before grading (final review: atomic submit). Two
@@ -587,7 +614,7 @@ final class QuizService {
 		// one whose conditional UPDATE moves it in_progress -> submitted goes
 		// on; the other returns the row as the winner left it.
 		if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'submitted' ) ) {
-			return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
+			return [ 'result' => QuizAttemptRepository::find( $attempt_id ) ?? $attempt, 'transitioned' => false ]; // Lost the race - another caller transitioned it, not this one.
 		}
 
 		// Re-read AFTER the claim (audit F06): an answer save acknowledged
@@ -605,7 +632,9 @@ final class QuizService {
 			// retry (or the sweep) grade the real row.
 			QuizAttemptRepository::transition( $attempt_id, 'submitted', 'in_progress' );
 			Log::write( 'quiz_submit_read_failed', [ 'attempt' => $attempt_id ] );
-			return new \WP_Error( 'read_failed', \__( 'The attempt could not be read back for grading. Please submit again.', 'anchor-schema' ) );
+			// The claim is ROLLED BACK above - the row is back exactly where
+			// it started, so this call transitioned nothing durable (Round 8).
+			return [ 'result' => new \WP_Error( 'read_failed', \__( 'The attempt could not be read back for grading. Please submit again.', 'anchor-schema' ) ), 'transitioned' => false ];
 		}
 		$attempt = $claimed;
 
@@ -678,7 +707,8 @@ final class QuizService {
 		if ( ! $saved instanceof QuizAttempt || ! $saved->is_graded() ) {
 			QuizAttemptRepository::transition( $attempt->id, 'submitted', 'in_progress' );
 			Log::write( 'quiz_grade_save_failed', [ 'attempt' => $attempt->id ] );
-			return new \WP_Error( 'save_failed', \__( 'The attempt could not be graded. Please submit again.', 'anchor-schema' ) );
+			// The claim is ROLLED BACK above - net no change (Round 8).
+			return [ 'result' => new \WP_Error( 'save_failed', \__( 'The attempt could not be graded. Please submit again.', 'anchor-schema' ) ), 'transitioned' => false ];
 		}
 
 		$this->progress->record_item(
@@ -715,7 +745,7 @@ final class QuizService {
 
 		$this->progress->recalculate_course( $saved->user_id, $saved->course_id );
 
-		return $saved;
+		return [ 'result' => $saved, 'transitioned' => true ];
 	}
 
 	/**
@@ -764,21 +794,37 @@ final class QuizService {
 	 *                               of the two happened.
 	 */
 	public function enforce_timer( QuizAttempt $attempt ) {
+		return $this->enforce_timer_tracked( $attempt )['result'];
+	}
+
+	/**
+	 * enforce_timer()'s real implementation, plus the same explicit
+	 * `transitioned` signal submit_tracked() carries (Round 8) - threaded
+	 * through unchanged by the fallback re-read below, which is about
+	 * getting a truthful OBJECT back to the caller, not about whether a
+	 * transition happened at all.
+	 *
+	 * @return array{result: QuizAttempt|\WP_Error, transitioned: bool}
+	 */
+	private function enforce_timer_tracked( QuizAttempt $attempt ): array {
 		if ( ! $attempt->is_open() ) {
-			return $attempt;
+			return [ 'result' => $attempt, 'transitioned' => false ];
 		}
 		$deadline = $this->deadline( $attempt );
 		if ( 0 === $deadline || Clock::timestamp() <= $deadline ) {
-			return $attempt;
+			return [ 'result' => $attempt, 'transitioned' => false ];
 		}
 
-		$result = $this->submit( $attempt->id );
-		if ( $result instanceof QuizAttempt ) {
-			return $result;
+		$outcome = $this->submit_tracked( $attempt->id, [], null );
+		if ( $outcome['result'] instanceof QuizAttempt ) {
+			return $outcome;
 		}
 
 		$current = QuizAttemptRepository::find( $attempt->id );
-		return $current instanceof QuizAttempt ? $current : $result;
+		return [
+			'result'       => $current instanceof QuizAttempt ? $current : $outcome['result'],
+			'transitioned' => $outcome['transitioned'],
+		];
 	}
 
 	/**
@@ -802,6 +848,15 @@ final class QuizService {
 	 * Close out timed attempts whose window has passed but whose learner never
 	 * came back.
 	 *
+	 * Counts only CONFIRMED expiry transitions (Round 8, CodeRabbit,
+	 * COURSES.md ~:350): `enforce_timer_tracked()`'s explicit `transitioned`
+	 * flag, never a `WP_Error` result or a before/after status compare. Both
+	 * of those over-count: the generic claim-then-grade path (any timer
+	 * policy other than `expire`) ROLLS BACK its own claim before returning
+	 * `read_failed`/`save_failed`, so the row never actually changed even
+	 * though the result is an error and (with a before/after compare) may
+	 * transiently differ from the pre-sweep snapshot.
+	 *
 	 * @return int attempts closed.
 	 */
 	public function sweep_expired_attempts(): int {
@@ -819,14 +874,7 @@ final class QuizService {
 		$closed = 0;
 		foreach ( (array) $rows as $row ) {
 			$attempt = QuizAttempt::from_row( $row );
-			$after   = $this->enforce_timer( $attempt );
-			// A `read_failed` WP_Error here (Round 7, finding 3) can only
-			// follow a transition enforce_timer()/submit() actually performed
-			// - the row's authoritative re-read is what failed, not the
-			// transition itself - so it counts as closed too, rather than
-			// being silently missed because there is no $after->status to
-			// compare against $attempt->status.
-			if ( $after instanceof \WP_Error || $after->status !== $attempt->status ) {
+			if ( $this->enforce_timer_tracked( $attempt )['transitioned'] ) {
 				$closed++;
 			}
 		}

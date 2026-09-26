@@ -269,4 +269,46 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		$this->assertSame( 1, $closed, 'Counted even though nothing could read the row back afterwards.' );
 		$this->assertSame( 'expired', QuizAttemptRepository::find( $attempt->id )->status, 'The transition landed for real - a later, unimpeded read shows it.' );
 	}
+
+	/**
+	 * Round 8, CodeRabbit: the generic claim-then-grade path (any timer
+	 * policy other than `expire`) ROLLS BACK its own `in_progress ->
+	 * submitted` claim before returning `read_failed` when the post-claim
+	 * re-read fails - the row ends up exactly where it started. Unlike the
+	 * `expire` branch's read_failed (previous test), this one must NOT count
+	 * as closed: nothing durable changed.
+	 */
+	public function test_sweep_counts_zero_for_a_rolled_back_claim_under_auto_submit() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'auto_submit' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		$claimed = false;
+		$broken  = false;
+		$break   = function ( $query ) use ( $attempt, &$claimed, &$broken ) {
+			$query = (string) $query;
+			if ( ! $claimed && \preg_match( "/^UPDATE \\S*anchor_courses_quiz_attempts SET status = 'submitted'/", $query ) ) {
+				$claimed = true;
+				return $query;
+			}
+			if ( $claimed && ! $broken && \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = ' . $attempt->id . '$/', $query ) ) {
+				$broken = true;
+				return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+		$closed = $this->quizzes->sweep_expired_attempts();
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertTrue( $claimed && $broken, 'Precondition: the claim landed and its post-claim re-read failed.' );
+		$this->assertSame( 0, $closed, 'The rolled-back claim never stuck - nothing to count as closed.' );
+		$this->assertSame( 'in_progress', QuizAttemptRepository::find( $attempt->id )->status, 'The claim is released - retryable, unchanged from the sweep\'s point of view.' );
+	}
 }

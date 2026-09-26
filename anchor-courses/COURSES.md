@@ -361,13 +361,26 @@ one." for an enrolled learner locked by progression.
   means the transition landed for real. `enforce_timer()` now takes one
   more, authoritative re-read of its own on any non-`QuizAttempt` result;
   only when that ALSO fails does it hand back the `WP_Error` - never the
-  stale object. Every caller follows through: the REST read route
-  (`QuizController::read()`) maps a propagated `read_failed` to 503 rather
-  than reporting `in_progress`, and `sweep_expired_attempts()` counts the
-  attempt as closed on a propagated `WP_Error` too (the transition it
-  performed is real regardless of whether anything could read the row back
-  afterwards) rather than silently under-counting because there is no
-  `$after->status` left to compare.
+  stale object. The REST read route (`QuizController::read()`) maps a
+  propagated `read_failed` to 503 rather than reporting `in_progress`.
+- **The sweep counts only CONFIRMED expiry transitions** (Round 8,
+  CodeRabbit, supersedes the sweep-counting half of Round 7 finding 3 above):
+  neither a `WP_Error` result nor a before/after status compare says a call
+  actually transitioned the row - both over-count. The generic
+  claim-then-grade path (any timer policy other than `expire`) ROLLS BACK its
+  own `in_progress -> submitted` claim before returning `read_failed`/
+  `save_failed`, so the row is back exactly where it started even though the
+  result is an error. `submit_tracked()` (private; `submit()`'s real
+  implementation) and `enforce_timer_tracked()` therefore return an explicit
+  `transitioned` bool alongside the `QuizAttempt|WP_Error` result: true only
+  for the `expire` branch once its claim commits (whatever follows - a failed
+  detail write, a failed re-read - THIS call already closed the attempt) and
+  for a successful grade; false for every lost-race short-circuit and every
+  rollback. `sweep_expired_attempts()` reads `transitioned` directly instead
+  of inferring it - a rollback under `auto_submit` counts 0, a confirmed
+  `expire` transition with a failed re-read still counts 1. `submit()` and
+  `enforce_timer()` keep their public `QuizAttempt|WP_Error` contracts
+  unchanged - only the sweep's own counting reads the tracked variant.
 - **A grade counts only once it is saved** (audit F03):
   `QuizAttemptRepository::update()` returns `null` when `$wpdb->update()`
   reports an error (a 0-row no-change update is still a success). `submit()`

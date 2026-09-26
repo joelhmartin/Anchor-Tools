@@ -239,8 +239,13 @@ one." for an enrolled learner locked by progression.
   `EnrollmentService` no longer touches completion metadata OR progress at
   all - `restart()` is gone. A reset that cannot get the lock, or whose
   reopen write fails at the database, changes NOTHING (`$clear` never runs
-  either way) and `reset_course()` returns `false`; `EnrollmentManager`
-  reports the distinct notice `reset_busy`, never `reset`.
+  either way) and `reset_course()` returns a `WP_Error` instead of a plain
+  `false` (Round 9, PR #32 finding 2): `reset_busy` when the lock is held
+  elsewhere (retry shortly - the old boolean gave `EnrollmentManager` no way
+  to tell this apart from a real failure), `reset_failed` when the write
+  itself failed (retrying immediately will not help). `EnrollmentManager`
+  reports each as its own distinct notice, never conflated, and never
+  `reset` on either.
 - **Reopening a completed row for a reset also bumps the cycle marker**
   (Round 7, PR #32 audit re-review, finding 2 - now inside
   `reopen_for_reset()` above): a row that was `completed` has
@@ -468,8 +473,9 @@ one." for an enrolled learner locked by progression.
   deletes progress rows, voids every counted attempt as `abandoned` (not
   counted toward `max_attempts`, no retry delay), and restarts the row
   (`enrolled`, no `started_at` / `completed_at`) - all under ONE hold of the
-  completion lock (see `reopen_for_reset()` above, Round 9). `false` on a
-  busy lock or a write failure, `reset_busy`, and nothing touched either way.
+  completion lock (see `reopen_for_reset()` above, Round 9). `WP_Error(
+  'reset_busy')` on a busy lock or `WP_Error( 'reset_failed' )` on a write
+  failure, and nothing touched either way.
 - **Certificates** freeze `learner_name`, `course_name`, `credits`,
   `provider_name`, `provider_number` and `instructor_name` into their metadata at
   issue; the page renders that snapshot (live values only for older rows).
@@ -565,7 +571,7 @@ Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 |---|---|
 | `admin-post.php?action=anchor_courses_complete_lesson` (also nopriv) | `Frontend\Actions` - "Mark complete"; redirects with `anchor_courses_notice` |
 | `admin-post.php?action=anchor_courses_add_learner` / `anchor_courses_revoke_access` | `Admin\LearnerReports` (nonce `anchor_courses_learners_{course}`, cap `enrollments`) |
-| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset` (`reset_busy` when the completion lock is busy or the write fails - nothing touched), `complete`, `uncomplete`, `repair` (re-run pending/failed/untracked completion effects; `repaired` only once all four read `done`/`n/a`, else `repair_incomplete`; `repair_not_completed` when the row isn't complete at all) |
+| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset` (`reset_busy` when the completion lock is busy, `reset_failed` when the write fails - either way nothing touched), `complete`, `uncomplete`, `repair` (re-run pending/failed/untracked completion effects; `repaired` only once all four read `done`/`n/a`, else `repair_incomplete`; `repair_not_completed` when the row isn't complete at all) |
 | `admin-post.php?action=anchor_courses_delete_role` | `Admin\CourseEditor` (cap `manage`) |
 | `admin-ajax.php?action=anchor_courses_search_items` / `anchor_courses_create_item` | curriculum builder |
 | `/certificate/{token}/` | `Frontend\CertificatePage` - public verification page (query var `anchor_certificate`, noindex) |

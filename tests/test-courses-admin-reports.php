@@ -285,6 +285,74 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		$this->assertNull( $enrollment->started_at );
 	}
 
+	/* --- Round 9, PR #32 finding 2: `reset_busy` must not misreport a
+	   genuine write failure ------------------------------------------------ */
+
+	/**
+	 * A busy completion lock (a real completion/uncomplete pipeline mid-run
+	 * for this row, standing in for a second real MySQL connection here)
+	 * still reports `reset_busy` - the message that tells the operator to
+	 * try again shortly is the right advice for exactly this case.
+	 */
+	public function test_reset_reports_reset_busy_while_the_completion_lock_is_held() {
+		Roles::grant_access( $this->learner, $this->course, 'manual' );
+		$progress = new ProgressService();
+		$progress->complete_lesson( $this->learner, $this->course, $this->lesson );
+
+		$name  = \Anchor\Courses\Services\CompletionService::lock_name( $this->learner, $this->course );
+		$other = new mysqli();
+		$host  = explode( ':', DB_HOST );
+		$other->real_connect( $host[0], DB_USER, DB_PASSWORD, DB_NAME, isset( $host[1] ) ? (int) $host[1] : 3306 );
+		$this->assertSame(
+			'1',
+			(string) $other->query( "SELECT GET_LOCK('" . $other->real_escape_string( $name ) . "', 0)" )->fetch_row()[0],
+			'Precondition: the lock is held by the "other" pipeline.'
+		);
+		add_filter( 'anchor_courses_completion_lock_timeout', static fn () => 0 );
+
+		wp_set_current_user( $this->admin );
+		$redirect = $this->post_enrollment_action(
+			[ 'anchor_courses_action' => 'reset', 'user_id' => (string) $this->learner ]
+		);
+
+		remove_all_filters( 'anchor_courses_completion_lock_timeout' );
+		$other->query( "SELECT RELEASE_LOCK('" . $other->real_escape_string( $name ) . "')" );
+		$other->close();
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=reset_busy', $redirect );
+	}
+
+	/**
+	 * A genuine write failure - the lock is free, the update itself fails at
+	 * the database - is a DIFFERENT problem from a busy lock and must report
+	 * its own code. Reporting `reset_busy` here would tell the operator to
+	 * wait, which will never fix a real database error.
+	 */
+	public function test_reset_reports_reset_failed_when_the_enrolment_write_fails() {
+		Roles::grant_access( $this->learner, $this->course, 'manual' );
+		$progress = new ProgressService();
+		$progress->complete_lesson( $this->learner, $this->course, $this->lesson );
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		$breaker = static function ( $query ) {
+			return \preg_match( '/^UPDATE \S*anchor_courses_enrollments\b/i', (string) $query )
+				? 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor'
+				: $query;
+		};
+		add_filter( 'query', $breaker );
+
+		wp_set_current_user( $this->admin );
+		$redirect = $this->post_enrollment_action(
+			[ 'anchor_courses_action' => 'reset', 'user_id' => (string) $this->learner ]
+		);
+
+		remove_filter( 'query', $breaker );
+		$wpdb->suppress_errors( false );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=reset_failed', $redirect );
+	}
+
 	/**
 	 * Minor from the final review: "complete" must report a refusal, not
 	 * claim success. A learner with an unmet prerequisite cannot be granted

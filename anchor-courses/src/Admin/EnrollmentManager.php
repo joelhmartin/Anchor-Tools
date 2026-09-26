@@ -45,6 +45,7 @@ final class EnrollmentManager {
 		Notices::register( 'cancelled', Notices::TYPE_SUCCESS, \__( 'Enrolment cancelled and access removed.', 'anchor-schema' ) );
 		Notices::register( 'reset', Notices::TYPE_SUCCESS, \__( 'Progress reset.', 'anchor-schema' ) );
 		Notices::register( 'reset_busy', Notices::TYPE_ERROR, \__( 'Progress could not be reset: this course\'s completion is still processing from a moment ago. Try again shortly.', 'anchor-schema' ) );
+		Notices::register( 'reset_failed', Notices::TYPE_ERROR, \__( 'Progress could not be reset: the update failed. Check the log, then try again.', 'anchor-schema' ) );
 		Notices::register( 'completed', Notices::TYPE_SUCCESS, \__( 'Course marked complete.', 'anchor-schema' ) );
 		Notices::register( 'uncompleted', Notices::TYPE_SUCCESS, \__( 'Completion undone. Credits and certificates were kept.', 'anchor-schema' ) );
 		Notices::register( 'uncomplete_failed', Notices::TYPE_ERROR, \__( 'Completion could not be undone: it is not marked complete, or its completion steps are still running. Try again in a moment.', 'anchor-schema' ) );
@@ -138,10 +139,15 @@ final class EnrollmentManager {
 				break;
 
 			case 'reset':
-				// false: the completion lock is busy (a completion/uncomplete
-				// pipeline is mid-run for this row) or the write failed
-				// (Round 8, PR #32 finding 1) - nothing was touched either way.
-				Notices::redirect( $module->progress->reset_course( $user_id, $course_id ) ? 'reset' : 'reset_busy', $target );
+				// A WP_Error distinguishes a busy completion lock
+				// (`reset_busy` - a completion/uncomplete pipeline is
+				// mid-run for this row; nothing touched, retry shortly) from
+				// a genuine write failure (`reset_failed` - also nothing
+				// touched, but retrying immediately will not help; Round 9,
+				// PR #32 finding 2 - the old boolean false could not tell
+				// these apart, so a real error was reported as "try again").
+				$reset = $module->progress->reset_course( $user_id, $course_id );
+				Notices::redirect( \is_wp_error( $reset ) ? $reset->get_error_code() : 'reset', $target );
 				break;
 
 			case 'complete':

@@ -400,13 +400,19 @@ final class ProgressService {
 	 * and the completion role are records of something that happened and are
 	 * left alone.
 	 *
-	 * @return bool False when the completion lock is busy or the enrolment
-	 *              write failed - nothing else is touched either
-	 *              (`Admin\EnrollmentManager`'s `reset` action reports
-	 *              `reset_busy`). True otherwise, including when there was
-	 *              no enrolment to reset at all.
+	 * @return true|\WP_Error True when the reset ran (including when there
+	 *                        was no enrolment to reset at all).
+	 *                        `WP_Error('reset_busy')` when the completion
+	 *                        lock was held elsewhere - nothing touched, retry
+	 *                        shortly. `WP_Error('reset_failed')` when the
+	 *                        enrolment write itself failed at the database -
+	 *                        also nothing touched, but retrying immediately
+	 *                        will not help (Round 9, PR #32 finding 2:
+	 *                        `Admin\EnrollmentManager`'s `reset` action
+	 *                        reports these as the two distinct notices
+	 *                        `reset_busy` / `reset_failed`, never conflated).
 	 */
-	public function reset_course( int $user_id, int $course_id ): bool {
+	public function reset_course( int $user_id, int $course_id ): bool|\WP_Error {
 		// Static (see CompletionService::reopen_for_reset()'s own docblock):
 		// the lock it takes is server-wide, not tied to $this->completion -
 		// this call must serialise against a real completion pipeline

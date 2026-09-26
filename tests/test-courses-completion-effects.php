@@ -830,7 +830,9 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 
 		$this->hold_lock_elsewhere();
 
-		$this->assertFalse( $this->progress->reset_course( $this->user, $this->course ), 'A busy completion lock refuses the whole reset.' );
+		$result = $this->progress->reset_course( $this->user, $this->course );
+		$this->assertTrue( is_wp_error( $result ), 'A busy completion lock refuses the whole reset.' );
+		$this->assertSame( 'reset_busy', $result->get_error_code() );
 
 		$enrollment = $this->enrollments->get( $this->user, $this->course );
 		$this->assertSame( 'completed', $enrollment->status, 'The row is untouched while the lock is busy.' );
@@ -859,7 +861,8 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$before_cycle = (int) ( $this->enrollments->get( $this->user, $this->course )->metadata['completion_cycle'] ?? 0 );
 
 		$this->hold_lock_elsewhere();
-		$this->assertFalse( $this->progress->reset_course( $this->user, $this->course ) );
+		$busy = $this->progress->reset_course( $this->user, $this->course );
+		$this->assertTrue( is_wp_error( $busy ) && 'reset_busy' === $busy->get_error_code() );
 
 		// Simulate another pipeline's own metadata write landing in this
 		// window - never something the reset itself may act on.
@@ -945,6 +948,31 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 			$observed,
 			'The completion lock must still be held by the reset\'s own connection at the moment it deletes progress - ' .
 			'reopen and clearing must be ONE lock hold, not two.'
+		);
+	}
+
+	/**
+	 * The write-failure path (Round 9, PR #32 finding 2): a genuine database
+	 * error on the reopen write is a DIFFERENT failure from a busy lock, and
+	 * must report its own code - `reset_busy`'s message ("try again shortly")
+	 * is actively wrong advice for an error that waiting will never fix.
+	 * Nothing is cleared either: `$clear()` (progress deletion, attempt
+	 * abandonment) must never run once the reopen write itself failed.
+	 */
+	public function test_reset_reports_reset_failed_and_clears_nothing_when_the_reopen_write_fails() {
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ), 'fixture: completed' );
+
+		$this->break_queries( '/^UPDATE \S*anchor_courses_enrollments\b/i' );
+		$result = $this->progress->reset_course( $this->user, $this->course );
+		$this->heal();
+
+		$this->assertTrue( is_wp_error( $result ), 'A genuine write failure must be reported, not swallowed as busy.' );
+		$this->assertSame( 'reset_failed', $result->get_error_code() );
+		$this->assertSame( 'completed', $this->enrollments->get( $this->user, $this->course )->status, 'Nothing was touched.' );
+		$this->assertNotNull(
+			\Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $this->lesson, 'lesson' ),
+			'clear() must never run when the reopen write itself failed.'
 		);
 	}
 }

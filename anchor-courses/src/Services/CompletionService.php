@@ -692,15 +692,20 @@ final class CompletionService {
 	 *                        write has succeeded - never when it failed or
 	 *                        there was nothing to reset onto (both already
 	 *                        left nothing to clear).
-	 * @return bool False when the lock is busy or the write failed - nothing
-	 *              is read, changed or cleared either way. True when there
-	 *              was nothing to reset (no enrolment for this user/course)
-	 *              or the reopen + $clear() ran.
+	 * @return true|\WP_Error True when there was nothing to reset (no
+	 *                        enrolment for this user/course) or the reopen +
+	 *                        $clear() ran; `WP_Error('reset_busy')` when the
+	 *                        completion lock was held elsewhere (Round 9, PR
+	 *                        #32 finding 2 - distinct from a write failure:
+	 *                        nothing was touched, and the caller should
+	 *                        simply retry shortly); `WP_Error('reset_failed')`
+	 *                        when the reopen write itself failed at the
+	 *                        database (retrying immediately will not help).
 	 */
-	public static function reopen_for_reset( int $user_id, int $course_id, array $data, callable $clear ): bool {
+	public static function reopen_for_reset( int $user_id, int $course_id, array $data, callable $clear ): bool|\WP_Error {
 		$lock = self::acquire_lock( $user_id, $course_id );
 		if ( null === $lock ) {
-			return false;
+			return new \WP_Error( 'reset_busy', 'The completion lock is held by another pipeline.' );
 		}
 		try {
 			$enrollment = EnrollmentRepository::find( $user_id, $course_id );
@@ -722,7 +727,7 @@ final class CompletionService {
 			$updated = EnrollmentRepository::update( $enrollment->id, $data );
 			if ( ! $updated instanceof Enrollment ) {
 				Log::write( 'completion_reset_failed', [ 'user' => $user_id, 'course' => $course_id ] );
-				return false;
+				return new \WP_Error( 'reset_failed', 'The enrolment update failed.' );
 			}
 
 			// Round 9 finding 1: cleared under the SAME lock hold as the

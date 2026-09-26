@@ -545,13 +545,13 @@ one." for an enrolled learner locked by progression.
   'reset_busy')` on a busy lock or `WP_Error( 'reset_failed' )` on a write
   failure, and nothing touched either way.
 - **Certificates** freeze `learner_name`, `course_name`, `credits`,
+  `provider_name`, `provider_number` and `instructor_name` into their metadata at
+  issue; the page renders that snapshot (live values only for older rows).
+  Numbers are `AC-{YYYY}-{8-digit id}`; the year and `completion_date` are UTC.
 - **Certificate templates:** the course setting `certificate_template` (default `default`) is frozen
   into the certificate at issue; a non-default slug renders `certificate-{slug}.php` (theme override
   under `anchor-courses/`, then the plugin's `templates/`), falling back to `certificate.php` when the
   file does not exist. `CertificateService::template_name()` decides.
-  `provider_name`, `provider_number` and `instructor_name` into their metadata at
-  issue; the page renders that snapshot (live values only for older rows).
-  Numbers are `AC-{YYYY}-{8-digit id}`; the year and `completion_date` are UTC.
 
 ## Actions
 

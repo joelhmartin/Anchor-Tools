@@ -244,10 +244,29 @@ final class CertificateService {
 		return (array) \apply_filters( 'anchor_courses_certificate_data', $data, $certificate );
 	}
 
+	/**
+	 * Which template file renders this certificate.
+	 *
+	 * The course's "Certificate template slug" setting is frozen into the
+	 * certificate's metadata at issue, so a certificate keeps the design it
+	 * was issued with. A slug other than `default` selects
+	 * `certificate-{slug}.php` (theme override under `anchor-courses/`, then
+	 * the plugin's templates/); when no such file exists the default
+	 * `certificate.php` is used, so a typo can never blank a certificate.
+	 */
+	public function template_name( Certificate $certificate ): string {
+		$slug = \sanitize_key( (string) ( $certificate->metadata['template'] ?? 'default' ) );
+		if ( '' === $slug || 'default' === $slug ) {
+			return 'certificate';
+		}
+		$candidate = 'certificate-' . $slug;
+		return \file_exists( Templates::locate( $candidate ) ) ? $candidate : 'certificate';
+	}
+
 	/** Render the HTML certificate. All values are escaped in the template. */
 	public function render( Certificate $certificate ): string {
 		return Templates::render(
-			'certificate',
+			$this->template_name( $certificate ),
 			[ 'certificate' => $certificate, 'data' => $this->template_data( $certificate ) ]
 		);
 	}

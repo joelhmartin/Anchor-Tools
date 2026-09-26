@@ -57,35 +57,39 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * the hook, which is not idempotent and may already have fired once for
  * this row with nothing recorded to prove it.
  *
- * `uncomplete()` (an admin reversal) reopens the row but leaves
- * `completion_effects` untouched, so a `hook: done` it already recorded is
- * durable history, not a value the next completion starts fresh from (audit
- * finding c, 2026-09-25). A later `complete()` call therefore still counts
- * as a fresh transition for `EnrollmentRepository::complete()`'s purposes -
- * the row's status really did go from `in_progress` back to `completed` -
- * but `run_effects()` reads the preserved `hook: done` and treats it as a
- * RE-completion: the idempotent effects above it get their usual pass, but
- * `anchor_courses_course_completed` never fires a second time for the same
- * (user, course). `anchor_courses_course_recompleted` fires instead, for
- * integrations that want to know about a re-completion specifically.
+ * Cycles (Round 6, PR #32). `uncomplete()` (an admin reversal) reopens the
+ * row, bumps `completion_cycle` in its metadata and leaves
+ * `completion_effects` otherwise untouched, so a `hook: done` it already
+ * recorded is durable history. The next transition is a RE-completion (a
+ * cycle marker, or any stored effect state, says so) and starts a NEW CYCLE:
+ * credit, certificate and completion role reset to `pending` (idempotent
+ * no-ops when already present), `hook` - `anchor_courses_course_completed`,
+ * once per (user, course) lifetime - keeps `done` (or `n/a`) forever, and a
+ * `recompleted_hook` effect is added as `pending`, so
+ * `anchor_courses_course_recompleted` is a tracked effect a repair can resume
+ * like any other.
  *
- * Effect execution itself IS serialised per (user, course) (Codex review,
- * PR #32 finding 1): a caller that flips a fresh row and a caller that then
- * finds it already complete and takes the repair branch can both reach
- * `run_effects()` for the same enrolment before the first one's effects
- * finish - the pipeline gate above guards the ROW transition, not that. Both
- * `complete()` branches take the same kind of MySQL named lock
- * `start_attempt()` uses (`GET_LOCK`, site-scoped name, short timeout,
- * released in `finally` - see `lock_name()`) around "read state -> run
- * pending effects -> save state"; a caller that cannot get it returns
- * `false` without running anything, because the pipeline that already holds
- * it owns this row's effects right now. Effects claimed for this run are
- * marked `running` with a timestamp before any of them execute, so a
- * pipeline that crashes mid-run leaves that shape behind rather than looking
- * untouched: the next call to hold the lock treats a `running` claim older
- * than `EFFECTS_RUNNING_STALE_SECONDS` as `pending` (the claimant is dead)
- * and a fresh one as still owned (left alone, since this caller already
- * holds the lock, that can only be its own claim).
+ * Serialisation (Codex review, PR #32 finding 1; Round 6). Every `complete()`
+ * and `uncomplete()` takes a per-(user, course) MySQL named lock (`GET_LOCK`,
+ * site-scoped name, short timeout, released in `finally` - see `lock_name()`)
+ * BEFORE the completed-transition, and holds it across flip + effects. The
+ * row and its effect state are (re)read only once the lock is held - never
+ * acted on from a pre-lock snapshot. A caller that cannot get the lock
+ * returns `false` and changes nothing: a repair runs no effects, and a FRESH
+ * completion does NOT flip the row (the learner's next progress
+ * recalculation, or the admin Repair/Complete action, retries it) - so a
+ * committed transition can never be stranded without its effects cycle.
+ * Effects claimed for a run are marked `running` with a timestamp before any
+ * of them execute, so a pipeline that crashes mid-run leaves that shape
+ * behind: the next lock holder treats a `running` claim older than
+ * `EFFECTS_RUNNING_STALE_SECONDS` as `pending` (the claimant is dead) and a
+ * fresh one as still owned (left alone - since this caller holds the lock it
+ * can only be its own re-entrant claim).
+ *
+ * Hook containment (Round 6). Every effect, both hooks included, runs inside
+ * try/catch: a throwing listener marks that effect `failed` and is logged
+ * (`completion_effect_failed`), never escapes after the row is committed,
+ * and the other effects still run.
  */
 final class CompletionService {
 
@@ -118,6 +122,15 @@ final class CompletionService {
 
 	/** The tracked effects, in pipeline order. */
 	public const EFFECTS = [ 'credit', 'certificate', 'completion_role', 'hook' ];
+
+	/**
+	 * The re-completion hook effect (Round 6): present in the map only for a
+	 * cycle that started after uncomplete(), and run after EFFECTS.
+	 */
+	public const EFFECT_RECOMPLETED_HOOK = 'recompleted_hook';
+
+	/** Enrolment metadata key: how many times uncomplete() has reopened this row. */
+	public const CYCLE_META = 'completion_cycle';
 
 	public const EFFECT_PENDING = 'pending';
 	public const EFFECT_RUNNING = 'running';
@@ -175,98 +188,141 @@ final class CompletionService {
 	 * Run the completion pipeline - or, on a row already completed, repair it.
 	 *
 	 * @return bool True only for the call that performed the transition. A
-	 *              repair returns false; read effects() for its outcome.
+	 *              repair returns false; read effects() for its outcome. A
+	 *              fresh completion that cannot get the effects lock also
+	 *              returns false WITHOUT flipping the row (Round 6 ruling 1):
+	 *              the next progress recalculation retries it.
 	 */
 	public function complete( int $user_id, int $course_id ): bool {
+		// Pre-lock read: only a cheap short-circuit so an ineligible learner
+		// (the common case on every lesson record) never waits on the lock.
+		// Nothing below acts on it - the row is re-read once the lock is held.
 		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
 		if ( ! $enrollment instanceof Enrollment ) {
 			return false;
 		}
-		if ( $enrollment->is_complete() ) {
-			// Not a second transition (see class docblock for what guards
-			// that) - but any effect the first run left pending or failed is
-			// re-run now (audit F02), serialised against the fresh pipeline
-			// or another repair (Codex review, finding 1).
-			if ( ! $this->run_effects_locked( $enrollment, false ) ) {
+		if ( ! $enrollment->is_complete() && ! $this->eligible( $enrollment ) ) {
+			return false;
+		}
+
+		$lock = $this->acquire_lock( $user_id, $course_id );
+		if ( null === $lock ) {
+			return false; // Another pipeline owns this row right now; nothing flipped, nothing run.
+		}
+		try {
+			// Round 6 ruling 2: the row, its status and its effect state are
+			// (re)loaded only now that the lock is held.
+			$enrollment = EnrollmentRepository::find( $user_id, $course_id );
+			if ( ! $enrollment instanceof Enrollment ) {
+				return false;
+			}
+			if ( $enrollment->is_complete() ) {
+				// Not a second transition (see class docblock for what guards
+				// that) - but any effect a run left pending or failed is
+				// re-run now (audit F02).
+				if ( ! $this->run_effects( $enrollment, false ) ) {
+					Log::write( 'completion_effects_untracked', [ 'user' => $user_id, 'course' => $course_id ] );
+				}
+				return false;
+			}
+			if ( ! $enrollment->is_active() ) {
+				return false; // Became inactive between the pre-check and the lock.
+			}
+
+			$from = $enrollment->status;
+
+			// The gate (ruling R-once): only the caller whose UPDATE matches a
+			// still-not-completed row proceeds past this line.
+			if ( ! EnrollmentRepository::complete( $enrollment->id, Clock::now() ) ) {
+				return false;
+			}
+
+			$updated = EnrollmentRepository::find_by_id( $enrollment->id );
+			if ( ! $updated instanceof Enrollment ) {
+				return false; // Defensive: the row we just updated should always be readable.
+			}
+
+			// The row is committed as completed from here on: a throwing
+			// listener must not skip this cycle's effects (Round 6).
+			try {
+				/** This action is documented in EnrollmentService::set_status(). */
+				\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, 'completed' );
+			} catch ( \Throwable $e ) {
+				Log::write( 'completion_status_hook_failed', [ 'user' => $user_id, 'course' => $course_id, 'error' => $e->getMessage() ] );
+			}
+
+			if ( ! $this->run_effects( $updated, true ) ) {
 				Log::write( 'completion_effects_untracked', [ 'user' => $user_id, 'course' => $course_id ] );
 			}
-			return false;
+			return true;
+		} finally {
+			$this->release_lock( $lock );
 		}
-		// Only a learner who is enrolled RIGHT NOW can complete (final review
-		// C1): an active row is not enough. Under the default `keep` loss
-		// policy a revoked learner's row stays active, so the row alone would
-		// let a system caller (the quiz timer sweep grading an attempt opened
-		// before the revoke) mint credit, certificate and completion role for
-		// somebody who no longer holds the access role. is_enrolled() checks
-		// the row, the role and expires_at together.
-		if ( ! $enrollment->is_active() || ! $this->enrollments->is_enrolled( $user_id, $course_id ) ) {
-			return false;
-		}
-		if ( ! $this->evaluate( $user_id, $course_id ) ) {
-			return false;
-		}
-
-		$now = Clock::now();
-		$from = $enrollment->status;
-
-		// The gate (ruling R-once): only the caller whose UPDATE matches a
-		// still-not-completed row proceeds past this line.
-		if ( ! EnrollmentRepository::complete( $enrollment->id, $now ) ) {
-			return false;
-		}
-
-		$updated = EnrollmentRepository::find_by_id( $enrollment->id );
-		if ( ! $updated instanceof Enrollment ) {
-			return false; // Defensive: the row we just updated should always be readable.
-		}
-
-		/** This action is documented in EnrollmentService::set_status(). */
-		\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, 'completed' );
-
-		// Serialised against a repair call that reads this same row as
-		// already-complete a moment later (Codex review, finding 1): whichever
-		// of the two gets the lock first runs the effects; the other backs off.
-		if ( ! $this->run_effects_locked( $updated, true ) ) {
-			Log::write( 'completion_effects_untracked', [ 'user' => $user_id, 'course' => $course_id ] );
-		}
-
-		return true;
 	}
 
 	/**
-	 * `run_effects()`, serialised per (user, course) by a MySQL named lock
-	 * (Codex review, PR #32 finding 1 - see class docblock and `lock_name()`).
-	 * A caller that cannot get the lock within
-	 * `anchor_courses_completion_lock_timeout` seconds runs nothing and
-	 * returns false: the pipeline that holds the lock owns this row's effects
-	 * right now, so re-running them here would double-fire `award()`/
-	 * `issue()`'s hooks or the completion hook.
-	 *
-	 * @return bool False on a lock timeout, or whatever run_effects() returns.
+	 * May this learner complete this course right now? Only a learner who is
+	 * enrolled RIGHT NOW can (final review C1): an active row is not enough.
+	 * Under the default `keep` loss policy a revoked learner's row stays
+	 * active, so the row alone would let a system caller (the quiz timer
+	 * sweep grading an attempt opened before the revoke) mint credit,
+	 * certificate and completion role for somebody who no longer holds the
+	 * access role. is_enrolled() checks the row, the role and expires_at.
 	 */
-	private function run_effects_locked( Enrollment $enrollment, bool $fresh ): bool {
+	private function eligible( Enrollment $enrollment ): bool {
+		return $enrollment->is_active()
+			&& $this->enrollments->is_enrolled( $enrollment->user_id, $enrollment->course_id )
+			&& $this->evaluate( $enrollment->user_id, $enrollment->course_id );
+	}
+
+	/**
+	 * Take the per-(user, course) completion lock (see class docblock and
+	 * `lock_name()`). Re-entrant on the same connection (MySQL 5.7+), so a
+	 * hook listener that recalculates progress from inside a running
+	 * pipeline gets it again and finds the row already complete.
+	 *
+	 * @return string|null The lock name to release, or null on a timeout.
+	 */
+	private function acquire_lock( int $user_id, int $course_id ): ?string {
 		global $wpdb;
 
-		$lock = self::lock_name( $enrollment->user_id, $enrollment->course_id );
+		$lock = self::lock_name( $user_id, $course_id );
 		/**
-		 * Seconds complete() waits for another pipeline's effects to finish
-		 * for the same learner and course.
+		 * Seconds complete()/uncomplete() wait for another pipeline holding
+		 * the same learner's completion lock for this course.
 		 *
 		 * @param int $seconds
 		 * @param int $user_id
 		 * @param int $course_id
 		 */
-		$timeout = \max( 0, (int) \apply_filters( 'anchor_courses_completion_lock_timeout', self::EFFECTS_LOCK_TIMEOUT, $enrollment->user_id, $enrollment->course_id ) );
+		$timeout = \max( 0, (int) \apply_filters( 'anchor_courses_completion_lock_timeout', self::EFFECTS_LOCK_TIMEOUT, $user_id, $course_id ) );
 		if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock, $timeout ) ) ) {
-			Log::write( 'completion_effects_lock_busy', [ 'user' => $enrollment->user_id, 'course' => $enrollment->course_id ] );
-			return false;
+			Log::write( 'completion_effects_lock_busy', [ 'user' => $user_id, 'course' => $course_id ] );
+			return null;
 		}
+		return $lock;
+	}
 
-		try {
-			return $this->run_effects( $enrollment, $fresh );
-		} finally {
-			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
+	private function release_lock( string $lock ): void {
+		global $wpdb;
+		$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
+	}
+
+	/**
+	 * Is every tracked effect in this map confirmed settled (`done`/`n/a`)?
+	 * The four EFFECTS must all be present; any other key present (the
+	 * cycle's `recompleted_hook`) must be settled too. The one definition of
+	 * "fully repaired" - the admin Repair action reports from it.
+	 *
+	 * @param array<string,string> $effects As returned by effects().
+	 */
+	public static function is_settled( array $effects ): bool {
+		foreach ( \array_unique( \array_merge( self::EFFECTS, \array_keys( $effects ) ) ) as $effect ) {
+			if ( ! \in_array( $effects[ $effect ] ?? '', [ self::EFFECT_DONE, self::EFFECT_NA ], true ) ) {
+				return false;
+			}
 		}
+		return true;
 	}
 
 	/**
@@ -281,21 +337,10 @@ final class CompletionService {
 	 *              shape - and a row that predates tracking entirely - is
 	 *              handled by the `$untracked` branch below, not treated as
 	 *              "nothing to do" (CodeRabbit PR #32). Called only while
-	 *              this enrolment's completion lock is held (`run_effects_locked()`).
+	 *              this enrolment's completion lock is held (`complete()`).
 	 */
 	private function run_effects( Enrollment $enrollment, bool $fresh ): bool {
 		$stored = (array) ( $enrollment->metadata[ self::EFFECTS_META ] ?? [] );
-
-		// Durable history (audit finding c, 2026-09-25): uncomplete() reopens
-		// the row (status back to `in_progress`) but never touches
-		// completion_effects, so a `hook: done` recorded by an earlier
-		// completion survives it. That means `$fresh` alone - true again for
-		// the very next complete() call, since EnrollmentRepository::
-		// complete()'s guard is the STATUS, not this metadata - can no
-		// longer be read as "this (user, course) has never completed
-		// before". Check the stored hook state before it gets overwritten
-		// below.
-		$previously_fired_hook = self::EFFECT_DONE === ( $stored['hook'] ?? '' );
 
 		// An untracked completed row's real outcome is UNKNOWN, not done: it
 		// predates tracking, or the previous call's save_effects() failed
@@ -307,21 +352,31 @@ final class CompletionService {
 		// it (CodeRabbit PR #32, audit F02 re-review).
 		$untracked = ! $fresh && [] === $stored;
 
-		if ( $fresh || $untracked ) {
+		if ( $fresh ) {
 			$state = \array_fill_keys( self::EFFECTS, self::EFFECT_PENDING );
-			if ( $untracked ) {
-				$state['hook'] = self::EFFECT_NA;
-			} elseif ( $previously_fired_hook ) {
-				// A re-completion after uncomplete(), not a first-time one:
-				// anchor_courses_course_completed already fired once for
-				// this (user, course) and must never fire a second time
-				// (documented "once per user/course"). The idempotent
-				// effects above it (credit, certificate, completion role)
-				// still get a pass in the loop below - a re-issued
-				// certificate after a settings change, say - but `hook`
-				// stays `done` and is never queued into $todo.
-				$state['hook'] = self::EFFECT_DONE;
+
+			// A re-completion starts a NEW CYCLE (Round 6 ruling 3): the row
+			// was reopened by uncomplete() (cycle marker) or carries a
+			// previous cycle's effect state (rows reopened before the marker
+			// existed).
+			$cycle = (int) ( $enrollment->metadata[ self::CYCLE_META ] ?? 0 );
+			if ( $cycle > 0 || [] !== $stored ) {
+				// `anchor_courses_course_completed` is once per lifetime: a
+				// `done` (or `n/a`) from an earlier cycle is kept forever. A
+				// previous cycle with no record of it predates tracking - its
+				// outcome is unknown, so it is never re-run (`n/a`). Only a
+				// hook the earlier cycle never confirmed (pending, failed or
+				// an orphaned running claim - this caller holds the lock) is
+				// still owed, and runs in this cycle.
+				$prior         = (string) ( $stored['hook'] ?? '' );
+				$state['hook'] = \in_array( $prior, [ self::EFFECT_DONE, self::EFFECT_NA ], true )
+					? $prior
+					: ( '' === $prior ? self::EFFECT_NA : self::EFFECT_PENDING );
+				$state[ self::EFFECT_RECOMPLETED_HOOK ] = self::EFFECT_PENDING;
 			}
+		} elseif ( $untracked ) {
+			$state         = \array_fill_keys( self::EFFECTS, self::EFFECT_PENDING );
+			$state['hook'] = self::EFFECT_NA;
 		} else {
 			$state = $stored;
 
@@ -343,35 +398,12 @@ final class CompletionService {
 			}
 		}
 
-		// The re-completion signal (audit finding c, 2026-09-25): fires
-		// exactly once per actual re-completion, tied to the same one-caller
-		// guarantee as `hook` above - `$fresh` is true only for the call
-		// that just won EnrollmentRepository::complete()'s atomic UPDATE,
-		// and $previously_fired_hook can only be true here on a row
-		// uncomplete() reopened, never on this row's first-ever completion.
-		// Kept outside the $todo loop (and untracked by completion_effects)
-		// because it is not one of the once-per-lifetime pipeline effects -
-		// it is allowed to fire again on every subsequent uncomplete() ->
-		// complete() cycle.
-		if ( $fresh && $previously_fired_hook ) {
-			Log::write( 'course_recompleted', [ 'user' => $enrollment->user_id, 'course' => $enrollment->course_id ] );
-			/**
-			 * Fires when a learner completes a course they had already
-			 * completed once before (and later uncompleted). Integrations
-			 * that must react only once per lifetime should use
-			 * `anchor_courses_course_completed`, which never fires again for
-			 * the same (user, course); use this one to opt in to reacting on
-			 * every re-completion instead.
-			 *
-			 * @param int        $user_id
-			 * @param int        $course_id
-			 * @param Enrollment $enrollment
-			 */
-			\do_action( 'anchor_courses_course_recompleted', $enrollment->user_id, $enrollment->course_id, $enrollment );
+		$order = self::EFFECTS;
+		if ( \array_key_exists( self::EFFECT_RECOMPLETED_HOOK, $state ) ) {
+			$order[] = self::EFFECT_RECOMPLETED_HOOK;
 		}
-
 		$todo = \array_values( \array_filter(
-			self::EFFECTS,
+			$order,
 			static fn ( string $effect ): bool => \in_array( $state[ $effect ] ?? '', [ self::EFFECT_PENDING, self::EFFECT_FAILED ], true )
 		) );
 		if ( [] === $todo ) {
@@ -404,7 +436,11 @@ final class CompletionService {
 			try {
 				$outcome = $this->run_effect( $effect, $user_id, $course_id );
 			} catch ( \Throwable $e ) {
+				// Contained (Round 6 ruling 4): the row is already committed,
+				// so a throwing listener - either hook included - fails only
+				// its own effect, which the next repair re-runs.
 				$outcome = self::EFFECT_FAILED;
+				Log::write( 'completion_effect_exception', [ 'user' => $user_id, 'course' => $course_id, 'effect' => $effect, 'error' => $e->getMessage() ] );
 			}
 			if ( self::EFFECT_FAILED === $outcome ) {
 				Log::write( 'completion_effect_failed', [ 'user' => $user_id, 'course' => $course_id, 'effect' => $effect ] );
@@ -480,6 +516,28 @@ final class CompletionService {
 				 */
 				\do_action( 'anchor_courses_course_completed', $user_id, $course_id, $enrollment );
 				return self::EFFECT_DONE;
+
+			case self::EFFECT_RECOMPLETED_HOOK:
+				$enrollment = EnrollmentRepository::find( $user_id, $course_id );
+				Log::write( 'course_recompleted', [ 'user' => $user_id, 'course' => $course_id ] );
+
+				/**
+				 * Fires when a learner completes a course they had already
+				 * completed once before (and an admin later uncompleted) -
+				 * once per re-completion cycle. Integrations that must react
+				 * only once per lifetime should use
+				 * `anchor_courses_course_completed`, which never fires again
+				 * for the same (user, course). A tracked effect (Round 6): if
+				 * a consumer throws it is recorded `failed` and re-fired by
+				 * the next complete() call, so consumers must tolerate a
+				 * repeat after a throw.
+				 *
+				 * @param int        $user_id
+				 * @param int        $course_id
+				 * @param Enrollment $enrollment
+				 */
+				\do_action( 'anchor_courses_course_recompleted', $user_id, $course_id, $enrollment );
+				return self::EFFECT_DONE;
 		}
 		return self::EFFECT_FAILED;
 	}
@@ -520,20 +578,41 @@ final class CompletionService {
 	 * removed: they are a record of something that happened, and quietly
 	 * deleting them would rewrite history. `completion_effects` (in
 	 * particular `hook: done`) is left alone for the same reason (audit
-	 * finding c, 2026-09-25): it is what tells a later `complete()` call this
-	 * is a RE-completion, so `anchor_courses_course_completed` is not fired
-	 * a second time for this (user, course).
+	 * finding c, 2026-09-25), and `completion_cycle` is bumped (Round 6): the
+	 * next complete() reads it as a RE-completion and starts a new effects
+	 * cycle, without firing `anchor_courses_course_completed` a second time.
+	 * Takes the completion lock, so it never interleaves with a running
+	 * pipeline's metadata writes.
+	 *
+	 * @return bool False when the row is not completed, the lock is busy, or
+	 *              the write failed.
 	 */
 	public function uncomplete( int $user_id, int $course_id ): bool {
-		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
-		if ( ! $enrollment instanceof Enrollment || ! $enrollment->is_complete() ) {
+		$lock = $this->acquire_lock( $user_id, $course_id );
+		if ( null === $lock ) {
 			return false;
 		}
+		try {
+			$enrollment = EnrollmentRepository::find( $user_id, $course_id );
+			if ( ! $enrollment instanceof Enrollment || ! $enrollment->is_complete() ) {
+				return false;
+			}
 
-		EnrollmentRepository::update( $enrollment->id, [ 'status' => 'in_progress', 'completed_at' => null ] );
+			$metadata                     = $enrollment->metadata;
+			$metadata[ self::CYCLE_META ] = (int) ( $metadata[ self::CYCLE_META ] ?? 0 ) + 1;
+			$updated                      = EnrollmentRepository::update(
+				$enrollment->id,
+				[ 'status' => 'in_progress', 'completed_at' => null, 'metadata' => $metadata ]
+			);
+			if ( ! $updated instanceof Enrollment ) {
+				Log::write( 'completion_uncomplete_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+				return false;
+			}
 
-		\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, 'completed', 'in_progress' );
-
-		return true;
+			\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, 'completed', 'in_progress' );
+			return true;
+		} finally {
+			$this->release_lock( $lock );
+		}
 	}
 }

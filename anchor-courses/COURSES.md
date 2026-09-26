@@ -177,21 +177,25 @@ one." for an enrolled learner locked by progression.
 ## Lifecycle rules worth knowing
 
 - **Completion pipeline** (`CompletionService::complete()`): requires
-  `is_enrolled()`, then an atomic `status <> 'completed'` UPDATE, then credit
-  award, certificate issue (+ credit link), completion role,
-  `anchor_courses_course_completed`. `anchor_courses_course_completed` fires
-  exactly once per (user, course) lifetime. `uncomplete()` reopens the row
-  (`in_progress`); credits, certificate and completion role are kept, and so
-  is `metadata.completion_effects` (audit finding c, 2026-09-25) - in
-  particular a stored `hook: done` is durable history, not a value the next
-  completion starts fresh from. A later `complete()` call on that row is
-  still a real transition (`in_progress` -> `completed` again), so credit/
-  certificate/completion-role get their usual idempotent pass, but
-  `run_effects()` sees the preserved `hook: done` and treats it as a
-  RE-completion: `anchor_courses_course_completed` is never fired a second
-  time for the same (user, course); `anchor_courses_course_recompleted`
-  fires instead, exactly once per uncomplete()/complete() cycle, for
-  integrations that want to react on a re-completion specifically.
+  `is_enrolled()`, takes the completion lock (below), re-reads the row, then
+  an atomic `status <> 'completed'` UPDATE, then credit award, certificate
+  issue (+ credit link), completion role, `anchor_courses_course_completed`.
+  `anchor_courses_course_completed` fires exactly once per (user, course)
+  lifetime.
+- **Completion cycles** (audit finding c; Round 6, PR #32): `uncomplete()`
+  takes the same lock, reopens the row (`in_progress`) and increments
+  `metadata.completion_cycle`; credits, certificate, completion role and
+  `metadata.completion_effects` are all kept (a stored `hook: done` is
+  durable history). The next transition of that row is a RE-completion
+  (a cycle marker, or any stored effect state) and starts a **new cycle**:
+  `credit`/`certificate`/`completion_role` reset to `pending` (idempotent
+  no-ops when already present), `hook` keeps `done` (or `n/a`) forever - it
+  is re-run only if no earlier cycle ever confirmed it - and a
+  `recompleted_hook` effect is added as `pending`, which fires
+  `anchor_courses_course_recompleted` once per cycle and is repaired like
+  any other effect. `uncomplete()` returns `false` (admin notice
+  `uncomplete_failed`) when the row is not completed, the lock is busy or
+  the write failed.
 - **Completion effects are tracked and repaired** (audit F02): the enrolment's
   `metadata.completion_effects` = `{ credit, certificate, completion_role, hook }`,
   each `pending` → `done` / `failed` / `n/a` (credit: nothing to award;
@@ -201,8 +205,14 @@ one." for an enrolled learner locked by progression.
   path. Each is idempotent (existing credit/certificate rows are returned, the
   role grant is a no-op when held); the certificate waits while the credit is
   unsettled, and is `done` only once linked to the credit. A throwing
-  `anchor_courses_course_completed` consumer marks `hook` failed and the
-  action is fired again on repair; once `done` it never fires again.
+  consumer of either hook (`anchor_courses_course_completed`,
+  `anchor_courses_course_recompleted`) is contained (Round 6): the exception
+  is caught and logged (`completion_effect_exception`), never escapes
+  `complete()` once the row is committed, marks only that hook effect
+  `failed` (the other effects still run), and the action is fired again on
+  repair; once `done` it never fires again in that cycle. A throwing
+  `anchor_courses_enrollment_status_changed` listener on the transition is
+  likewise caught and logged (`completion_status_hook_failed`).
   `CompletionService::effects( $user_id, $course_id )` reads the state.
   **An untracked completed row - no `completion_effects` at all, whether it
   predates tracking or the tracking write itself failed - has an UNKNOWN
@@ -216,7 +226,8 @@ one." for an enrolled learner locked by progression.
   (a distinct "nothing could be determined" outcome) can no longer occur
   through this path and was removed.
   **`repaired` is reported only once every one of the four tracked effects
-  reads back `done` or `n/a`** (Codex P1 + CodeRabbit, PR #32 re-review) -
+  (plus a cycle's `recompleted_hook`) reads back `done` or `n/a`** (Codex
+  P1 + CodeRabbit, PR #32 re-review; `CompletionService::is_settled()`) -
   checked against `CompletionService::EFFECTS` explicitly, not by testing
   for the absence of `pending`/`failed`. That weaker test also passes for
   two shapes where nothing is actually confirmed: a fresh `running` claim
@@ -228,25 +239,27 @@ one." for an enrolled learner locked by progression.
   failed, or one is still finishing from moments ago; the operator is
   told to check the log and try again in a few minutes, never told it
   succeeded.
-- **Effect execution is serialised per (user, course)** (Codex review, PR #32
-  finding 1): both the fresh transition's own run and any repair take the
-  same kind of MySQL named lock `start_attempt()` uses
+- **The completion lock covers flip + effects** (Codex review, PR #32
+  finding 1; Round 6): every `complete()` and `uncomplete()` takes the same
+  kind of MySQL named lock `start_attempt()` uses
   (`CompletionService::lock_name( $user_id, $course_id )`, `GET_LOCK`,
   `anchor_courses_completion_lock_timeout` seconds, default 5, released in
-  `finally`) around "read state → run pending effects → save state" - a
-  second caller that finds the row already complete while the first
-  caller's effects are still running cannot get the lock and returns `false`
-  having run nothing, rather than re-running the same pending effects
-  concurrently and double-firing `award()`/`issue()`'s hooks or
-  `anchor_courses_course_completed`. Before any claimed effect actually
-  runs, `run_effects()` marks it `running` in `completion_effects` with a
-  timestamp in `completion_effects_claimed_at`, so a pipeline that crashes
-  mid-run leaves that exact shape behind. The next call to hold the lock
-  treats a `running` entry older than
-  `CompletionService::EFFECTS_RUNNING_STALE_SECONDS` (300s) as `pending` (the
-  claimant is dead - repair re-runs it) and one still within that window as
-  still owned (left alone - since this caller already holds the lock, it can
-  only be its own claim, never a second live pipeline).
+  `finally`) BEFORE the completed-transition, and holds it through the
+  effects. The row and its effect state are (re)read only once the lock is
+  held - a caller that waited never acts on its pre-lock snapshot, so two
+  repairs that both saw `hook: failed` fire it once. A caller that cannot
+  get the lock returns `false` and changes nothing: a repair runs no
+  effects, and **a fresh completion does not flip the row** - the learner's
+  next progress recalculation (or the admin Complete/Repair action) retries
+  it - so a transition can never be committed without its effects cycle.
+  Before any claimed effect actually runs, `run_effects()` marks it
+  `running` in `completion_effects` with a timestamp in
+  `completion_effects_claimed_at`, so a pipeline that crashes mid-run leaves
+  that exact shape behind. The next call to hold the lock treats a
+  `running` entry older than `CompletionService::EFFECTS_RUNNING_STALE_SECONDS`
+  (300s) as `pending` (the claimant is dead - repair re-runs it) and one
+  still within that window as still owned (left alone - the lock is
+  re-entrant on one connection, so it can only be this caller's own claim).
 - **The effect-tracking write is itself checked** (re-review, audit F02):
   `CompletionService::save_effects()` returns `false` and `Log::write()`s
   `completion_effects_save_failed` when `EnrollmentRepository::update()`
@@ -283,6 +296,13 @@ one." for an enrolled learner locked by progression.
   chance to see it. Only if BOTH reads come back empty does `submit()`
   return `WP_Error('read_failed')` (REST 503, safe to retry) - never the
   stale `in_progress` object, and logged as `quiz_expire_read_failed`.
+- **Grading reads the claimed row, never the pre-claim snapshot** (Round 6,
+  PR #32): after the `in_progress -> submitted` claim `submit()` re-reads
+  the row, so an autosave acknowledged between its first read and the
+  claim is graded. If that re-read fails, it releases the claim
+  (`submitted -> in_progress`), logs `quiz_submit_read_failed` and returns
+  `WP_Error('read_failed')` (REST 503, safe to retry) - the stored answers
+  are untouched and the retry grades them.
 - **A grade counts only once it is saved** (audit F03):
   `QuizAttemptRepository::update()` returns `null` when `$wpdb->update()`
   reports an error (a 0-row no-change update is still a success). `submit()`

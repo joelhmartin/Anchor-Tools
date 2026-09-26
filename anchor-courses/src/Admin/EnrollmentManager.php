@@ -46,6 +46,7 @@ final class EnrollmentManager {
 		Notices::register( 'reset', Notices::TYPE_SUCCESS, \__( 'Progress reset.', 'anchor-schema' ) );
 		Notices::register( 'completed', Notices::TYPE_SUCCESS, \__( 'Course marked complete.', 'anchor-schema' ) );
 		Notices::register( 'uncompleted', Notices::TYPE_SUCCESS, \__( 'Completion undone. Credits and certificates were kept.', 'anchor-schema' ) );
+		Notices::register( 'uncomplete_failed', Notices::TYPE_ERROR, \__( 'Completion could not be undone: it is not marked complete, or its completion steps are still running. Try again in a moment.', 'anchor-schema' ) );
 		Notices::register( 'complete_failed', Notices::TYPE_ERROR, \__( 'The course could not be marked complete: the learner has no current access to it.', 'anchor-schema' ) );
 		Notices::register( 'repaired', Notices::TYPE_SUCCESS, \__( 'Completion repaired: credits, certificate, completion role and notifications are all in place.', 'anchor-schema' ) );
 		Notices::register( 'repair_incomplete', Notices::TYPE_ERROR, \__( 'Completion is not fully confirmed yet - a step failed, or is still finishing from a moment ago. Check the log, then try the repair again in a few minutes.', 'anchor-schema' ) );
@@ -162,8 +163,9 @@ final class EnrollmentManager {
 				break;
 
 			case 'uncomplete':
-				$module->completion->uncomplete( $user_id, $course_id );
-				Notices::redirect( 'uncompleted', $target );
+				// false: not completed, the completion lock is busy (a
+				// pipeline is mid-run), or the write failed (Round 6).
+				Notices::redirect( $module->completion->uncomplete( $user_id, $course_id ) ? 'uncompleted' : 'uncomplete_failed', $target );
 				break;
 
 			case 'repair':
@@ -195,15 +197,10 @@ final class EnrollmentManager {
 				// get the completion lock, so it ran nothing at all) isn't
 				// either. Checking every expected key explicitly - rather
 				// than filtering for the two "bad" statuses - also catches
-				// a map that is simply missing a key.
-				$effects  = $module->completion->effects( $user_id, $course_id );
-				$repaired = true;
-				foreach ( CompletionService::EFFECTS as $effect ) {
-					if ( ! \in_array( $effects[ $effect ] ?? '', [ CompletionService::EFFECT_DONE, CompletionService::EFFECT_NA ], true ) ) {
-						$repaired = false;
-						break;
-					}
-				}
+				// a map that is simply missing a key. A re-completion cycle's
+				// `recompleted_hook` is included (Round 6) - see
+				// CompletionService::is_settled().
+				$repaired = CompletionService::is_settled( $module->completion->effects( $user_id, $course_id ) );
 				Notices::redirect( $repaired ? 'repaired' : 'repair_incomplete', $target );
 				break;
 		}

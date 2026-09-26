@@ -68,6 +68,7 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 	public function tear_down() {
 		$this->heal();
 		remove_all_actions( 'anchor_courses_course_completed' );
+		remove_all_actions( 'anchor_courses_course_recompleted' );
 		remove_all_actions( 'anchor_courses_ce_credit_awarded' );
 		remove_all_actions( 'anchor_courses_certificate_issued' );
 		remove_all_actions( 'add_user_role' );
@@ -398,15 +399,7 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$this->heal();
 		$this->assertSame( 'failed', $this->effects()['credit'], 'Precondition: a real effect is outstanding.' );
 
-		$name = CompletionService::lock_name( $this->user, $this->course );
-		$this->other = new mysqli();
-		$host        = explode( ':', DB_HOST );
-		$this->other->real_connect( $host[0], DB_USER, DB_PASSWORD, DB_NAME, isset( $host[1] ) ? (int) $host[1] : 3306 );
-		$this->assertSame(
-			'1',
-			(string) $this->other->query( "SELECT GET_LOCK('" . $this->other->real_escape_string( $name ) . "', 0)" )->fetch_row()[0],
-			'Precondition: the lock is held by the "other" pipeline.'
-		);
+		$this->hold_lock_elsewhere();
 
 		// `hook` already ran (and fired once) on the fresh transition above -
 		// only `credit` (and, by dependency, `certificate`) is outstanding.
@@ -414,7 +407,6 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		// LOCKED-OUT call itself did, not the whole test.
 		$before_fired = $this->fired;
 
-		add_filter( 'anchor_courses_completion_lock_timeout', static fn () => 0 );
 		$result = $this->completion->complete( $this->user, $this->course );
 
 		$this->assertFalse( $result, 'A repair call must back off, not run effects, while the lock is held elsewhere.' );
@@ -424,10 +416,155 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 
 		// Release the lock: an ordinary retry now completes it, same as any
 		// other repair.
-		$this->other->query( "SELECT RELEASE_LOCK('" . $this->other->real_escape_string( $name ) . "')" );
-		remove_all_filters( 'anchor_courses_completion_lock_timeout' );
+		$this->release_lock_elsewhere();
 		$this->completion->complete( $this->user, $this->course );
 		$this->assert_all_done_once();
+	}
+
+	/**
+	 * Take this learner's completion lock on a second, real MySQL connection
+	 * - standing in for another request's pipeline - and make complete()
+	 * give up on it immediately instead of waiting the default timeout.
+	 */
+	private function hold_lock_elsewhere(): void {
+		$name        = CompletionService::lock_name( $this->user, $this->course );
+		$this->other = new mysqli();
+		$host        = explode( ':', DB_HOST );
+		$this->other->real_connect( $host[0], DB_USER, DB_PASSWORD, DB_NAME, isset( $host[1] ) ? (int) $host[1] : 3306 );
+		$this->assertSame(
+			'1',
+			(string) $this->other->query( "SELECT GET_LOCK('" . $this->other->real_escape_string( $name ) . "', 0)" )->fetch_row()[0],
+			'Precondition: the lock is held by the "other" pipeline.'
+		);
+		add_filter( 'anchor_courses_completion_lock_timeout', static fn () => 0 );
+	}
+
+	private function release_lock_elsewhere(): void {
+		$name = CompletionService::lock_name( $this->user, $this->course );
+		$this->other->query( "SELECT RELEASE_LOCK('" . $this->other->real_escape_string( $name ) . "')" );
+		remove_all_filters( 'anchor_courses_completion_lock_timeout' );
+	}
+
+	/* --- Round 6 (Codex final pass + CodeRabbit, PR #32) --- */
+
+	/**
+	 * Finding A: effect state is read only AFTER the lock is held. Two
+	 * repairs both see `hook: failed`; the one that gets the lock first fires
+	 * the hook and records `done`. The second, which read the row BEFORE it
+	 * waited for the lock, must re-read it once it holds the lock and fire
+	 * nothing. The first repair is run from inside the lock-timeout filter -
+	 * applied right before GET_LOCK, i.e. after the second caller's own
+	 * pre-lock read - which is exactly the interleaving of two requests.
+	 */
+	public function test_a_repair_that_waited_for_the_lock_re_reads_state_and_never_refires_the_hook() {
+		$armed = true;
+		$throw = static function () use ( &$armed ) {
+			if ( $armed ) {
+				throw new \RuntimeException( 'injected consumer failure' );
+			}
+		};
+		add_action( 'anchor_courses_course_completed', $throw, 20 );
+		$this->finish_lesson();
+		$this->assertSame( 'failed', $this->effects()['hook'], 'Precondition: both repairs will read hook: failed.' );
+		$armed = false;
+
+		$entered = false;
+		add_filter(
+			'anchor_courses_completion_lock_timeout',
+			function ( $timeout ) use ( &$entered ) {
+				if ( ! $entered ) {
+					$entered = true;
+					$this->completion->complete( $this->user, $this->course ); // The repair that wins the lock.
+				}
+				return $timeout;
+			}
+		);
+
+		$this->completion->complete( $this->user, $this->course );
+
+		$this->assertTrue( $entered );
+		$this->assertSame( 2, $this->fired['course'], 'The original (throwing) fire plus ONE repair - the waiting caller must not fire it again.' );
+		$this->assertSame( 'done', $this->effects()['hook'] );
+	}
+
+	/**
+	 * Finding C: the lock is taken BEFORE the completed-transition. An admin
+	 * uncompletes, then the learner re-completes while another pipeline holds
+	 * the lock: complete() must return false WITHOUT flipping the row (the
+	 * next progress recalculation retries), rather than committing a
+	 * transition whose effects cycle never runs. Once the lock is free the
+	 * retry flips it and runs the new cycle: `course_recompleted` once,
+	 * `course_completed` still once for the lifetime.
+	 */
+	public function test_a_re_completion_that_cannot_get_the_lock_does_not_flip_the_row_and_the_retry_runs_the_new_cycle() {
+		$recompleted = 0;
+		add_action( 'anchor_courses_course_recompleted', function () use ( &$recompleted ) { $recompleted++; } );
+
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->uncomplete( $this->user, $this->course ) );
+
+		$this->hold_lock_elsewhere();
+		$this->assertFalse( $this->completion->complete( $this->user, $this->course ), 'No lock, no transition.' );
+		$this->assertFalse( $this->completion->is_complete( $this->user, $this->course ), 'The row is NOT flipped while the lock is held elsewhere.' );
+		$this->assertSame( 0, $recompleted );
+
+		$this->release_lock_elsewhere();
+		$this->assertTrue( $this->completion->complete( $this->user, $this->course ), 'The retry performs the transition.' );
+		$this->assertSame( 1, $recompleted, 'The new cycle fires course_recompleted once.' );
+		$this->assertSame( 1, $this->fired['course'], 'course_completed stays once per lifetime.' );
+		$this->assertSame(
+			[ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'done', 'recompleted_hook' => 'done' ],
+			$this->effects()
+		);
+
+		$this->completion->complete( $this->user, $this->course ); // An ordinary repair afterwards.
+		$this->assertSame( 1, $recompleted, 'A settled cycle is never re-fired.' );
+		$this->assertSame( 1, count( CreditRepository::for_course( $this->course ) ), 'Still one credit row.' );
+	}
+
+	/**
+	 * Finding D: a throwing `anchor_courses_course_recompleted` listener is
+	 * contained - the row is committed as completed, the effect records
+	 * `failed`, nothing escapes complete() - and it is a tracked effect, so
+	 * the admin Repair reports incomplete while it keeps failing and re-fires
+	 * it (once) when it no longer does.
+	 */
+	public function test_a_throwing_recompleted_listener_is_contained_recorded_failed_and_re_fired_by_repair() {
+		$calls = 0;
+		$armed = true;
+		add_action(
+			'anchor_courses_course_recompleted',
+			static function () use ( &$calls, &$armed ) {
+				$calls++;
+				if ( $armed ) {
+					throw new \RuntimeException( 'injected recompleted failure' );
+				}
+			}
+		);
+
+		$this->finish_lesson();
+		$this->completion->uncomplete( $this->user, $this->course );
+
+		$this->assertTrue( $this->completion->complete( $this->user, $this->course ), 'The transition is reported; the exception does not escape.' );
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ) );
+		$this->assertSame( 1, $calls );
+		$this->assertSame(
+			[ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'done', 'recompleted_hook' => 'failed' ],
+			$this->effects(),
+			"This cycle's other effects still ran; the recompleted hook is recorded failed, not the previous cycle's done."
+		);
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repair_incomplete', $this->post_repair(), 'Still throwing: not repaired.' );
+		$this->assertSame( 2, $calls );
+
+		$armed = false;
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repaired', $this->post_repair() );
+		$this->assertSame( 3, $calls, 'Re-fired once by the repair that succeeded.' );
+		$this->assertSame( 'done', $this->effects()['recompleted_hook'] );
+
+		$this->completion->complete( $this->user, $this->course );
+		$this->assertSame( 3, $calls, 'Once done, never again this cycle.' );
+		$this->assertSame( 1, $this->fired['course'], 'course_completed never re-fires.' );
 	}
 
 	/**

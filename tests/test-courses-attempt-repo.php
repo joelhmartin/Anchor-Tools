@@ -239,4 +239,33 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 	public function test_best_scores_for_users_in_course_with_no_user_ids_makes_no_query() {
 		$this->assertSame( [], QuizAttemptRepository::best_scores_for_users_in_course( [], $this->course ) );
 	}
+
+	/* --- Round 10, CodeRabbit Major, PR #32 finding 1: a database error must
+	   be distinguishable from "nothing to void" -------------------------- */
+
+	/** Nothing counted for this (user, course) is a real success, not a failure. */
+	public function test_abandon_for_course_returns_zero_not_false_when_nothing_matches() {
+		$this->assertSame( 0, QuizAttemptRepository::abandon_for_course( $this->user, $this->course ) );
+	}
+
+	/** A genuine database error must be reported as `false`, never masked as zero rows voided. */
+	public function test_abandon_for_course_returns_false_on_a_database_error() {
+		$this->create();
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		$breaker = static function ( $query ) {
+			return \preg_match( '/^UPDATE \S*anchor_courses_quiz_attempts\b/i', (string) $query )
+				? 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor'
+				: $query;
+		};
+		add_filter( 'query', $breaker );
+
+		$result = QuizAttemptRepository::abandon_for_course( $this->user, $this->course );
+
+		remove_filter( 'query', $breaker );
+		$wpdb->suppress_errors( false );
+
+		$this->assertFalse( $result );
+	}
 }

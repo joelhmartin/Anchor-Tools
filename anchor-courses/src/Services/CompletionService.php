@@ -141,6 +141,20 @@ final class CompletionService {
 	/** Enrolment metadata key: how many times uncomplete() has reopened this row. */
 	public const CYCLE_META = 'completion_cycle';
 
+	/**
+	 * Enrolment metadata key: set to a timestamp by `reopen_for_reset()` in
+	 * the SAME write as the reopen itself, before its caller's `$clear()`
+	 * closure ever runs, and lifted only once `$clear()` succeeds (Round 10,
+	 * CodeRabbit Major, PR #32 finding 1). While present, `complete()`
+	 * refuses the row outright - see its own check - so a `$clear()` that
+	 * fails after the reopen commits (a real database error deleting
+	 * progress or abandoning attempts) can never be completed against the
+	 * stale progress that failed to delete. A later Reset (or this same
+	 * method run again) retries the clearing and lifts the marker; zero rows
+	 * left to clear is a real success, never a reason to leave it set.
+	 */
+	public const RESET_PENDING_META = 'reset_pending_at';
+
 	public const EFFECT_PENDING = 'pending';
 	public const EFFECT_RUNNING = 'running';
 	public const EFFECT_DONE    = 'done';
@@ -223,6 +237,16 @@ final class CompletionService {
 			// (re)loaded only now that the lock is held.
 			$enrollment = EnrollmentRepository::find( $user_id, $course_id );
 			if ( ! $enrollment instanceof Enrollment ) {
+				return false;
+			}
+			if ( self::has_pending_reset( $enrollment ) ) {
+				// Round 10, CodeRabbit Major, PR #32 finding 1: a reset whose
+				// $clear() failed left this exact row reopened but not yet
+				// cleared - refuse it outright rather than completing it
+				// against progress that never actually got deleted. A Reset
+				// re-run (or Repair, once the row is completed again) lifts
+				// this once the clearing finally succeeds.
+				Log::write( 'completion_blocked_reset_pending', [ 'user' => $user_id, 'course' => $course_id ] );
 				return false;
 			}
 			if ( $enrollment->is_complete() ) {
@@ -323,6 +347,11 @@ final class CompletionService {
 	private static function release_lock( string $lock ): void {
 		global $wpdb;
 		$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
+	}
+
+	/** Is a reset's clearing still outstanding for this row (RESET_PENDING_META)? */
+	private static function has_pending_reset( Enrollment $enrollment ): bool {
+		return ! empty( $enrollment->metadata[ self::RESET_PENDING_META ] ?? null );
 	}
 
 	/**
@@ -673,11 +702,33 @@ final class CompletionService {
 	 * row's completion metadata for a reset, and now also the ONE place that
 	 * clears its progress - `EnrollmentService` no longer touches either.
 	 *
-	 * $data is applied via `EnrollmentRepository::update()` exactly as given
-	 * (the reset's `status`/`started_at`/`completed_at`) - never `metadata`;
-	 * the cycle bump below is the only metadata this call ever writes, and it
-	 * merges into the row's CURRENT metadata, read only once the lock is
-	 * held, never a caller's pre-lock snapshot.
+	 * $data's `status`/`started_at`/`completed_at` are applied via
+	 * `EnrollmentRepository::update()` exactly as given; `metadata` is never
+	 * accepted from the caller - the cycle bump and the RESET_PENDING_META
+	 * marker below are the only metadata this call ever writes, merged into
+	 * the row's CURRENT metadata, read only once the lock is held, never a
+	 * caller's pre-lock snapshot.
+	 *
+	 * $clear() can itself fail after the reopen write has already committed
+	 * (Round 10, CodeRabbit Major, PR #32 finding 1 - the old shape here
+	 * ignored $clear()'s result entirely): the marker is written in the SAME
+	 * update as the reopen, so it is durable the instant the reopen commits,
+	 * before $clear() ever runs, and it is lifted only once $clear() reports
+	 * success (`$clear` must now return `bool` - `false` only for a genuine
+	 * database error, never for "nothing to clear"; see
+	 * `ProgressRepository::delete_for_course()` /
+	 * `QuizAttemptRepository::abandon_for_course()`). While the marker
+	 * stands, `complete()` refuses the row outright (its own check) - so a
+	 * completion racing in against the progress that failed to delete can
+	 * never flip it. A failed $clear() is reported as `reset_failed`, same as
+	 * a failed reopen write - the caller cannot tell (and does not need to)
+	 * which write failed, only that a retry is what recovers it: a later
+	 * Reset (or this method run again) re-reads the row, re-runs $clear(),
+	 * and lifts the marker once it finally succeeds. Failing to lift the
+	 * marker itself (a second, tiny write) is logged but never turned into a
+	 * reported failure - the learner's progress genuinely is clear by then,
+	 * and a stray marker left behind is healed by the very next Reset, whose
+	 * $clear() is idempotent (zero rows left to clear is success, not error).
 	 *
 	 * Static (like `lock_name()`/`is_settled()`): the lock is a server-wide
 	 * MySQL named lock, not per-instance state, and this method touches
@@ -691,16 +742,24 @@ final class CompletionService {
 	 * @param callable $clear Runs under this same lock hold, once the reopen
 	 *                        write has succeeded - never when it failed or
 	 *                        there was nothing to reset onto (both already
-	 *                        left nothing to clear).
+	 *                        left nothing to clear). @return bool `false`
+	 *                        only for a genuine database error in either
+	 *                        write it makes - never for "nothing to clear".
 	 * @return true|\WP_Error True when there was nothing to reset (no
 	 *                        enrolment for this user/course) or the reopen +
-	 *                        $clear() ran; `WP_Error('reset_busy')` when the
-	 *                        completion lock was held elsewhere (Round 9, PR
-	 *                        #32 finding 2 - distinct from a write failure:
-	 *                        nothing was touched, and the caller should
-	 *                        simply retry shortly); `WP_Error('reset_failed')`
-	 *                        when the reopen write itself failed at the
-	 *                        database (retrying immediately will not help).
+	 *                        $clear() both ran (or there was nothing to
+	 *                        reset in the first place); `WP_Error('reset_busy')`
+	 *                        when the completion lock was held elsewhere
+	 *                        (Round 9, PR #32 finding 2 - distinct from a
+	 *                        write failure: nothing was touched, and the
+	 *                        caller should simply retry shortly);
+	 *                        `WP_Error('reset_failed')` when the reopen write
+	 *                        OR $clear() itself failed at the database
+	 *                        (Round 10, PR #32 finding 1 extends this to
+	 *                        $clear() - retrying immediately will not help
+	 *                        either way, but retrying LATER is exactly the
+	 *                        recovery path: the row is left recoverable, with
+	 *                        RESET_PENDING_META set, never half-reset silently).
 	 */
 	public static function reopen_for_reset( int $user_id, int $course_id, array $data, callable $clear ): bool|\WP_Error {
 		$lock = self::acquire_lock( $user_id, $course_id );
@@ -710,19 +769,33 @@ final class CompletionService {
 		try {
 			$enrollment = EnrollmentRepository::find( $user_id, $course_id );
 			if ( ! $enrollment instanceof Enrollment ) {
-				$clear(); // Nothing to reopen, but any stray progress/attempt rows are still cleared.
+				// Nothing to reopen - no completed row a completion could
+				// race against - but a stray progress/attempt row can still
+				// exist (e.g. left behind by a deleted enrolment) and a real
+				// failure clearing it is still worth reporting.
+				if ( false === $clear() ) {
+					Log::write( 'completion_reset_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+					return new \WP_Error( 'reset_failed', 'The progress clear failed.' );
+				}
 				return true;
 			}
 
-			$from = $enrollment->status;
+			$from     = $enrollment->status;
+			$metadata = $enrollment->metadata;
 			if ( 'completed' === $from ) {
 				// Same marker uncomplete() bumps (Round 6/7 rulings, see the
 				// class docblock and COURSES.md): a reset of a completed row
 				// is a RE-completion the next time round, not a first one.
-				$metadata                      = $enrollment->metadata;
 				$metadata[ self::CYCLE_META ] = (int) ( $metadata[ self::CYCLE_META ] ?? 0 ) + 1;
-				$data['metadata']              = $metadata;
 			}
+
+			// Round 10, CodeRabbit Major, PR #32 finding 1: the recoverable
+			// marker is written in this SAME update, whatever $from was - the
+			// race this closes (a completion re-evaluating stale progress a
+			// failed $clear() left behind) is not limited to a row that was
+			// `completed` a moment ago.
+			$metadata[ self::RESET_PENDING_META ] = Clock::now();
+			$data['metadata']                     = $metadata;
 
 			$updated = EnrollmentRepository::update( $enrollment->id, $data );
 			if ( ! $updated instanceof Enrollment ) {
@@ -733,7 +806,24 @@ final class CompletionService {
 			// Round 9 finding 1: cleared under the SAME lock hold as the
 			// reopen write above - see the docblock. Nothing outside this
 			// method may ever observe the row reopened but not yet cleared.
-			$clear();
+			if ( false === $clear() ) {
+				// The reopen committed with RESET_PENDING_META still set
+				// (Round 10, finding 1): complete() refuses this row until a
+				// later Reset (or this method run again) retries the
+				// clearing and lifts the marker.
+				Log::write( 'completion_reset_clear_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+				return new \WP_Error( 'reset_failed', 'The progress clear failed.' );
+			}
+
+			// Clearing landed for real - lift the marker in a second write.
+			// A failure HERE is logged but never turned into a reported
+			// failure: the learner's progress genuinely is clear, and a
+			// stray marker left behind is healed by the next Reset run,
+			// whose $clear() is idempotent (zero rows left is success).
+			unset( $metadata[ self::RESET_PENDING_META ] );
+			if ( ! EnrollmentRepository::update( $enrollment->id, [ 'metadata' => $metadata ] ) instanceof Enrollment ) {
+				Log::write( 'completion_reset_marker_clear_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+			}
 
 			// The reset is already committed; a throwing listener must not
 			// mask it (same containment as complete()/uncomplete()).

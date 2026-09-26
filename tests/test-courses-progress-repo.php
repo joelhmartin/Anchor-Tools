@@ -99,6 +99,37 @@ class Test_Courses_Progress_Repo extends Anchor_Courses_TestCase {
 		$this->assertCount( 1, ProgressRepository::for_course( $theirs, $course ) );
 	}
 
+	/* --- Round 10, CodeRabbit Major, PR #32 finding 1: a database error must
+	   be distinguishable from "nothing to delete" ------------------------- */
+
+	/** Nothing to delete for this (user, course) is a real success, not a failure. */
+	public function test_delete_for_course_returns_zero_not_false_when_nothing_matches() {
+		$this->assertSame( 0, ProgressRepository::delete_for_course( $this->make_learner(), $this->make_course() ) );
+	}
+
+	/** A genuine database error must be reported as `false`, never masked as zero rows deleted. */
+	public function test_delete_for_course_returns_false_on_a_database_error() {
+		$user   = $this->make_learner();
+		$course = $this->make_course();
+		ProgressRepository::upsert( [ 'user_id' => $user, 'course_id' => $course, 'item_id' => 1, 'item_type' => 'lesson', 'status' => 'completed' ] );
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		$breaker = static function ( $query ) {
+			return \preg_match( '/^DELETE FROM \S*anchor_courses_progress\b/i', (string) $query )
+				? 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor'
+				: $query;
+		};
+		add_filter( 'query', $breaker );
+
+		$result = ProgressRepository::delete_for_course( $user, $course );
+
+		remove_filter( 'query', $breaker );
+		$wpdb->suppress_errors( false );
+
+		$this->assertFalse( $result );
+	}
+
 	/** Review ruling carried into T15: enum-ish fields are validated against the value object's constants. */
 	public function test_upsert_rejects_an_unknown_status() {
 		$this->expectException( InvalidArgumentException::class );

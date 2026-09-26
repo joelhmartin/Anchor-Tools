@@ -246,6 +246,47 @@ one." for an enrolled learner locked by progression.
   itself failed (retrying immediately will not help). `EnrollmentManager`
   reports each as its own distinct notice, never conflated, and never
   `reset` on either.
+- **A `$clear()` that fails AFTER the reopen write commits is now
+  RECOVERABLE, never a silently-reported success** (Round 10, CodeRabbit
+  Major, PR #32 finding 1 - the shape above ignored `$clear()`'s own result
+  entirely). `reopen_for_reset()` writes
+  `CompletionService::RESET_PENDING_META` (`reset_pending_at`, a timestamp)
+  into the row's metadata in the SAME update as the reopen itself - so it is
+  durable the instant the reopen commits, before `$clear()` ever runs - and
+  regardless of whether the row being reset was `completed` a moment ago:
+  the race a failed clear opens (stale progress that never got deleted
+  still reporting the course complete) does not depend on that. While the
+  marker stands, `complete()` refuses the row outright, before even
+  checking `is_complete()` - so a completion racing in against progress that
+  failed to delete can never flip it, no matter how the check that would
+  normally decide eligibility comes out. A failed `$clear()` (either write:
+  `ProgressRepository::delete_for_course()` or
+  `QuizAttemptRepository::abandon_for_course()` reporting a genuine database
+  error - see below) is reported as `reset_failed`, same code as a failed
+  reopen write; the caller cannot tell which write failed and does not need
+  to, only that a retry is the recovery. The marker is lifted in a second
+  write once `$clear()` succeeds; if THAT write itself fails, it is logged
+  (`completion_reset_marker_clear_failed`) but never reported as a failure -
+  the learner's progress genuinely is clear by then, and a stray marker left
+  behind is healed by the very next Reset, whose `$clear()` is idempotent
+  (see next point). A later Reset (re-run once the underlying failure is
+  healed) simply retries the whole `reopen_for_reset()` call - reopening an
+  already-reopened row and re-running `$clear()` - and clears the marker on
+  that pass.
+- **Zero rows is a real success, never a failure, for either half of
+  `$clear()`** (Round 10, same finding): `ProgressRepository::
+  delete_for_course()` and `QuizAttemptRepository::abandon_for_course()` now
+  return `int|false` - `false` ONLY when `$wpdb->delete()`/`$wpdb->query()`
+  itself reports a database error, mirroring the `EnrollmentRepository::
+  update()` / `QuizAttemptRepository::update()` null-on-error convention
+  already used elsewhere in this module. Before this fix both simply cast
+  the result to `(int)`, which turns a real `false` error into `0` - making
+  it indistinguishable from a learner who genuinely had nothing to clear.
+  `ProgressService::reset_course()`'s `$clear` closure reports `false` only
+  when either repository call itself returned `false`, never for "0 rows
+  affected" - which is exactly what makes a healing Reset's retry safe: a
+  row already cleared by a previous attempt clears zero more rows and still
+  counts as success.
 - **Reopening a completed row for a reset also bumps the cycle marker**
   (Round 7, PR #32 audit re-review, finding 2 - now inside
   `reopen_for_reset()` above): a row that was `completed` has

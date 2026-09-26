@@ -572,4 +572,53 @@ class Test_Courses_Quiz_Rest extends Anchor_Courses_TestCase {
 		$this->assertSame( 200, $submitted->get_status() );
 		$this->assertSame( 100.0, $submitted->get_data()['attempt']['score'], 'A missing key must keep the saved answer, not clear it.' );
 	}
+
+	/**
+	 * Round 7, finding 3: a GET while every post-transition read on this
+	 * attempt fails must return 503 `read_failed` - never a 200 reporting
+	 * `in_progress`, which is what handing back the pre-timer $attempt
+	 * (this route's own read() code used to do via enforce_timer()) would
+	 * report for a row that the database actually holds as `expired`.
+	 */
+	public function test_a_read_after_every_post_transition_read_fails_is_503_not_a_stale_in_progress() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		// owned_attempt() reads this attempt twice before enforce_timer() is
+		// even reached (get_attempt(), then owns_attempt()), and submit()'s
+		// own top-of-method read is a third - all three are left alone so
+		// the request reaches the `expire` branch at all. Everything after
+		// that - submit()'s two post-transition re-reads AND
+		// enforce_timer()'s additional one - fails.
+		$reads = 0;
+		$break = function ( $query ) use ( $attempt_id, &$reads ) {
+			$query = (string) $query;
+			if ( \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = ' . $attempt_id . '$/', $query ) ) {
+				$reads++;
+				if ( $reads > 3 ) {
+					return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+				}
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+		$response = $this->request( 'GET', "/quiz-attempts/{$attempt_id}" );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertGreaterThan( 3, $reads, 'Precondition: every post-transition read on this attempt was reached and failed.' );
+		$this->assertSame( 503, $response->get_status() );
+		$this->assertSame( 'read_failed', $response->get_data()['code'] );
+
+		// A later, unimpeded read sees the truth: the transition landed for
+		// real even though nothing could confirm it a moment ago.
+		$this->assertSame( 'expired', QuizAttemptRepository::find( $attempt_id )->status );
+	}
 }

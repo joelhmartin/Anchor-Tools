@@ -150,9 +150,17 @@ final class QuizController {
 		// A read is a good moment to notice the window closed while they were
 		// away, so the learner sees a truthful status rather than a stale
 		// "in progress" that the timer sweep just hasn't reached yet.
-		$attempt = $this->quizzes->enforce_timer( $attempt );
+		$enforced = $this->quizzes->enforce_timer( $attempt );
 
-		return new \WP_REST_Response( $this->payload( $attempt, $attempt->is_open() ), 200 );
+		// Round 7, finding 3: a `read_failed` WP_Error means the transition
+		// may well have landed but nothing readable came back to confirm
+		// it - never treated as "still in progress" (503, safe to retry),
+		// which is what returning the pre-timer $attempt here would report.
+		if ( \is_wp_error( $enforced ) ) {
+			return Routes::error_response( $enforced );
+		}
+
+		return new \WP_REST_Response( $this->payload( $enforced, $enforced->is_open() ), 200 );
 	}
 
 	public function answer( \WP_REST_Request $request ): \WP_REST_Response {

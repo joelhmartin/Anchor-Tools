@@ -743,8 +743,27 @@ final class QuizService {
 	 *
 	 * Used by the cron sweep and by any read path that wants a truthful status;
 	 * returns the attempt unchanged when untimed or still inside the window.
+	 *
+	 * @return QuizAttempt|\WP_Error A `read_failed` WP_Error only when submit()
+	 *                               itself could not hand back a row AND a
+	 *                               fresh, authoritative re-read also failed
+	 *                               (Round 7, finding 3). Never the
+	 *                               PRE-transition `$attempt` argument on that
+	 *                               path: submit()'s `read_failed` can follow
+	 *                               a transition that DID land (the `expire`
+	 *                               branch commits `expired` before either of
+	 *                               its own re-reads runs), so that argument
+	 *                               may already be stale by the time this
+	 *                               method would have returned it. Re-reading
+	 *                               here gets every caller (REST read/answer/
+	 *                               submit, the sweep) the true current row -
+	 *                               `expired` for that case, `in_progress` for
+	 *                               submit()'s OTHER `read_failed` (the
+	 *                               grading claim, which rolls itself back) -
+	 *                               without this method having to know which
+	 *                               of the two happened.
 	 */
-	public function enforce_timer( QuizAttempt $attempt ): QuizAttempt {
+	public function enforce_timer( QuizAttempt $attempt ) {
 		if ( ! $attempt->is_open() ) {
 			return $attempt;
 		}
@@ -754,7 +773,12 @@ final class QuizService {
 		}
 
 		$result = $this->submit( $attempt->id );
-		return $result instanceof QuizAttempt ? $result : $attempt;
+		if ( $result instanceof QuizAttempt ) {
+			return $result;
+		}
+
+		$current = QuizAttemptRepository::find( $attempt->id );
+		return $current instanceof QuizAttempt ? $current : $result;
 	}
 
 	/**
@@ -796,7 +820,13 @@ final class QuizService {
 		foreach ( (array) $rows as $row ) {
 			$attempt = QuizAttempt::from_row( $row );
 			$after   = $this->enforce_timer( $attempt );
-			if ( $after->status !== $attempt->status ) {
+			// A `read_failed` WP_Error here (Round 7, finding 3) can only
+			// follow a transition enforce_timer()/submit() actually performed
+			// - the row's authoritative re-read is what failed, not the
+			// transition itself - so it counts as closed too, rather than
+			// being silently missed because there is no $after->status to
+			// compare against $attempt->status.
+			if ( $after instanceof \WP_Error || $after->status !== $attempt->status ) {
 				$closed++;
 			}
 		}

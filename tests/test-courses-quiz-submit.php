@@ -574,4 +574,54 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		$this->assertSame( 100.0, $graded->score, 'The retry grades the autosaved answer too.' );
 		$this->assertSame( 1, $fired );
 	}
+
+	/**
+	 * Round 7, finding 3: enforce_timer() must never fall back to the
+	 * PRE-transition $attempt argument when submit() itself could not
+	 * confirm the post-transition row. The `expire` branch commits `expired`
+	 * to the database before either of its own two re-reads runs, so a
+	 * `read_failed` here means the transition landed for real - reporting
+	 * the caller's stale `in_progress` object (the bug) would tell a REST
+	 * read, the sweep and every other caller the window is still open when
+	 * it is not. enforce_timer() gets one more, authoritative re-read of its
+	 * own; only when THAT also fails does it propagate the WP_Error, rather
+	 * than ever handing back the stale object.
+	 */
+	public function test_enforce_timer_propagates_read_failed_instead_of_the_stale_pre_timer_attempt() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		// The first read-by-id is submit()'s own, at the top of the method -
+		// left alone so it reaches the `expire` branch at all. Every read
+		// after that - submit()'s own two post-transition re-reads AND
+		// enforce_timer()'s additional one - fails.
+		$reads = 0;
+		$break = function ( $query ) use ( $attempt, &$reads ) {
+			$query = (string) $query;
+			if ( \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = ' . $attempt->id . '$/', $query ) ) {
+				$reads++;
+				if ( $reads > 1 ) {
+					return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+				}
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+		$result = $this->quizzes->enforce_timer( $attempt );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertGreaterThan( 1, $reads, 'Precondition: every post-transition read on this attempt was reached and failed.' );
+		$this->assertWPError( $result, 'The pre-timer $attempt argument (still in_progress) must never be returned as the truth.' );
+		$this->assertSame( 'read_failed', $result->get_error_code() );
+
+		$row = QuizAttemptRepository::find( $attempt->id );
+		$this->assertSame( 'expired', $row->status, 'The transition landed for real even though nothing could confirm it a moment ago.' );
+	}
 }

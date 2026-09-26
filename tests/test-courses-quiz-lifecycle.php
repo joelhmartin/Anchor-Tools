@@ -224,4 +224,49 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		$timed = $this->quizzes->start_attempt( $second_learner, $this->quiz, $this->course );
 		$this->assertSame( strtotime( '2026-05-01 10:10:00 UTC' ), $this->quizzes->deadline( $timed ), 'A NEW attempt started after the edit pins the new limit.' );
 	}
+
+	/**
+	 * Round 7, finding 3: sweep_expired_attempts() must count an attempt it
+	 * closed even when the row's post-transition read-back failed - it
+	 * counts by comparing $after->status against the pre-timer status, but
+	 * enforce_timer() can now hand back a `read_failed` WP_Error instead of
+	 * a QuizAttempt (never the stale pre-timer object - see
+	 * Test_Courses_Quiz_Submit's sibling test). The transition it performed
+	 * still counts, whether or not anything readable confirmed it.
+	 */
+	public function test_sweep_counts_an_attempt_whose_post_transition_read_failed() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		// The sweep's own bulk SELECT (WHERE status = 'in_progress') is a
+		// different statement and is left alone; only reads BY ID for this
+		// attempt are targeted, and the first of those - submit()'s own, at
+		// the top of the method - is left alone so it reaches the `expire`
+		// branch at all.
+		$reads = 0;
+		$break = function ( $query ) use ( $attempt, &$reads ) {
+			$query = (string) $query;
+			if ( \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = ' . $attempt->id . '$/', $query ) ) {
+				$reads++;
+				if ( $reads > 1 ) {
+					return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+				}
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+		$closed = $this->quizzes->sweep_expired_attempts();
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertGreaterThan( 1, $reads, 'Precondition: the sweep reached this attempt and every read-back on it failed.' );
+		$this->assertSame( 1, $closed, 'Counted even though nothing could read the row back afterwards.' );
+		$this->assertSame( 'expired', QuizAttemptRepository::find( $attempt->id )->status, 'The transition landed for real - a later, unimpeded read shows it.' );
+	}
 }

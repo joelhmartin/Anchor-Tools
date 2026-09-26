@@ -642,20 +642,36 @@ final class CompletionService {
 	/**
 	 * Reopen a row for the admin "Reset progress" action
 	 * (`Services\ProgressService::reset_course()`, `Admin\EnrollmentManager`'s
-	 * `reset` action), under the SAME per-(user, course) completion lock
-	 * `complete()`/`uncomplete()` take (Round 8, Codex + CodeRabbit Major,
-	 * PR #32 finding 1).
+	 * `reset` action), and clear its progress, under ONE HOLD of the SAME
+	 * per-(user, course) completion lock `complete()`/`uncomplete()` take
+	 * (Round 9, Codex + CodeRabbit Major, PR #32 finding 1 - supersedes
+	 * Round 8's version of this method, which took the lock for the reopen
+	 * write alone).
 	 *
-	 * Before this method existed, `EnrollmentService::restart()` read the
-	 * row's metadata, bumped `completion_cycle` in its OWN copy, and wrote
-	 * status + metadata back with no coordination with a completion pipeline
-	 * that might be mid-run for the same (user, course) at the same moment: a
+	 * Releasing the lock as soon as the reopen write landed - Round 8's
+	 * shape - left the actual clearing (`ProgressRepository::
+	 * delete_for_course()`, `QuizAttemptRepository::abandon_for_course()`)
+	 * running with NO lock at all. A completion racing into that window
+	 * would re-read the row (no longer `completed`), evaluate it against the
+	 * STILL-PRESENT old progress (which still reports complete) and flip it
+	 * straight back to `completed` - with credit/certificate/role effects
+	 * awarded - moments before this deleted that same progress out from
+	 * under it: a completed enrolment with none of the progress that earned
+	 * it. `$clear` is the caller's progress-deletion-and-attempt-abandonment
+	 * closure, invoked from inside this same lock hold, right after the
+	 * reopen write succeeds and before the lock is released - so no
+	 * completion can ever observe the row between "reopened" and "cleared".
+	 *
+	 * Before Round 8, `EnrollmentService::restart()` read the row's
+	 * metadata, bumped `completion_cycle` in its OWN copy, and wrote status +
+	 * metadata back with no coordination with a completion pipeline that
+	 * might be mid-run for the same (user, course) at the same moment: a
 	 * stale write here could restore `hook: failed` (so the lifetime
 	 * `anchor_courses_course_completed` fires again next time) or clobber a
 	 * newer effects map or claim `complete()`/`uncomplete()` wrote in
-	 * between. This is now the ONE place that reads and rewrites a completed
-	 * row's completion metadata for a reset - `EnrollmentService` no longer
-	 * touches it at all.
+	 * between. This is the ONE place that reads and rewrites a completed
+	 * row's completion metadata for a reset, and now also the ONE place that
+	 * clears its progress - `EnrollmentService` no longer touches either.
 	 *
 	 * $data is applied via `EnrollmentRepository::update()` exactly as given
 	 * (the reset's `status`/`started_at`/`completed_at`) - never `metadata`;
@@ -671,13 +687,17 @@ final class CompletionService {
 	 * bare) must still serialise a reset against a real completion pipeline
 	 * running elsewhere in the same MySQL server.
 	 *
-	 * @param array $data status/started_at/completed_at (never `metadata`).
+	 * @param array    $data  status/started_at/completed_at (never `metadata`).
+	 * @param callable $clear Runs under this same lock hold, once the reopen
+	 *                        write has succeeded - never when it failed or
+	 *                        there was nothing to reset onto (both already
+	 *                        left nothing to clear).
 	 * @return bool False when the lock is busy or the write failed - nothing
-	 *              is read or changed either way. True when there was
-	 *              nothing to reset (no enrolment for this user/course) or
-	 *              the update succeeded.
+	 *              is read, changed or cleared either way. True when there
+	 *              was nothing to reset (no enrolment for this user/course)
+	 *              or the reopen + $clear() ran.
 	 */
-	public static function reopen_for_reset( int $user_id, int $course_id, array $data ): bool {
+	public static function reopen_for_reset( int $user_id, int $course_id, array $data, callable $clear ): bool {
 		$lock = self::acquire_lock( $user_id, $course_id );
 		if ( null === $lock ) {
 			return false;
@@ -685,7 +705,8 @@ final class CompletionService {
 		try {
 			$enrollment = EnrollmentRepository::find( $user_id, $course_id );
 			if ( ! $enrollment instanceof Enrollment ) {
-				return true; // Nothing to reset.
+				$clear(); // Nothing to reopen, but any stray progress/attempt rows are still cleared.
+				return true;
 			}
 
 			$from = $enrollment->status;
@@ -703,6 +724,11 @@ final class CompletionService {
 				Log::write( 'completion_reset_failed', [ 'user' => $user_id, 'course' => $course_id ] );
 				return false;
 			}
+
+			// Round 9 finding 1: cleared under the SAME lock hold as the
+			// reopen write above - see the docblock. Nothing outside this
+			// method may ever observe the row reopened but not yet cleared.
+			$clear();
 
 			// The reset is already committed; a throwing listener must not
 			// mask it (same containment as complete()/uncomplete()).

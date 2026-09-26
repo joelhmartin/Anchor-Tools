@@ -384,17 +384,19 @@ final class ProgressService {
 	/**
 	 * Start a learner over on one course (the admin "Reset progress" action).
 	 *
-	 * The enrolment row is reopened FIRST, through
-	 * `CompletionService::reopen_for_reset()`, under the same per-(user,
-	 * course) completion lock `complete()`/`uncomplete()` take (Round 8,
-	 * Codex + CodeRabbit Major, PR #32 finding 1) - a reset used to read and
-	 * rewrite a completed row's metadata with no coordination with a
-	 * completion pipeline that might be mid-run for it at the same moment.
-	 * Only once that succeeds are progress rows deleted and quiz attempts
-	 * voided as `abandoned` (a non-counted status, so max_attempts is fully
-	 * restored while the history stays on record - final review I6): a busy
-	 * lock now leaves the WHOLE reset un-run, never a half-reset with
-	 * progress erased but the enrolment row untouched. Credits, certificates
+	 * The enrolment row is reopened, and its progress rows deleted and quiz
+	 * attempts voided as `abandoned` (a non-counted status, so max_attempts
+	 * is fully restored while the history stays on record - final review
+	 * I6), under ONE HOLD of the same per-(user, course) completion lock
+	 * `complete()`/`uncomplete()` take (Round 9, Codex + CodeRabbit Major, PR
+	 * #32 finding 1 - supersedes Round 8, which held the lock for the reopen
+	 * write alone and released it before clearing progress: a completion
+	 * racing into that gap could complete the reopened row against the
+	 * still-present OLD progress moments before this deleted it). Both
+	 * halves run inside `CompletionService::reopen_for_reset()` - see its
+	 * docblock for the race this closes. A busy lock, or a failed write,
+	 * leaves the WHOLE reset un-run, never a half-reset with progress erased
+	 * but the enrolment row untouched (or vice versa). Credits, certificates
 	 * and the completion role are records of something that happened and are
 	 * left alone.
 	 *
@@ -409,18 +411,15 @@ final class ProgressService {
 		// the lock it takes is server-wide, not tied to $this->completion -
 		// this call must serialise against a real completion pipeline
 		// running elsewhere even when THIS instance has none injected.
-		if ( ! CompletionService::reopen_for_reset(
+		return CompletionService::reopen_for_reset(
 			$user_id,
 			$course_id,
-			[ 'status' => 'enrolled', 'started_at' => null, 'completed_at' => null ]
-		) ) {
-			return false;
-		}
-
-		ProgressRepository::delete_for_course( $user_id, $course_id );
-		QuizAttemptRepository::abandon_for_course( $user_id, $course_id );
-
-		return true;
+			[ 'status' => 'enrolled', 'started_at' => null, 'completed_at' => null ],
+			static function () use ( $user_id, $course_id ): void {
+				ProgressRepository::delete_for_course( $user_id, $course_id );
+				QuizAttemptRepository::abandon_for_course( $user_id, $course_id );
+			}
+		);
 	}
 
 	/**

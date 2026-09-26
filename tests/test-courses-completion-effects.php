@@ -892,4 +892,59 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$this->assertTrue( $result, 'uncomplete() reports the committed reopen despite the listener' );
 		$this->assertSame( 'in_progress', $this->enrollments->get( $this->user, $this->course )->status );
 	}
+
+	/* --- Round 9, PR #32 finding 1: the reset holds ONE lock across reopen
+	   AND clearing progress/attempts ---------------------------------------- */
+
+	/**
+	 * Before this fix, `CompletionService::reopen_for_reset()` released the
+	 * completion lock the moment its OWN write landed, and
+	 * `ProgressService::reset_course()` then deleted progress rows and
+	 * abandoned attempts with no lock held at all. A completion racing into
+	 * that window would find the reopened (no longer `completed`) row,
+	 * re-evaluate it against the OLD progress (still reporting complete) and
+	 * flip it straight back to `completed` with effects awarded - right
+	 * before this deleted that same progress out from under it. Proven here
+	 * by probing the real MySQL lock, from a second real connection, at the
+	 * exact moment the progress DELETE fires: it must still find the lock
+	 * held by the reset's own connection.
+	 */
+	public function test_reset_holds_the_completion_lock_through_the_progress_delete() {
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ), 'fixture: completed' );
+
+		$name  = CompletionService::lock_name( $this->user, $this->course );
+		$probe = new mysqli();
+		$host  = explode( ':', DB_HOST );
+		$probe->real_connect( $host[0], DB_USER, DB_PASSWORD, DB_NAME, isset( $host[1] ) ? (int) $host[1] : 3306 );
+
+		$observed = null;
+		$watcher  = function ( $query ) use ( &$observed, $probe, $name ) {
+			if ( null === $observed && \preg_match( '/^DELETE FROM \S*anchor_courses_progress\b/i', (string) $query ) ) {
+				$got = (string) $probe->query( "SELECT GET_LOCK('" . $probe->real_escape_string( $name ) . "', 0)" )->fetch_row()[0];
+				if ( '1' === $got ) {
+					// The probe wrongly acquired it - the lock was NOT held
+					// by the reset's own connection. Release immediately so
+					// this leftover claim cannot linger past the test.
+					$probe->query( "SELECT RELEASE_LOCK('" . $probe->real_escape_string( $name ) . "')" );
+				}
+				$observed = '0' === $got;
+			}
+			return $query;
+		};
+		add_filter( 'query', $watcher );
+
+		$result = $this->progress->reset_course( $this->user, $this->course );
+
+		remove_filter( 'query', $watcher );
+		$probe->close();
+
+		$this->assertTrue( true === $result, 'The reset itself succeeds (lock was never contended).' );
+		$this->assertNotNull( $observed, 'Precondition: the progress DELETE actually ran and was observed by the watcher.' );
+		$this->assertTrue(
+			$observed,
+			'The completion lock must still be held by the reset\'s own connection at the moment it deletes progress - ' .
+			'reopen and clearing must be ONE lock hold, not two.'
+		);
+	}
 }

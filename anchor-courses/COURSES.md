@@ -209,25 +209,37 @@ one." for an enrolled learner locked by progression.
   `uncomplete_failed`) when the row is not completed, the lock is busy or
   the write failed.
 - **The admin "Reset progress" action is serialised with the completion
-  pipeline** (Round 8, Codex + CodeRabbit Major, PR #32 finding 1, supersedes
-  Round 7 finding 2 below): `EnrollmentManager`'s `reset` action goes through
-  `ProgressService::reset_course()` -> `CompletionService::
-  reopen_for_reset()` - a STATIC method, same as `lock_name()`/`is_settled()`,
-  because the MySQL named lock it takes is server-wide, not tied to any one
-  `CompletionService` instance. It takes the SAME per-(user, course)
-  completion lock `complete()`/`uncomplete()` take, re-reads the row only
-  once the lock is held, and applies the reset's `status`/`started_at`/
-  `completed_at` in the SAME call that bumps `metadata.completion_cycle` (see
-  below) - one lock-scoped operation, so a reset can never race a
-  `complete()`/`uncomplete()` pipeline's metadata write for the same row.
-  Before this, `EnrollmentService::restart()` read and rewrote a completed
+  pipeline, and now clears progress under the SAME lock hold as the reopen**
+  (Round 9, Codex + CodeRabbit Major, PR #32 finding 1, supersedes Round 8
+  below, which held the lock for the reopen write alone): `EnrollmentManager`'s
+  `reset` action goes through `ProgressService::reset_course()` ->
+  `CompletionService::reopen_for_reset( $user_id, $course_id, $data, $clear )`
+  - a STATIC method, same as `lock_name()`/`is_settled()`, because the MySQL
+  named lock it takes is server-wide, not tied to any one `CompletionService`
+  instance. It takes the SAME per-(user, course) completion lock
+  `complete()`/`uncomplete()` take, re-reads the row only once the lock is
+  held, applies the reset's `status`/`started_at`/`completed_at` in the SAME
+  call that bumps `metadata.completion_cycle` (see below), and - Round 9 -
+  invokes the caller's `$clear` closure (progress-row deletion, quiz-attempt
+  abandonment) from inside that SAME lock hold, right after the reopen write
+  succeeds and before the lock is released. Releasing the lock as soon as the
+  reopen write landed (Round 8's shape) left `$clear`'s two writes running
+  with no lock at all: a completion racing into that window could re-read the
+  reopened row, evaluate it against the STILL-PRESENT old progress (which
+  still reports complete) and flip it straight back to `completed` - with
+  effects awarded - moments before the reset deleted that same progress out
+  from under it. One lock-scoped operation now covers reopen + cycle bump +
+  clear, so neither a `complete()`/`uncomplete()` pipeline nor a reset can
+  ever race the other's writes for the same row, and no completion can ever
+  observe the row reopened but not yet cleared.
+  Before Round 8, `EnrollmentService::restart()` read and rewrote a completed
   row's metadata with no coordination at all: a stale write could restore
   `hook: failed` (firing the lifetime `course_completed` again next time) or
   clobber a newer effects map or claim written in between.
-  `EnrollmentService` no longer touches completion metadata at all -
-  `restart()` is gone. A reset that cannot get the lock changes NOTHING
-  (progress rows are deleted and attempts abandoned only AFTER the lock-held
-  update succeeds) and `reset_course()` returns `false`; `EnrollmentManager`
+  `EnrollmentService` no longer touches completion metadata OR progress at
+  all - `restart()` is gone. A reset that cannot get the lock, or whose
+  reopen write fails at the database, changes NOTHING (`$clear` never runs
+  either way) and `reset_course()` returns `false`; `EnrollmentManager`
   reports the distinct notice `reset_busy`, never `reset`.
 - **Reopening a completed row for a reset also bumps the cycle marker**
   (Round 7, PR #32 audit re-review, finding 2 - now inside
@@ -452,12 +464,12 @@ one." for an enrolled learner locked by progression.
   attempt. Cross-course credit, if ever wanted, must be an explicit policy.
 - **Best attempt counts:** a completed item is never downgraded by a later failed
   attempt; a repeat pass keeps the original `completed_at`.
-- **Admin reset** (`ProgressService::reset_course()`): reopens the row first,
-  under the completion lock (see `reopen_for_reset()` above; `false` on a
-  busy lock or a write failure, `reset_busy`, and nothing else touched), then
+- **Admin reset** (`ProgressService::reset_course()`): reopens the row,
   deletes progress rows, voids every counted attempt as `abandoned` (not
   counted toward `max_attempts`, no retry delay), and restarts the row
-  (`enrolled`, no `started_at` / `completed_at`).
+  (`enrolled`, no `started_at` / `completed_at`) - all under ONE hold of the
+  completion lock (see `reopen_for_reset()` above, Round 9). `false` on a
+  busy lock or a write failure, `reset_busy`, and nothing touched either way.
 - **Certificates** freeze `learner_name`, `course_name`, `credits`,
   `provider_name`, `provider_number` and `instructor_name` into their metadata at
   issue; the page renders that snapshot (live values only for older rows).

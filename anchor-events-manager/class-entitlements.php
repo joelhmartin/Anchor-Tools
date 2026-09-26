@@ -513,12 +513,31 @@ class Entitlements {
         if ( ! $this->enabled( $event_id ) ) {
             return;
         }
-        $this->maybe_revoke_seat_grant( $event_id, $this->resolve_seat_user( $seat_id ) );
+        $attendee = $this->resolve_seat_user( $seat_id );
+        $this->maybe_revoke_seat_grant( $event_id, $attendee );
+
+        // Audit F01: the order's buyer is reconciled too. Every seat on a
+        // logged-in buyer's order carries their customer id, and a buyer
+        // bound to a colleague's seat before the ensure_user() C1 fix (or by
+        // the old buyer-inclusive has_confirmed_seat()) may hold a seat grant
+        // that no seat of THEIR OWN backs. Revoke-only and owner-only, so a
+        // buyer with their own confirmed seat or a manual grant is untouched.
+        $buyer = (int) \get_post_meta( $seat_id, '_anchor_event_customer_id', true );
+        if ( $buyer > 0 && $buyer !== $attendee ) {
+            $this->maybe_revoke_seat_grant( $event_id, $buyer );
+        }
     }
 
     /**
      * Revoke a SEAT grant only when nothing else entitles the user: no other
-     * confirmed seat on this event, and no manual grant on record.
+     * confirmed seat on this event, and the role's own grant record is
+     * actually seat-derived.
+     *
+     * CodeRabbit PR #32: requiring `SOURCE_SEAT` (rather than merely
+     * rejecting `SOURCE_MANUAL`) also leaves a MISSING grant record alone -
+     * a role held with no record at all is not undone by a seat refund
+     * either, matching reconcile() (which only ever revokes a role whose
+     * grant record is `SOURCE_SEAT`).
      *
      * @param int $event_id
      * @param int $user_id
@@ -529,8 +548,8 @@ class Entitlements {
         if ( $event_id <= 0 || $user_id <= 0 || ! $this->enabled( $event_id ) ) {
             return;
         }
-        if ( ( $this->grant_record( $event_id, $user_id )['source'] ?? '' ) === self::SOURCE_MANUAL ) {
-            return; // A comp is not undone by a refund.
+        if ( ( $this->grant_record( $event_id, $user_id )['source'] ?? '' ) !== self::SOURCE_SEAT ) {
+            return; // A comp - or a role with no grant record at all - is not undone by a refund.
         }
         if ( $this->has_confirmed_seat( $event_id, $user_id ) ) {
             return; // Another seat still entitles them.
@@ -539,7 +558,15 @@ class Entitlements {
     }
 
     /**
-     * Whether the user holds at least one CONFIRMED seat on the event.
+     * Whether the user OWNS at least one CONFIRMED seat on the event — the
+     * question every keep/revoke decision about a seat-derived role asks.
+     *
+     * Owner-only (audit F01): a seat is the user's when its resolved account
+     * (`_anchor_event_user_id`) or its attendee email is theirs. The order's
+     * customer id is NOT ownership: a logged-in buyer's id is stamped on every
+     * seat in the order, including the ones bought for colleagues, and
+     * counting those let a refunded buyer keep the role on the strength of a
+     * colleague's seat — and keep it for good once that seat went too.
      *
      * Deliberately narrower than Registrations::user_has_active_seat(), which
      * also counts `pending` — a reserved seat is not an entitlement.
@@ -549,15 +576,33 @@ class Entitlements {
      * @return bool
      */
     public function has_confirmed_seat( $event_id, $user_id ) {
+        return $this->confirmed_seat_query( $event_id, $user_id, false );
+    }
+
+    /**
+     * Whether the user owns a confirmed seat OR bought one (their customer id
+     * is on it) — the WooCommerce buyer-confirmation question, "does this
+     * buyer resolve to a seat on this order's event?", which decides whether
+     * the buyer's own mail may carry the buyer's own sign-in token.
+     *
+     * Kept apart from has_confirmed_seat() on purpose (audit F01): the two
+     * questions used to share one name and one answer, and the wider one
+     * leaked into role retention. This one must never decide a role.
+     *
+     * @param int $event_id
+     * @param int $user_id
+     * @return bool
+     */
+    public function buyer_resolves_to_seat( $event_id, $user_id ) {
+        return $this->confirmed_seat_query( $event_id, $user_id, true );
+    }
+
+    /** The one confirmed-seat query behind the two questions above. */
+    private function confirmed_seat_query( $event_id, $user_id, $include_customer ) {
         $user = \get_userdata( (int) $user_id );
         if ( ! $user instanceof \WP_User ) {
             return false;
         }
-        // Same shared OR fragment user_has_active_seat() and seat_tier_modality()
-        // use — this used to hand-roll its own (keyed off SEAT_USER_META rather
-        // than identity_meta_query()'s _anchor_event_user_id, though both name
-        // the same meta key, so the query is unchanged, just no longer a
-        // fourth copy of the same three clauses).
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
             'post_status'    => 'publish',
@@ -568,7 +613,7 @@ class Entitlements {
                 'relation' => 'AND',
                 [ 'key' => '_anchor_event_id', 'value' => (int) $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
                 [ 'key' => '_anchor_event_reg_status', 'value' => Registrations::STATUS_CONFIRMED, 'compare' => '=' ],
-                $this->module->registrations->identity_meta_query( (int) $user_id, (string) $user->user_email ),
+                $this->module->registrations->identity_meta_query( (int) $user_id, (string) $user->user_email, (bool) $include_customer ),
             ],
         ] );
         return ! empty( $q->posts );
@@ -645,6 +690,58 @@ class Entitlements {
             }
         }
         return $granted;
+    }
+
+    /**
+     * Find (and optionally remove) seat-derived grants that no confirmed seat
+     * owned by their holder backs any more (audit F01).
+     *
+     * The repair for roles orphaned before seat retention became owner-only,
+     * and a standing diagnosis for anything that bypassed the seat hooks. It
+     * walks the role's holders and, for each one holding a `seat` grant
+     * record, asks has_confirmed_seat() — the same owner-only question the
+     * live revoke path asks — so the report and the live path cannot drift.
+     *
+     * Never touched: a `manual` grant (a comp outlives any refund), a holder
+     * with no grant record at all (not seat-derived, and reapply_granted_roles()
+     * already refuses to resurrect one), and anybody with a confirmed seat.
+     * A switched-off event is refused outright, the way backfill() refuses it:
+     * turning access off looks forward only and must not strip anyone.
+     *
+     * Idempotent: a second apply finds nothing.
+     *
+     * @param int  $event_id
+     * @param bool $dry_run  true = report only.
+     * @return array{enabled:bool,dry_run:bool,checked:int,orphaned:array<int,array{user_id:int,reason:string}>,revoked:int}
+     */
+    public function reconcile( $event_id, $dry_run = true ) {
+        $event_id = (int) $event_id;
+        $report   = [
+            'enabled'  => $this->enabled( $event_id ),
+            'dry_run'  => (bool) $dry_run,
+            'checked'  => 0,
+            'orphaned' => [],
+            'revoked'  => 0,
+        ];
+        $slug = $this->role_for( $event_id, false );
+        if ( ! $report['enabled'] || $slug === '' ) {
+            return $report;
+        }
+        $q = new \WP_User_Query( [ 'role' => $slug, 'fields' => 'ID', 'number' => 0, 'orderby' => 'ID', 'order' => 'ASC' ] );
+        foreach ( \array_map( 'intval', (array) $q->get_results() ) as $user_id ) {
+            $report['checked']++;
+            if ( ( $this->grant_record( $event_id, $user_id )['source'] ?? '' ) !== self::SOURCE_SEAT ) {
+                continue;
+            }
+            if ( $this->has_confirmed_seat( $event_id, $user_id ) ) {
+                continue;
+            }
+            $report['orphaned'][] = [ 'user_id' => $user_id, 'reason' => 'no_confirmed_seat' ];
+            if ( ! $dry_run && $this->revoke( $event_id, $user_id, 'reconcile' ) ) {
+                $report['revoked']++;
+            }
+        }
+        return $report;
     }
 
     /**

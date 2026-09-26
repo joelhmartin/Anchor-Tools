@@ -24,7 +24,7 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		$d = LessonEditor::defaults();
 		$this->assertSame( 'manual', $d['completion_mode'] );
 		$this->assertSame( 'content', $d['type'] );
-		$this->assertSame( 1, $d['required'] );
+		$this->assertArrayNotHasKey( 'required', $d, 'Requiredness lives on the curriculum item, not a lesson setting.' );
 	}
 
 	public function test_save_persists_completion_mode_and_quiz_link() {
@@ -32,10 +32,33 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		$lesson = $this->make_lesson();
 		$quiz   = $this->make_quiz();
 
-		$this->submit( $lesson, [ 'completion_mode' => 'quiz_pass', 'quiz_id' => (string) $quiz, 'required' => '1' ] );
+		$this->submit( $lesson, [ 'completion_mode' => 'quiz_pass', 'quiz_id' => (string) $quiz ] );
 
 		$this->assertSame( 'quiz_pass', get_post_meta( $lesson, '_anchor_lesson_completion_mode', true ) );
 		$this->assertSame( $quiz, (int) get_post_meta( $lesson, '_anchor_lesson_quiz_id', true ) );
+	}
+
+	/**
+	 * Audit finding (d), 2026-09-25: the metabox's own "Required for course
+	 * completion" checkbox was removed - it was saved but nothing ever read
+	 * it. A save must no longer write `_anchor_lesson_required` at all.
+	 */
+	public function test_required_is_no_longer_a_writable_setting() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson();
+
+		$this->submit( $lesson, [ 'completion_mode' => 'manual', 'required' => '1' ] );
+
+		$this->assertSame( '', get_post_meta( $lesson, '_anchor_lesson_required', true ) );
+	}
+
+	/** The removed checkbox must not linger in the rendered metabox either. */
+	public function test_render_no_longer_shows_the_required_checkbox() {
+		$lesson = $this->make_lesson();
+		$html   = $this->render_html( $lesson );
+
+		$this->assertStringNotContainsString( 'anchor_lesson[required]', $html );
+		$this->assertStringContainsString( "Curriculum builder", $html, 'A hint must point authors at where requiredness actually lives.' );
 	}
 
 	public function test_quiz_id_must_reference_a_real_quiz() {
@@ -137,5 +160,73 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 
 		$this->assertSame( 'view', get_post_meta( $lesson, '_anchor_lesson_completion_mode', true ), 'A revision id must never overwrite the real lesson\'s meta.' );
 		$this->assertSame( '', get_post_meta( $revision_id, '_anchor_lesson_completion_mode', true ), 'Nothing may be written against the revision id itself either.' );
+	}
+
+	/* -----------------------------------------------------------------
+	 * Audit UI item: the live-session controls are not wired yet (plan
+	 * Phase 5), so the editor shows them disabled with a notice instead of
+	 * implying protection that does not exist - and still keeps whatever
+	 * is stored.
+	 * --------------------------------------------------------------- */
+
+	private function render_html( int $lesson_id ): string {
+		ob_start();
+		( new LessonEditor() )->render( get_post( $lesson_id ) );
+		return (string) ob_get_clean();
+	}
+
+	/** @return array<string,DOMElement> name => the visible (non-hidden) input */
+	private function visible_live_inputs( string $html ): array {
+		$doc = new DOMDocument();
+		libxml_use_internal_errors( true );
+		$doc->loadHTML( '<html><body>' . $html . '</body></html>' );
+		libxml_clear_errors();
+		$out = [];
+		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
+			$name = $input->getAttribute( 'name' );
+			if ( 'hidden' !== $input->getAttribute( 'type' ) && preg_match( '/^anchor_lesson\[(event_id|session_index|require_prior_items)\]$/', $name, $m ) ) {
+				$out[ $m[1] ] = $input;
+			}
+		}
+		return $out;
+	}
+
+	public function test_live_session_controls_are_disabled_with_a_notice() {
+		$lesson = $this->make_lesson( [ 'event_id' => 42, 'session_index' => 1, 'require_prior_items' => 1 ] );
+		$html   = $this->render_html( $lesson );
+
+		$this->assertStringContainsString( 'Not active until the live-session adapter ships (plan Phase 5)', $html );
+		$inputs = $this->visible_live_inputs( $html );
+		$this->assertSame( [ 'event_id', 'session_index', 'require_prior_items' ], array_keys( $inputs ) );
+		foreach ( $inputs as $key => $input ) {
+			$this->assertTrue( $input->hasAttribute( 'disabled' ), $key . ' must be disabled.' );
+		}
+		$this->assertStringContainsString( 'Block stream access until earlier items are complete', $html, 'The setting is still shown, not hidden.' );
+	}
+
+	/** Saving the editor as rendered (disabled inputs are never posted) keeps the stored values. */
+	public function test_saving_the_rendered_form_keeps_the_stored_live_session_settings() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson( [ 'event_id' => 42, 'session_index' => 1, 'require_prior_items' => 1 ] );
+
+		$doc = new DOMDocument();
+		libxml_use_internal_errors( true );
+		$doc->loadHTML( '<html><body>' . $this->render_html( $lesson ) . '</body></html>' );
+		libxml_clear_errors();
+		$posted = [];
+		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
+			if ( $input->hasAttribute( 'disabled' ) || ! preg_match( '/^anchor_lesson\[(\w+)\]$/', $input->getAttribute( 'name' ), $m ) ) {
+				continue;
+			}
+			if ( 'checkbox' === $input->getAttribute( 'type' ) && ! $input->hasAttribute( 'checked' ) ) {
+				continue;
+			}
+			$posted[ $m[1] ] = $input->getAttribute( 'value' );
+		}
+		$this->submit( $lesson, $posted + [ 'completion_mode' => 'manual' ] );
+
+		$this->assertSame( 42, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
+		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
+		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_require_prior_items', true ) );
 	}
 }

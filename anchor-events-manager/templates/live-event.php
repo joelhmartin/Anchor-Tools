@@ -6,12 +6,14 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+// room.css/room.js are enqueued from Module::frontend_assets() on
+// wp_enqueue_scripts (is_room_request()), not here — get_header() below
+// already runs wp_head(), so an enqueue at this point would land after the
+// normal head pass has printed and only show up via the late/footer
+// fallback (audit finding b, 2026-09-25).
 get_header();
 
 $module = \Anchor\Events\Module::instance();
-if ( $module ) {
-    $module->enqueue_room_assets();
-}
 ?>
 <main class="anchor-event-room">
     <?php

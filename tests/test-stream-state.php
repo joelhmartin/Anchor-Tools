@@ -97,6 +97,40 @@ class Test_Stream_State extends Anchor_Events_TestCase {
 		$this->assertSame( Stream_State::LIVE, $out['state'] );
 	}
 
+	/**
+	 * Audit finding (a), 2026-09-25: an event-level embed is empty and only
+	 * the SECOND of two sessions carries its own override. The first
+	 * session's window must never enter countdown/live/between just because
+	 * a later session has an embed — only session 2's window may.
+	 */
+	public function test_only_the_second_session_has_an_embed() {
+		$day1 = $this->sessions( [ 'stream_embed' => [] ] )[0];
+		$day2 = array_merge( $day1, [
+			'date' => '2027-05-02', 'label' => 'Day 2', 'start_ts' => 1086400, 'end_ts' => 1093600,
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/2', 'raw' => '' ],
+		] );
+
+		// Before session 1 opens: countdown must target session 2 (index 1),
+		// never session 1 — session 1 has no embed to open toward at all.
+		$out = Stream_State::decide( [ $day1, $day2 ], 900, 1800, 1000000 - 5000, true );
+		$this->assertSame( Stream_State::COUNTDOWN, $out['state'] );
+		$this->assertSame( 1, $out['session_index'] );
+		$this->assertSame( 1086400 - 900, $out['target_ts'] );
+
+		// During session 1 (which has no embed): not live. Session 2's
+		// window has not opened, and nothing has closed yet, so countdown.
+		$out = Stream_State::decide( [ $day1, $day2 ], 900, 1800, 1000000 + 3600, true );
+		$this->assertNotSame( Stream_State::LIVE, $out['state'] );
+		$this->assertSame( Stream_State::COUNTDOWN, $out['state'] );
+		$this->assertSame( 1, $out['session_index'] );
+
+		// During session 2 (which has the embed): live, index 1.
+		$out = Stream_State::decide( [ $day1, $day2 ], 900, 1800, 1086400 + 900, true );
+		$this->assertSame( Stream_State::LIVE, $out['state'] );
+		$this->assertSame( 1, $out['session_index'] );
+		$this->assertSame( 'https://player.vimeo.com/video/2', $out['embed']['src'] );
+	}
+
 	/** A single event with no sessions rows resolves through its own bounds. */
 	public function test_for_event_single_event_uses_implicit_session() {
 		$start    = time() + DAY_IN_SECONDS;

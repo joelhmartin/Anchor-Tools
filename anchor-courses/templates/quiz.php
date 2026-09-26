@@ -52,6 +52,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 	<div class="anchor-quiz-timer" hidden></div>
 	<form class="anchor-quiz-form" hidden></form>
+	<div class="anchor-quiz-save-status" role="status" aria-live="polite" hidden></div>
 	<div class="anchor-quiz-result" hidden></div>
 	<noscript><p><?php esc_html_e( 'This quiz needs JavaScript.', 'anchor-schema' ); ?></p></noscript>
 </div>

@@ -384,8 +384,16 @@ every 5 minutes while `live`. 401 logged out, 403 not entitled.
 ("Event: {title}"), minted lazily on the first grant, renamed with the title,
 and **never deleted automatically** — trashing the event leaves it. The console's
 Basics step has **Grant role to current attendees** (the backfill: every
-confirmed seat, accounts created as needed, idempotent) and an explicit
-**Delete role** action.
+confirmed seat, accounts created as needed, idempotent), **Check roles** /
+**Reconcile roles** (`Entitlements::reconcile()`: report, then remove,
+seat-derived roles whose holder owns no confirmed seat — manual grants are never
+touched) and an explicit **Delete role** action.
+
+**Seat-derived roles follow the seat's owner, not its buyer** (audit F01). A
+seat leaving `confirmed` runs `maybe_revoke_seat_grant()` for the seat's
+account AND, when different, for the order's customer (`_anchor_event_customer_id`);
+each keeps the role only while they own a confirmed seat
+(`has_confirmed_seat()`, owner-only) or hold a manual grant.
 
 **Sign-in link:** `Entitlements::room_url_for( $user_id, $event_id )` appends a
 stateless `?aek=` HMAC (user | event | expiry | password fragment), expiring at
@@ -479,6 +487,9 @@ and each ticket tier's `modality` field (`in_person` \| `virtual`, default
 - `enabled( $event_id ): bool` — `stream_capable() && access_role_enabled`. The master switch every other entry point checks first; `true` for nearly every event, because the switch defaults on. `false` means this event is not in the feature and every code path returns its pre-feature answer. **Not "has a room"** — that is `Module::room_url() !== ''`.
 - `can_access_stream( $event_id, $session_index = 0, $user_id = 0 ): bool` — the one access question. Needs a resolvable stream as well as the role, so holding `anchor_event_{id}` on a plain event is not stream access.
 - `backfill( $event_id ): int` — grant the role to every confirmed seat now, creating accounts as needed. Returns how many were newly granted; idempotent; returns 0 when `enabled()` is false. This is how an event that was already selling is reconciled with the switch.
+- `reconcile( $event_id, $dry_run = true ): array` — the reverse of the backfill (audit F01): every role holder whose grant record is `seat` but who owns no confirmed seat is reported (`orphaned[] = { user_id, reason: 'no_confirmed_seat' }`) and, when `$dry_run` is false, revoked (the revoke action fires with `$source = 'reconcile'`). Never touches a `manual` grant or a holder with no grant record. Returns `{ enabled, dry_run, checked, orphaned, revoked }`; refuses (nothing checked) when `enabled()` is false. Idempotent.
+- `has_confirmed_seat( $event_id, $user_id ): bool` — does the user **own** a confirmed seat (seat's `_anchor_event_user_id` or attendee email)? Owner-only since audit F01: the order's customer id is not ownership. Every keep/revoke decision about a role asks this.
+- `buyer_resolves_to_seat( $event_id, $user_id ): bool` — the wider WooCommerce buyer-confirmation question: owns a confirmed seat OR is the customer on one. Decides only whether the buyer's own confirmation carries the buyer's own sign-in token; never decides a role.
 - `role_for( $event_id, $create = true ): string` / `role_name()` / `role_members()` / `delete_role()`
 - `grant( $event_id, $user_id, $source = 'seat' )` / `revoke( … )` — `$source` is `seat` or `manual`; a manual grant is never downgraded by a seat cancellation.
 - `downgrade_manual_grant_to_seat( $event_id, $user_id ): bool` — the one legitimate manual → seat rewrite, bypassing `grant()`'s "manual outranks seat" guard on purpose. `Roster::revoke_access()` calls it when an operator revokes a manual grant on someone who still independently holds a confirmed seat: the role stays, but the record now reads `seat`, so that seat's own later cancellation can go on to revoke it.

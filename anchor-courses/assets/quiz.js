@@ -26,6 +26,73 @@
 
     function esc(t) { return $('<div/>').text(t == null ? '' : String(t)).html(); }
 
+    /**
+     * Serialised answer autosave (audit F06).
+     *
+     * One save request in flight at a time; while one is out, further
+     * changes are queued and COALESCED per question (only the latest value
+     * of a question is ever sent next), so a learner's own two changes to one
+     * answer can never arrive at the server out of order. A failed save puts
+     * the queue in an error state (reported through onState) instead of
+     * failing silently; drain(cb) lets submit wait until nothing is queued or
+     * in flight. The server's compare-and-swap is still the real guard -
+     * another tab or a replayed request does not go through this queue.
+     *
+     * @param {function(string, Array, function(boolean))} send  Sends one
+     *        answer and calls back true (saved) or false (failed).
+     * @param {function(string)} onState 'saving' | 'saved' | 'error'.
+     */
+    function createSaveQueue(send, onState) {
+        var pending = {};
+        var order = [];
+        var inFlight = false;
+        var failedQuestions = {};
+        var waiters = [];
+
+        function hasFailures() { return Object.keys(failedQuestions).length > 0; }
+
+        function settle() {
+            if (inFlight || order.length) { return; }
+            var ready = waiters;
+            waiters = [];
+            ready.forEach(function (cb) { cb(!hasFailures()); });
+        }
+
+        function next() {
+            if (inFlight || !order.length) { settle(); return; }
+            var qid = order.shift();
+            var values = pending[qid];
+            delete pending[qid];
+            inFlight = true;
+            onState('saving');
+            send(qid, values, function (ok) {
+                inFlight = false;
+                if (ok) {
+                    delete failedQuestions[qid];
+                } else {
+                    failedQuestions[qid] = true;
+                }
+                onState(hasFailures() ? 'error' : 'saved');
+                next();
+            });
+        }
+
+        return {
+            save: function (qid, values) {
+                qid = String(qid);
+                if (!Object.prototype.hasOwnProperty.call(pending, qid)) { order.push(qid); }
+                pending[qid] = values;
+                next();
+            },
+            drain: function (cb) {
+                waiters.push(cb);
+                next();
+            }
+        };
+    }
+    // Exposed for the Node harness (tests/js/quiz-save-queue-harness.js).
+    window.AnchorCoursesQuizSaveQueue = createSaveQueue;
+
     function api(path, method, body) {
         return $.ajax({
             url: cfg.restUrl + path,
@@ -61,6 +128,23 @@
         var courseId = $root.data('course');
         var attemptId = 0;
         var timerHandle = null;
+        // Re-review (Low): once a submit (timer-fired or manual) has started
+        // draining the save queue, a further submit trigger or answer change
+        // must not race the grade - only a FAILED submit clears this, so a
+        // learner can retry.
+        var submitting = false;
+        var saves = createSaveQueue(function (qid, values, done) {
+            api('quiz-attempts/' + attemptId + '/answer', 'POST', { question_id: qid, value: values, course_id: courseId })
+                .done(function () { done(true); })
+                .fail(function () { done(false); });
+        }, function (state) {
+            var $status = $root.find('.anchor-quiz-save-status');
+            if (state === 'error') {
+                $status.prop('hidden', false).text(S.saveError || S.error || '');
+            } else if (state === 'saved') {
+                $status.prop('hidden', true).text('');
+            }
+        });
 
         function startCountdown(deadline, serverNow) {
             var skew = Math.floor(Date.now() / 1000) - serverNow;
@@ -144,31 +228,52 @@
         });
 
         // Save each answer as it changes, so an expired timer still has them.
+        // Through the serialised queue (audit F06), never a free-running
+        // request per click. Ignored once a submit is under way (re-review) -
+        // disabling the inputs below already stops `change` from firing; the
+        // `submitting` check is a second guard against any change that still
+        // reaches here (e.g. a checkbox toggled via script or before the
+        // disabled attribute takes effect in the DOM).
         $root.on('change', '.anchor-quiz-answers input', function () {
-            if (!attemptId) { return; }
+            if (!attemptId || submitting) { return; }
             var $q = $(this).closest('.anchor-quiz-question');
-            var qid = $q.data('question');
-            var values = $q.find('input:checked').map(function () { return this.value; }).get();
-            api('quiz-attempts/' + attemptId + '/answer', 'POST', { question_id: qid, value: values });
+            saves.save($q.data('question'), $q.find('input:checked').map(function () { return this.value; }).get());
         });
 
         $root.on('submit', '.anchor-quiz-form', function (e) {
             e.preventDefault();
-            if (!attemptId) { return; }
+            // Both the timer (via `.trigger('submit')`) and the learner's own
+            // click reach this same handler - `submitting` makes a second
+            // trigger while the first is still draining/grading a no-op,
+            // rather than a second in-flight submit request (re-review).
+            if (!attemptId || submitting) { return; }
+            submitting = true;
             $(this).find('button[type="submit"]').prop('disabled', true);
+            $root.find('.anchor-quiz-answers input').prop('disabled', true);
 
-            var answers = {};
-            $root.find('.anchor-quiz-question').each(function () {
-                var $q = $(this);
-                answers[$q.data('question')] = $q.find('input:checked').map(function () { return this.value; }).get();
-            });
-
-            api('quiz-attempts/' + attemptId + '/submit', 'POST', { answers: answers })
-                .done(renderResult)
-                .fail(function () {
-                    $root.find('.anchor-quiz-form button[type="submit"]').prop('disabled', false);
-                    $root.find('.anchor-quiz-result').prop('hidden', false).text(S.error);
+            // Let queued/in-flight saves finish first so none of them races
+            // the grade. Submit sends the whole answer map regardless, so a
+            // save that failed is still carried by this request.
+            saves.drain(function () {
+                var answers = {};
+                $root.find('.anchor-quiz-question').each(function () {
+                    var $q = $(this);
+                    answers[$q.data('question')] = $q.find('input:checked').map(function () { return this.value; }).get();
                 });
+
+                api('quiz-attempts/' + attemptId + '/submit', 'POST', { answers: answers, course_id: courseId })
+                    .done(renderResult)
+                    .fail(function (xhr) {
+                        // Only a FAILED submit clears the flag - a successful
+                        // one hides the form in renderResult(), so there is
+                        // nothing left to guard.
+                        submitting = false;
+                        $root.find('.anchor-quiz-form button[type="submit"]').prop('disabled', false);
+                        $root.find('.anchor-quiz-answers input').prop('disabled', false);
+                        var msg = (xhr && xhr.responseJSON && xhr.responseJSON.message) || S.error;
+                        $root.find('.anchor-quiz-result').prop('hidden', false).text(msg);
+                    });
+            });
         });
     }
 

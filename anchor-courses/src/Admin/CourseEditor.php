@@ -8,6 +8,7 @@ use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\LessonPostType;
 use Anchor\Courses\Content\QuizPostType;
 use Anchor\Courses\Module;
+use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Capabilities;
 use Anchor\Courses\Support\Roles;
 
@@ -449,6 +450,22 @@ final class CourseEditor {
 		}
 
 		Curriculum::save( $post_id, $decoded );
+
+		// Audit F04: warn - never block - when a required lesson that
+		// completes by passing its quiz cannot reach that quiz here. The
+		// post editor's own redirect carries the notice code to Notices.
+		if ( [] !== ProgressService::quiz_link_problems( $post_id ) ) {
+			\add_filter(
+				'redirect_post_location',
+				static function ( $location, $redirect_post_id = 0 ) use ( $post_id ) {
+					return (int) $redirect_post_id === $post_id
+						? \add_query_arg( Notices::QUERY_ARG, 'curriculum_quiz_link', (string) $location )
+						: $location;
+				},
+				10,
+				2
+			);
+		}
 	}
 
 	/** @return array<int,array{id:int,title:string,type:string}> */

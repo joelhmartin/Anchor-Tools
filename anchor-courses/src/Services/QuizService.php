@@ -32,6 +32,13 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class QuizService {
 
+	/**
+	 * How long a `submitted` claim may stand before it is treated as orphaned
+	 * by a crashed request and re-opened (audit F03). Grading is one request;
+	 * five minutes is far past any real one.
+	 */
+	public const STALE_CLAIM_SECONDS = 300;
+
 	public function __construct(
 		private ?ProgressService $progress = null,
 		private ?EnrollmentService $enrollments = null
@@ -74,16 +81,21 @@ final class QuizService {
 			return new \WP_Error( 'locked', \__( 'Finish the earlier items first.', 'anchor-schema' ) );
 		}
 
-		// An attempt already open always resumes, whatever the allowance says.
-		if ( QuizAttemptRepository::open_attempt( $user_id, $quiz_id ) instanceof QuizAttempt ) {
+		// A claim orphaned by a crashed submit is this learner's open attempt
+		// again (audit F03) - recovered here too, not only by the daily sweep.
+		$this->reopen_stale_claims( $user_id, $quiz_id, $course_id );
+
+		// An attempt already open IN THIS COURSE always resumes, whatever the
+		// allowance says (audit F05: another course's open attempt is not it).
+		if ( QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id ) instanceof QuizAttempt ) {
 			return true;
 		}
 
-		if ( 0 === $this->attempts_remaining( $user_id, $quiz_id ) ) {
+		if ( 0 === $this->attempts_remaining( $user_id, $quiz_id, $course_id ) ) {
 			return new \WP_Error( 'no_attempts_remaining', \__( 'You have used all your attempts.', 'anchor-schema' ) );
 		}
 
-		$retry_at = $this->retry_available_at( $user_id, $quiz_id );
+		$retry_at = $this->retry_available_at( $user_id, $quiz_id, $course_id );
 		if ( $retry_at > Clock::timestamp() ) {
 			return new \WP_Error(
 				'retry_delay',
@@ -98,54 +110,67 @@ final class QuizService {
 		return true;
 	}
 
+	/** Seconds start_attempt() waits for the per-learner lock (filterable). */
+	public const ATTEMPT_LOCK_TIMEOUT = 5;
+
+	/**
+	 * The MySQL named-lock key for one learner's starts at one quiz in one
+	 * course (audit F07). `GET_LOCK()` names are server-wide, not scoped by
+	 * database, so two WordPress installs sharing one MySQL server - or two
+	 * subsites of one multisite, which share the server but not the table
+	 * prefix - are folded into the key (re-review): otherwise they would
+	 * contend for the same lock whenever a learner, course and quiz happen to
+	 * share ids across sites. MySQL lock names are at most 64 characters.
+	 */
+	public static function attempt_lock_name( int $user_id, int $course_id, int $quiz_id ): string {
+		global $wpdb;
+		$site = \md5( DB_NAME . $wpdb->prefix );
+		$name = 'anchor_courses_attempt_' . $site . '_' . $user_id . '_' . $course_id . '_' . $quiz_id;
+		return \strlen( $name ) <= 64 ? $name : 'anchor_courses_attempt_' . \md5( $name );
+	}
+
 	/**
 	 * Begin (or resume) an attempt.
+	 *
+	 * Serialised per (user, course, quiz) by a MySQL named lock (audit F07):
+	 * the preflight (can_start(): open attempt, allowance, retry delay) and
+	 * the create run inside one critical section, so two tabs or two direct
+	 * requests cannot both pass the preflight and both create. A caller that
+	 * cannot get the lock within `anchor_courses_attempt_lock_timeout`
+	 * seconds gets WP_Error('attempt_busy') (REST 409) - a controlled
+	 * conflict, never a second attempt. QuizAttemptRepository::create()'s
+	 * conditional INSERT is the database-level backstop. The started side
+	 * effects run after the lock is released.
 	 *
 	 * @return QuizAttempt|\WP_Error
 	 */
 	public function start_attempt( int $user_id, int $quiz_id, int $course_id ) {
-		$allowed = $this->can_start( $user_id, $quiz_id, $course_id );
-		if ( \is_wp_error( $allowed ) ) {
-			return $allowed;
+		global $wpdb;
+
+		$lock = self::attempt_lock_name( $user_id, $course_id, $quiz_id );
+		/**
+		 * Seconds to wait for another start of the same attempt to finish.
+		 *
+		 * @param int $seconds
+		 * @param int $user_id
+		 * @param int $quiz_id
+		 * @param int $course_id
+		 */
+		$timeout = \max( 0, (int) \apply_filters( 'anchor_courses_attempt_lock_timeout', self::ATTEMPT_LOCK_TIMEOUT, $user_id, $quiz_id, $course_id ) );
+		if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock, $timeout ) ) ) {
+			return new \WP_Error( 'attempt_busy', \__( 'This quiz is already being started. Please try again.', 'anchor-schema' ) );
 		}
 
-		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id );
-		if ( $open instanceof QuizAttempt ) {
-			return $open;
+		try {
+			$result = $this->start_attempt_locked( $user_id, $quiz_id, $course_id );
+		} finally {
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
 		}
 
-		$settings = $this->settings( $quiz_id );
-
-		$attempt = QuizAttemptRepository::create(
-			[
-				'user_id'         => $user_id,
-				'course_id'       => $course_id,
-				'quiz_id'         => $quiz_id,
-				'points_possible' => Questions::points_possible( $quiz_id ),
-				// Pinned now, read by deadline()/enforce_timer()/submit() for the
-				// life of this attempt - never the live setting again (Task 24
-				// review, ruling R3).
-				'metadata'        => [
-					'time_limit_seconds' => (int) $settings['time_limit_seconds'],
-					'on_timer_expiry'    => (string) $settings['on_timer_expiry'],
-				],
-			]
-		);
-
-		// A genuine insert vs. a unique-key collision with a concurrent start on
-		// the same (user, quiz) that raced past the open_attempt() check above
-		// (Task 24 review, ruling R1). Only a genuine insert gets the
-		// side effects below; a collision resolves to the winner's row exactly
-		// like the ordinary resume path.
-		$created = $attempt instanceof QuizAttempt;
-		if ( ! $created ) {
-			$attempt = QuizAttemptRepository::open_attempt( $user_id, $quiz_id );
+		if ( ! \is_array( $result ) ) {
+			return $result; // WP_Error.
 		}
-
-		if ( ! $attempt instanceof QuizAttempt ) {
-			return new \WP_Error( 'attempt_failed', \__( 'The attempt could not be started.', 'anchor-schema' ) );
-		}
-
+		[ $attempt, $created ] = $result;
 		if ( ! $created ) {
 			return $attempt;
 		}
@@ -157,7 +182,7 @@ final class QuizService {
 
 		/**
 		 * Fires when a new quiz attempt begins (never on a resume - see
-		 * start_attempt()'s open-attempt short-circuit above, nor on a
+		 * start_attempt_locked()'s open-attempt short-circuit, nor on a
 		 * collision resolving to another request's winning row).
 		 *
 		 * @param QuizAttempt $attempt
@@ -170,27 +195,88 @@ final class QuizService {
 		return $attempt;
 	}
 
-	public function attempts_used( int $user_id, int $quiz_id ): int {
-		return QuizAttemptRepository::count_for_quiz( $user_id, $quiz_id );
+	/**
+	 * The critical section of start_attempt(): preflight, resume or create.
+	 *
+	 * @return array{0:QuizAttempt,1:bool}|\WP_Error [ attempt, newly created ].
+	 */
+	private function start_attempt_locked( int $user_id, int $quiz_id, int $course_id ) {
+		$allowed = $this->can_start( $user_id, $quiz_id, $course_id );
+		if ( \is_wp_error( $allowed ) ) {
+			return $allowed;
+		}
+
+		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
+		if ( $open instanceof QuizAttempt ) {
+			// Scoped by the query; asserted anyway so no future change to the
+			// lookup can hand course B a course-A attempt (audit F05).
+			return $open->course_id === $course_id
+				? [ $open, false ]
+				: new \WP_Error( 'attempt_course_mismatch', \__( 'That attempt belongs to a different course.', 'anchor-schema' ) );
+		}
+
+		$settings = $this->settings( $quiz_id );
+
+		$attempt = QuizAttemptRepository::create(
+			[
+				'user_id'         => $user_id,
+				'course_id'       => $course_id,
+				'quiz_id'         => $quiz_id,
+				'points_possible' => Questions::points_possible( $quiz_id ),
+				'max_attempts'    => (int) $settings['max_attempts'],
+				// Pinned now, read by deadline()/enforce_timer()/submit() for the
+				// life of this attempt - never the live setting again (Task 24
+				// review, ruling R3).
+				'metadata'        => [
+					'time_limit_seconds' => (int) $settings['time_limit_seconds'],
+					'on_timer_expiry'    => (string) $settings['on_timer_expiry'],
+				],
+			]
+		);
+
+		// A genuine insert vs. nothing inserted: a unique-key collision
+		// (Task 24 review, ruling R1) or create()'s own guard finding an open
+		// attempt or a used-up allowance written by a start that raced past
+		// the preflight above (audit F07). Only a genuine insert gets the
+		// side effects; otherwise the winner's open row is resumed exactly
+		// like the ordinary resume path - and if there is none, the allowance
+		// is what refused it.
+		if ( $attempt instanceof QuizAttempt ) {
+			return [ $attempt, true ];
+		}
+
+		$attempt = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
+		if ( $attempt instanceof QuizAttempt ) {
+			return [ $attempt, false ];
+		}
+		if ( 0 === $this->attempts_remaining( $user_id, $quiz_id, $course_id ) ) {
+			return new \WP_Error( 'no_attempts_remaining', \__( 'You have used all your attempts.', 'anchor-schema' ) );
+		}
+		return new \WP_Error( 'attempt_failed', \__( 'The attempt could not be started.', 'anchor-schema' ) );
 	}
 
-	/** @return int Remaining attempts, or -1 for unlimited (max_attempts === 0, brief 8.1). */
-	public function attempts_remaining( int $user_id, int $quiz_id ): int {
+	/** Attempts counted against max_attempts in THIS course (audit F05). */
+	public function attempts_used( int $user_id, int $quiz_id, int $course_id ): int {
+		return QuizAttemptRepository::count_for_quiz( $user_id, $quiz_id, $course_id );
+	}
+
+	/** @return int Remaining attempts in this course, or -1 for unlimited (max_attempts === 0, brief 8.1). */
+	public function attempts_remaining( int $user_id, int $quiz_id, int $course_id ): int {
 		$max = (int) $this->settings( $quiz_id )['max_attempts'];
 		if ( $max <= 0 ) {
 			return -1;
 		}
-		return \max( 0, $max - $this->attempts_used( $user_id, $quiz_id ) );
+		return \max( 0, $max - $this->attempts_used( $user_id, $quiz_id, $course_id ) );
 	}
 
-	/** Unix timestamp when the next attempt unlocks; 0 when it already has. */
-	public function retry_available_at( int $user_id, int $quiz_id ): int {
+	/** Unix timestamp when the next attempt in this course unlocks; 0 when it already has. */
+	public function retry_available_at( int $user_id, int $quiz_id, int $course_id ): int {
 		$delay = (int) $this->settings( $quiz_id )['retry_delay_seconds'];
 		if ( $delay <= 0 ) {
 			return 0;
 		}
 
-		$last = QuizAttemptRepository::last_for_quiz( $user_id, $quiz_id );
+		$last = QuizAttemptRepository::last_for_quiz( $user_id, $quiz_id, $course_id );
 		// An attempt voided by an admin reset (`abandoned`) imposes no delay:
 		// the reset is a fresh start (final review I6).
 		if ( ! $last instanceof QuizAttempt || null === $last->submitted_at || 'abandoned' === $last->status ) {
@@ -205,15 +291,15 @@ final class QuizService {
 	}
 
 	/**
-	 * The learner's best (highest-scoring, graded) attempt at this quiz, or
-	 * null if none is graded yet.
+	 * The learner's best (highest-scoring, graded) attempt at this quiz in
+	 * this course, or null if none is graded yet.
 	 *
 	 * Thin wrapper over QuizAttemptRepository::best_for_quiz() (closes the
 	 * second Task 18 layering-exception call site - pre-gate cleanup round:
 	 * Frontend\Shortcodes::render_quiz() read the repository directly).
 	 */
-	public function best_attempt( int $user_id, int $quiz_id ): ?QuizAttempt {
-		return QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id );
+	public function best_attempt( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {
+		return QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id, $course_id );
 	}
 
 	public function owns_attempt( int $user_id, int $attempt_id ): bool {
@@ -327,13 +413,34 @@ final class QuizService {
 		// (Task 26 review, IMPORTANT): a garbage/oversized payload is reduced
 		// to the intersection with the question's real answer ids, and
 		// single_choice/true_false keep at most one (Grading::normalize_answer()).
-		$valid_ids               = \array_column( (array) $question['answers'], 'id' );
-		$answers                 = $attempt->answers;
-		$answers[ $question_id ] = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
+		$valid_ids  = \array_column( (array) $question['answers'], 'id' );
+		$normalized = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
 
-		QuizAttemptRepository::update( $attempt_id, [ 'answers' => $answers ] );
+		// Compare-and-swap (audit F06): the whole map is written only if
+		// nobody wrote it since this request read it, and only while the
+		// attempt is still open. Losing the race means another save (or the
+		// submit claim) got there first: re-read and try ONCE more on top of
+		// what is now stored; a second loss is reported, never swallowed.
+		for ( $try = 0; $try < 2; $try++ ) {
+			$answers                 = $attempt->answers;
+			$answers[ $question_id ] = $normalized;
 
-		return true;
+			$written = QuizAttemptRepository::save_answers( $attempt_id, $answers, $attempt->revision );
+			if ( true === $written ) {
+				return true;
+			}
+			if ( null === $written ) {
+				Log::write( 'quiz_answer_save_failed', [ 'attempt' => $attempt_id ] );
+				return new \WP_Error( 'save_failed', \__( 'Your answer could not be saved. Please try again.', 'anchor-schema' ) );
+			}
+
+			$attempt = QuizAttemptRepository::find( $attempt_id );
+			if ( ! $attempt instanceof QuizAttempt || ! $attempt->is_open() ) {
+				return new \WP_Error( 'attempt_closed', \__( 'This attempt is already finished.', 'anchor-schema' ) );
+			}
+		}
+
+		return new \WP_Error( 'save_conflict', \__( 'Your answer was changed elsewhere at the same time. Please check it and save again.', 'anchor-schema' ) );
 	}
 
 	/**
@@ -390,19 +497,42 @@ final class QuizService {
 	 * @return QuizAttempt|\WP_Error
 	 */
 	public function submit( int $attempt_id, array $answers = [], ?int $expected_user_id = null ) {
+		return $this->submit_tracked( $attempt_id, $answers, $expected_user_id )['result'];
+	}
+
+	/**
+	 * submit()'s real implementation, plus an explicit signal of whether THIS
+	 * call durably transitioned the attempt's status (Round 8, CodeRabbit,
+	 * COURSES.md ~:350 / `sweep_expired_attempts()`).
+	 *
+	 * Neither the result's TYPE nor a before/after status compare says this
+	 * safely on its own: a `WP_Error` does not always mean nothing happened -
+	 * the `expire` policy's `read_failed` follows a transition that already
+	 * committed, before either of its own re-reads runs - and a `QuizAttempt`
+	 * result does not always mean THIS call transitioned anything either -
+	 * the generic claim-then-grade path's `read_failed`/`save_failed` ROLLS
+	 * BACK its own `in_progress -> submitted` claim before returning (net: no
+	 * change), and a lost-race short-circuit returns the winner's row without
+	 * this call having touched it at all. `sweep_expired_attempts()` reads
+	 * `transitioned` instead of inferring it, either of which double-counts a
+	 * rollback as closed.
+	 *
+	 * @return array{result: QuizAttempt|\WP_Error, transitioned: bool}
+	 */
+	private function submit_tracked( int $attempt_id, array $answers, ?int $expected_user_id ): array {
 		$attempt = QuizAttemptRepository::find( $attempt_id );
 		if ( ! $attempt instanceof QuizAttempt ) {
-			return new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) );
+			return [ 'result' => new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) ), 'transitioned' => false ];
 		}
 		if ( null !== $expected_user_id && $expected_user_id !== $attempt->user_id ) {
-			return new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) );
+			return [ 'result' => new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) ), 'transitioned' => false ];
 		}
 		if ( ! $attempt->is_open() ) {
-			return $attempt; // Already graded / expired: nothing to do, nothing to fire.
+			return [ 'result' => $attempt, 'transitioned' => false ]; // Already graded / expired: nothing to do, nothing to fire.
 		}
 		$not_enrolled = $this->refuse_unenrolled( $attempt, $expected_user_id );
 		if ( null !== $not_enrolled ) {
-			return $not_enrolled;
+			return [ 'result' => $not_enrolled, 'transitioned' => false ];
 		}
 
 		$settings = $this->settings( $attempt->quiz_id );
@@ -415,16 +545,50 @@ final class QuizService {
 			// Claim the attempt first (atomic): a concurrent submit or sweep
 			// that got here too loses the UPDATE and returns the winner's row.
 			if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'expired' ) ) {
-				return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
+				return [ 'result' => QuizAttemptRepository::find( $attempt_id ) ?? $attempt, 'transitioned' => false ]; // Lost the race - another caller transitioned it, not this one.
 			}
-			$expired = QuizAttemptRepository::update(
+			// Committed from here on: whatever follows (a failed detail write,
+			// a failed re-read), THIS call is the one that closed the attempt.
+			$saved = QuizAttemptRepository::update(
 				$attempt_id,
 				[
 					'submitted_at'     => Clock::now(),
 					'duration_seconds' => \max( 0, $now - Clock::to_timestamp( $attempt->started_at ) ),
 				]
 			);
-			$expired = $expired instanceof QuizAttempt ? $expired : $attempt;
+			if ( ! $saved instanceof QuizAttempt ) {
+				Log::write( 'quiz_expire_detail_save_failed', [ 'attempt' => $attempt_id ] );
+			}
+			// The transition just above is the truth (Codex review, finding
+			// 2): re-read the row regardless of whether the detail write
+			// landed, so a failed second write never substitutes the
+			// PRE-transition `in_progress` $attempt for a row that IS now
+			// `expired` - the expiry hook, REST and the sweep must all see
+			// the real status even when submitted_at/duration_seconds did
+			// not get durably recorded.
+			$expired = QuizAttemptRepository::find( $attempt_id );
+			if ( ! $expired instanceof QuizAttempt ) {
+				// A transient read failure right after a write that just
+				// succeeded (CodeRabbit Major, PR #32 re-review): one retry,
+				// since the row this call itself transitioned a moment ago
+				// should normally be readable now. Falling back to the
+				// PRE-transition $attempt here - the bug this replaces -
+				// would publish `in_progress` for a row that really is
+				// `expired`, to the hook, to REST and to
+				// sweep_expired_attempts()'s before/after status compare
+				// (which would then undercount).
+				$expired = QuizAttemptRepository::find( $attempt_id );
+			}
+			if ( ! $expired instanceof QuizAttempt ) {
+				// Both reads failed: there is no safe object to publish as
+				// `expired` (and definitely not the stale `in_progress`
+				// one). Report it as a retryable server error rather than
+				// letting the wrong status escape.
+				Log::write( 'quiz_expire_read_failed', [ 'attempt' => $attempt_id ] );
+				// The transition above landed for real (Codex, Round 8): this
+				// still counts, even though nothing could read it back.
+				return [ 'result' => new \WP_Error( 'read_failed', \__( 'The attempt expired, but its record could not be read back. Try again.', 'anchor-schema' ) ), 'transitioned' => true ];
+			}
 			$this->progress->record_item( $attempt->user_id, $attempt->course_id, $attempt->quiz_id, 'quiz', 'failed' );
 
 			Log::write( 'quiz_expired', [ 'attempt' => $attempt_id ] );
@@ -442,8 +606,37 @@ final class QuizService {
 			\do_action( 'anchor_courses_quiz_expired', $expired, $attempt->user_id, $attempt->quiz_id, $attempt->course_id );
 
 			$this->progress->recalculate_course( $attempt->user_id, $attempt->course_id );
-			return $expired;
+			return [ 'result' => $expired, 'transitioned' => true ];
 		}
+
+		// Claim the attempt before grading (final review: atomic submit). Two
+		// submits that both read it as open cannot both grade it: only the
+		// one whose conditional UPDATE moves it in_progress -> submitted goes
+		// on; the other returns the row as the winner left it.
+		if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'submitted' ) ) {
+			return [ 'result' => QuizAttemptRepository::find( $attempt_id ) ?? $attempt, 'transitioned' => false ]; // Lost the race - another caller transitioned it, not this one.
+		}
+
+		// Re-read AFTER the claim (audit F06): an answer save acknowledged
+		// between this request's first read and its claim is in the row now,
+		// and no save can land after the claim (save_answers() requires
+		// `in_progress` on the write) - so what is graded below is exactly
+		// every acknowledged save plus this request's own answers.
+		$claimed = QuizAttemptRepository::find( $attempt_id );
+		if ( ! $claimed instanceof QuizAttempt ) {
+			// Never grade the PRE-claim snapshot (Codex, PR #32 Round 6): an
+			// autosave committed between the first read and the claim is not
+			// in it, so grading it would drop that answer from the grade AND
+			// overwrite it in the stored answers. Release the claim - the
+			// row still holds every acknowledged save - and let the learner's
+			// retry (or the sweep) grade the real row.
+			QuizAttemptRepository::transition( $attempt_id, 'submitted', 'in_progress' );
+			Log::write( 'quiz_submit_read_failed', [ 'attempt' => $attempt_id ] );
+			// The claim is ROLLED BACK above - the row is back exactly where
+			// it started, so this call transitioned nothing durable (Round 8).
+			return [ 'result' => new \WP_Error( 'read_failed', \__( 'The attempt could not be read back for grading. Please submit again.', 'anchor-schema' ) ), 'transitioned' => false ];
+		}
+		$attempt = $claimed;
 
 		// In-window: merge the submitted answers over what was saved.
 		// Late + auto_submit: grade ONLY what was saved before the deadline.
@@ -466,14 +659,6 @@ final class QuizService {
 				$valid_ids                     = \array_column( (array) $question['answers'], 'id' );
 				$final_answers[ $question_id ] = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
 			}
-		}
-
-		// Claim the attempt before grading (final review: atomic submit). Two
-		// submits that both read it as open cannot both grade it: only the
-		// one whose conditional UPDATE moves it in_progress -> submitted goes
-		// on; the other returns the row as the winner left it.
-		if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'submitted' ) ) {
-			return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
 		}
 
 		$graded = Grading::grade( Questions::get( $attempt->quiz_id ), $final_answers );
@@ -512,11 +697,18 @@ final class QuizService {
 			]
 		);
 
-		if ( ! $saved instanceof QuizAttempt ) {
-			// Release the claim so the attempt is not stuck in `submitted`
-			// (counted, never graded, invisible to the sweep).
+		// Only a grade that is durably SAVED may move progress or fire the
+		// outcome hooks (audit F03). update() returns null on a database
+		// error; a row that reads back as anything but `graded` is the same
+		// failure. Release the claim so the attempt is not stuck in
+		// `submitted` (counted, never graded, invisible to the sweep) - the
+		// learner's retry grades it; a crash before this line is recovered by
+		// reopen_stale_claims().
+		if ( ! $saved instanceof QuizAttempt || ! $saved->is_graded() ) {
 			QuizAttemptRepository::transition( $attempt->id, 'submitted', 'in_progress' );
-			return new \WP_Error( 'save_failed', \__( 'The attempt could not be graded.', 'anchor-schema' ) );
+			Log::write( 'quiz_grade_save_failed', [ 'attempt' => $attempt->id ] );
+			// The claim is ROLLED BACK above - net no change (Round 8).
+			return [ 'result' => new \WP_Error( 'save_failed', \__( 'The attempt could not be graded. Please submit again.', 'anchor-schema' ) ), 'transitioned' => false ];
 		}
 
 		$this->progress->record_item(
@@ -553,7 +745,7 @@ final class QuizService {
 
 		$this->progress->recalculate_course( $saved->user_id, $saved->course_id );
 
-		return $saved;
+		return [ 'result' => $saved, 'transitioned' => true ];
 	}
 
 	/**
@@ -581,28 +773,98 @@ final class QuizService {
 	 *
 	 * Used by the cron sweep and by any read path that wants a truthful status;
 	 * returns the attempt unchanged when untimed or still inside the window.
+	 *
+	 * @return QuizAttempt|\WP_Error A `read_failed` WP_Error only when submit()
+	 *                               itself could not hand back a row AND a
+	 *                               fresh, authoritative re-read also failed
+	 *                               (Round 7, finding 3). Never the
+	 *                               PRE-transition `$attempt` argument on that
+	 *                               path: submit()'s `read_failed` can follow
+	 *                               a transition that DID land (the `expire`
+	 *                               branch commits `expired` before either of
+	 *                               its own re-reads runs), so that argument
+	 *                               may already be stale by the time this
+	 *                               method would have returned it. Re-reading
+	 *                               here gets every caller (REST read/answer/
+	 *                               submit, the sweep) the true current row -
+	 *                               `expired` for that case, `in_progress` for
+	 *                               submit()'s OTHER `read_failed` (the
+	 *                               grading claim, which rolls itself back) -
+	 *                               without this method having to know which
+	 *                               of the two happened.
 	 */
-	public function enforce_timer( QuizAttempt $attempt ): QuizAttempt {
+	public function enforce_timer( QuizAttempt $attempt ) {
+		return $this->enforce_timer_tracked( $attempt )['result'];
+	}
+
+	/**
+	 * enforce_timer()'s real implementation, plus the same explicit
+	 * `transitioned` signal submit_tracked() carries (Round 8) - threaded
+	 * through unchanged by the fallback re-read below, which is about
+	 * getting a truthful OBJECT back to the caller, not about whether a
+	 * transition happened at all.
+	 *
+	 * @return array{result: QuizAttempt|\WP_Error, transitioned: bool}
+	 */
+	private function enforce_timer_tracked( QuizAttempt $attempt ): array {
 		if ( ! $attempt->is_open() ) {
-			return $attempt;
+			return [ 'result' => $attempt, 'transitioned' => false ];
 		}
 		$deadline = $this->deadline( $attempt );
 		if ( 0 === $deadline || Clock::timestamp() <= $deadline ) {
-			return $attempt;
+			return [ 'result' => $attempt, 'transitioned' => false ];
 		}
 
-		$result = $this->submit( $attempt->id );
-		return $result instanceof QuizAttempt ? $result : $attempt;
+		$outcome = $this->submit_tracked( $attempt->id, [], null );
+		if ( $outcome['result'] instanceof QuizAttempt ) {
+			return $outcome;
+		}
+
+		$current = QuizAttemptRepository::find( $attempt->id );
+		return [
+			'result'       => $current instanceof QuizAttempt ? $current : $outcome['result'],
+			'transitioned' => $outcome['transitioned'],
+		];
+	}
+
+	/**
+	 * Re-open `submitted` claims older than STALE_CLAIM_SECONDS (audit F03).
+	 *
+	 * @param int $user_id   0 = everyone (the daily sweep).
+	 * @param int $quiz_id   0 = every quiz.
+	 * @param int $course_id 0 = every course.
+	 * @return int Attempts re-opened.
+	 */
+	public function reopen_stale_claims( int $user_id = 0, int $quiz_id = 0, int $course_id = 0 ): int {
+		return QuizAttemptRepository::reopen_stale_submitted(
+			Clock::offset( -self::STALE_CLAIM_SECONDS ),
+			$user_id,
+			$quiz_id,
+			$course_id
+		);
 	}
 
 	/**
 	 * Close out timed attempts whose window has passed but whose learner never
 	 * came back.
 	 *
+	 * Counts only CONFIRMED expiry transitions (Round 8, CodeRabbit,
+	 * COURSES.md ~:350): `enforce_timer_tracked()`'s explicit `transitioned`
+	 * flag, never a `WP_Error` result or a before/after status compare. Both
+	 * of those over-count: the generic claim-then-grade path (any timer
+	 * policy other than `expire`) ROLLS BACK its own claim before returning
+	 * `read_failed`/`save_failed`, so the row never actually changed even
+	 * though the result is an error and (with a before/after compare) may
+	 * transiently differ from the pre-sweep snapshot.
+	 *
 	 * @return int attempts closed.
 	 */
 	public function sweep_expired_attempts(): int {
 		global $wpdb;
+
+		// Orphaned claims first, so a re-opened timed attempt is also closed
+		// by the timer pass below if its window has passed.
+		$this->reopen_stale_claims();
 
 		$rows = $wpdb->get_results(
 			'SELECT * FROM ' . Migrations::table( 'quiz_attempts' ) . " WHERE status = 'in_progress'", // phpcs:ignore WordPress.DB.PreparedSQL
@@ -612,8 +874,7 @@ final class QuizService {
 		$closed = 0;
 		foreach ( (array) $rows as $row ) {
 			$attempt = QuizAttempt::from_row( $row );
-			$after   = $this->enforce_timer( $attempt );
-			if ( $after->status !== $attempt->status ) {
+			if ( $this->enforce_timer_tracked( $attempt )['transitioned'] ) {
 				$closed++;
 			}
 		}

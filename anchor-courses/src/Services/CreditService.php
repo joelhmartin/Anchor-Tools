@@ -15,11 +15,22 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /**
  * CE credits as a first-class record, not a certificate side effect (brief 12).
  *
- * Unlike EnrollmentService, award() returns null (not WP_Error) for "there is
- * nothing to award here" - a non-course, a free course, or a zero amount after
- * the filter are all the same non-outcome, not a caller error.
+ * award() has three outcomes (audit F02): a Credit; null for "there is
+ * nothing to award here" - a non-course, no such user, or a zero amount after
+ * the filter - with the reason in last_skip_reason(); or a WP_Error
+ * (`credit_insert_failed`) when a credit WAS due but could not be written.
+ * CompletionService records the first two as done / not applicable and the
+ * third as failed, so a retry knows what to repair.
  */
 final class CreditService {
+
+	/** Why the last award() returned null: not_a_course|no_user|no_credits, or ''. */
+	private string $last_skip_reason = '';
+
+	/** Why the most recent award() call returned null ('' after a Credit or a WP_Error). */
+	public function last_skip_reason(): string {
+		return $this->last_skip_reason;
+	}
 
 	/** @return array{credits:float,type:string,provider_name:string,provider_number:string,expires_days:int} */
 	public function course_credit_config( int $course_id ): array {
@@ -38,9 +49,17 @@ final class CreditService {
 	 *
 	 * @param float|null $credits Explicit amount, or null to use the course setting.
 	 * @param array      $args    Optional `metadata` merged into the stored metadata.
+	 * @return Credit|\WP_Error|null Null = nothing to award (see last_skip_reason());
+	 *                               WP_Error `credit_insert_failed` = due but not written.
 	 */
-	public function award( int $user_id, int $course_id, ?float $credits = null, array $args = [] ): ?Credit {
-		if ( CoursePostType::CPT !== \get_post_type( $course_id ) || ! \get_userdata( $user_id ) ) {
+	public function award( int $user_id, int $course_id, ?float $credits = null, array $args = [] ): Credit|\WP_Error|null {
+		$this->last_skip_reason = '';
+		if ( CoursePostType::CPT !== \get_post_type( $course_id ) ) {
+			$this->last_skip_reason = 'not_a_course';
+			return null;
+		}
+		if ( ! \get_userdata( $user_id ) ) {
+			$this->last_skip_reason = 'no_user';
 			return null;
 		}
 
@@ -62,6 +81,7 @@ final class CreditService {
 		$amount = (float) \apply_filters( 'anchor_courses_ce_credit_amount', $amount, $user_id, $course_id );
 
 		if ( $amount <= 0 ) {
+			$this->last_skip_reason = 'no_credits';
 			return null;
 		}
 
@@ -92,7 +112,8 @@ final class CreditService {
 
 		$credit = CreditRepository::insert_ignore( $data );
 		if ( ! $credit instanceof Credit ) {
-			return null;
+			Log::write( 'ce_award_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+			return new \WP_Error( 'credit_insert_failed', \__( 'The CE credit record could not be saved.', 'anchor-schema' ) );
 		}
 
 		Log::write( 'ce_awarded', [ 'user' => $user_id, 'course' => $course_id, 'credits' => $credit->credits ] );

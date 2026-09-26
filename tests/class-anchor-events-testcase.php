@@ -163,3 +163,16 @@ abstract class Anchor_Events_TestCase extends WP_UnitTestCase {
 
 	use Anchor_Events_Fixtures;
 }
+
+/**
+ * Thrown from a `wp_redirect` filter so a handler's own `exit` never runs.
+ *
+ * CodeRabbit PR #32: this used to be declared inside test-entitlements.php,
+ * which tests/bootstrap.php does not load — a file-targeted run of any OTHER
+ * test file that also traps a redirect (e.g. test-entitlements-seat-
+ * ownership.php) could reach `trap_redirect()` with this class undefined.
+ * Shared support loaded by bootstrap.php (like this file itself) is the
+ * class's home instead, so every test file that needs it gets it regardless
+ * of which other test files happen to be loaded alongside it.
+ */
+class Anchor_Entitlements_Redirect_Signal extends \Exception {}

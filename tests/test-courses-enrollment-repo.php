@@ -194,6 +194,34 @@ class Test_Courses_Enrollment_Repo extends Anchor_Courses_TestCase {
 		$this->assertNull( $after->expires_at );
 	}
 
+	/**
+	 * Audit F02 (re-review): the repository must tell a genuine database
+	 * error apart from a successful no-change update, the same distinction
+	 * QuizAttemptRepository::update() already makes for F03 - otherwise a
+	 * caller handed back a fresh read of the unchanged row cannot tell its
+	 * write failed.
+	 */
+	public function test_update_returns_null_on_a_database_error_but_not_on_a_no_change_update() {
+		global $wpdb;
+		$e = EnrollmentRepository::insert_ignore( $this->row( $this->make_learner(), $this->make_course() ) );
+
+		$same = EnrollmentRepository::update( $e->id, [ 'source' => $e->source ] );
+		$this->assertInstanceOf( Enrollment::class, $same, 'Zero rows changed is not a failure.' );
+
+		$wpdb->suppress_errors( true );
+		$breaker = static function ( $query ) {
+			return \preg_match( '/^UPDATE `?\S*anchor_courses_enrollments`? SET `source`/', (string) $query )
+				? 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor'
+				: $query;
+		};
+		add_filter( 'query', $breaker );
+		$failed = EnrollmentRepository::update( $e->id, [ 'source' => 'changed' ] );
+		remove_filter( 'query', $breaker );
+		$wpdb->suppress_errors( false );
+
+		$this->assertNull( $failed );
+	}
+
 	public function test_expire_due_never_sweeps_a_row_without_expiry() {
 		$user   = $this->make_learner();
 		$course = $this->make_course();

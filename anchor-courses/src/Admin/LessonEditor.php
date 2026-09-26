@@ -3,8 +3,10 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Admin;
 
+use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\LessonPostType;
 use Anchor\Courses\Content\QuizPostType;
+use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Capabilities;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -23,7 +25,6 @@ final class LessonEditor {
 	public static function defaults(): array {
 		return [
 			'completion_mode'     => 'manual',
-			'required'            => 1,
 			'quiz_id'             => 0,
 			'type'                => 'content',
 			'event_id'            => 0,
@@ -95,26 +96,59 @@ final class LessonEditor {
 		}
 		echo '</select></label></p>';
 
-		\printf(
-			'<p><label><input type="checkbox" name="anchor_lesson[required]" value="1"%s /> %s</label></p>',
-			\checked( (int) self::setting( $id, 'required' ), 1, false ),
-			\esc_html__( 'Required for course completion', 'anchor-schema' )
-		);
+		// Audit finding d, 2026-09-25: this metabox used to carry its own
+		// "Required for course completion" checkbox, but nothing ever read
+		// it - requiredness lives on the CURRICULUM ITEM that links to this
+		// lesson (Curriculum::required_items()), not on the lesson post. The
+		// control was removed rather than left to silently do nothing.
+		echo '<p class="description">' . \esc_html__(
+			'Whether this lesson is required for course completion is set on its curriculum item, in the course\'s Curriculum builder.',
+			'anchor-schema'
+		) . '</p>';
+
+		$this->render_live_session_fields( $id );
+	}
+
+	/**
+	 * The live-session fields, shown DISABLED with an inline notice (audit UI
+	 * item): nothing reads them yet - the live-session adapter and the
+	 * stream prerequisite veto are plan Phase 5 - so an enabled "Block stream
+	 * access" checkbox would promise protection that does not exist.
+	 *
+	 * The stored values still round-trip: disabled inputs are never posted,
+	 * so each value also rides in a hidden input of the same name and
+	 * save() writes it back unchanged (a programmatic save can still set
+	 * them). When Phase 5 ships, drop the hidden mirrors and `disabled`.
+	 */
+	private function render_live_session_fields( int $id ): void {
+		$event_id      = (int) self::setting( $id, 'event_id' );
+		$session_index = (int) self::setting( $id, 'session_index' );
+		$require_prior = 1 === (int) self::setting( $id, 'require_prior_items' );
 
 		echo '<h4>' . \esc_html__( 'Live session', 'anchor-schema' ) . '</h4>';
+		echo '<p class="description anchor-courses-inactive-notice"><em>'
+			. \esc_html__( 'Not active until the live-session adapter ships (plan Phase 5). These settings are kept but do not affect access yet.', 'anchor-schema' )
+			. '</em></p>';
+
+		\printf( '<input type="hidden" name="anchor_lesson[event_id]" value="%d" />', $event_id );
+		\printf( '<input type="hidden" name="anchor_lesson[session_index]" value="%d" />', $session_index );
+		if ( $require_prior ) {
+			echo '<input type="hidden" name="anchor_lesson[require_prior_items]" value="1" />';
+		}
+
 		\printf(
-			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[event_id]" value="%d" class="small-text" /></label></p>',
+			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[event_id]" value="%d" class="small-text" disabled="disabled" /></label></p>',
 			\esc_html__( 'Event ID', 'anchor-schema' ),
-			(int) self::setting( $id, 'event_id' )
+			$event_id
 		);
 		\printf(
-			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[session_index]" value="%d" class="small-text" /></label></p>',
+			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[session_index]" value="%d" class="small-text" disabled="disabled" /></label></p>',
 			\esc_html__( 'Session index', 'anchor-schema' ),
-			(int) self::setting( $id, 'session_index' )
+			$session_index
 		);
 		\printf(
-			'<p><label><input type="checkbox" name="anchor_lesson[require_prior_items]" value="1"%s /> %s</label></p>',
-			\checked( (int) self::setting( $id, 'require_prior_items' ), 1, false ),
+			'<p><label><input type="checkbox" name="anchor_lesson[require_prior_items]" value="1"%s disabled="disabled" /> %s</label></p>',
+			\checked( $require_prior, true, false ),
 			\esc_html__( 'Block stream access until earlier items are complete', 'anchor-schema' )
 		);
 	}
@@ -165,7 +199,6 @@ final class LessonEditor {
 			'completion_mode'     => $mode,
 			'type'                => $type,
 			'quiz_id'             => $quiz_id,
-			'required'            => empty( $input['required'] ) ? 0 : 1,
 			'event_id'            => \absint( $input['event_id'] ?? 0 ),
 			'session_index'       => \absint( $input['session_index'] ?? 0 ),
 			'require_prior_items' => empty( $input['require_prior_items'] ) ? 0 : 1,
@@ -174,5 +207,56 @@ final class LessonEditor {
 		foreach ( $values as $key => $value ) {
 			\update_post_meta( $post_id, LessonPostType::meta_key( $key ), $value );
 		}
+
+		$this->warn_courses_with_quiz_link_problems( $post_id );
+	}
+
+	/**
+	 * Audit F04 used to check for the `[lesson, X, quiz]` deadlock only when
+	 * a COURSE's curriculum was saved (`CourseEditor::save_curriculum()`).
+	 * Flipping a lesson's `completion_mode` to `quiz_pass`, or repointing its
+	 * `quiz_id`, here can create that same deadlock without ever re-saving
+	 * any course's curriculum - silently, with no warning anywhere (Round 8,
+	 * Codex, PR #32 finding 3). Re-checked here for every PUBLISHED course
+	 * this lesson actually belongs to (`Curriculum::courses_for_item()`), and
+	 * reported with the SAME check CourseEditor uses
+	 * (`ProgressService::quiz_link_problems()`) and the same notice family,
+	 * naming which course(s) - never blocking the save.
+	 *
+	 * `quiz_link_problems()` returns every problem in the course, not only
+	 * ones involving THIS lesson - a course can carry an unrelated problem on
+	 * some other lesson entirely. A course only counts as "affected" here
+	 * when one of its returned problems names THIS lesson
+	 * (`lesson_id === $lesson_id`) - otherwise saving a perfectly sound
+	 * lesson B would warn about a problem lesson A created, that this save
+	 * had nothing to do with (Round 9, PR #32 finding 3).
+	 */
+	private function warn_courses_with_quiz_link_problems( int $lesson_id ): void {
+		$affected = [];
+		foreach ( Curriculum::courses_for_item( $lesson_id, 'lesson' ) as $course_id ) {
+			foreach ( ProgressService::quiz_link_problems( $course_id ) as $problem ) {
+				if ( $lesson_id === (int) ( $problem['lesson_id'] ?? 0 ) ) {
+					$affected[] = (string) \get_the_title( $course_id );
+					break;
+				}
+			}
+		}
+		if ( [] === $affected ) {
+			return;
+		}
+
+		$courses = \implode( ', ', $affected );
+		\add_filter(
+			'redirect_post_location',
+			static function ( $location, $redirect_post_id = 0 ) use ( $lesson_id, $courses ) {
+				if ( (int) $redirect_post_id !== $lesson_id ) {
+					return $location;
+				}
+				$location = \add_query_arg( Notices::QUERY_ARG, 'lesson_quiz_link', (string) $location );
+				return \add_query_arg( Notices::COURSES_QUERY_ARG, $courses, $location );
+			},
+			10,
+			2
+		);
 	}
 }

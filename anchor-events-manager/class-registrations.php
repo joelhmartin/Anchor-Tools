@@ -1291,29 +1291,64 @@ class Registrations {
      * @param bool   $include_customer Whether to also match the WooCommerce
      *                        order's buyer/customer id (default true — the
      *                        behavior EMAILS.md documents for
-     *                        has_confirmed_seat() and the existing behavior
-     *                        of user_has_active_seat()). Pass false for an
+     *                        Entitlements::buyer_resolves_to_seat() and the
+     *                        existing behavior of user_has_active_seat()).
+     *                        Entitlements::has_confirmed_seat() — every
+     *                        keep/revoke decision about a role — passes
+     *                        false (audit F01). Pass false for an
      *                        OWNER-ONLY match: the buyer's customer id is
      *                        stamped on every seat in the order, including
      *                        seats bought FOR someone else, so a caller that
      *                        must resolve a specific attendee's own seat (not
      *                        "any seat the buyer paid for") needs this off.
+     * CodeRabbit PR #32 (audit F01 re-review): for the OWNER-ONLY form
+     * (`$include_customer === false`), the resolved account is not merely
+     * "checked first" but AUTHORITATIVE — a seat bound to one account
+     * (`_anchor_event_user_id` set) never matches a DIFFERENT user on email
+     * alone, even once its stored email happens to equal that other user's.
+     * Email is an ownership fallback only for a seat with no bound account
+     * at all. The wider buyer-confirmation form (`$include_customer ===
+     * true`) is unchanged: any of email / resolved account / order-buyer id
+     * still qualifies, because that question is deliberately not an
+     * ownership decision (see buyer_resolves_to_seat()'s own docblock).
+     *
      * @return array meta_query fragment.
      */
     public function identity_meta_query( $user_id, $email, $include_customer = true ) {
         $user_id  = (int) $user_id;
         $email    = (string) $email;
         $identity = [ 'relation' => 'OR' ];
-        if ( $email !== '' ) {
-            $identity[] = [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ];
-        }
-        if ( $user_id > 0 ) {
-            // Checked first (spec §3.5): the resolved account is authoritative,
-            // an attendee who changed their email address still matches.
-            $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
-            if ( $include_customer ) {
+
+        if ( $include_customer ) {
+            if ( $email !== '' ) {
+                $identity[] = [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ];
+            }
+            if ( $user_id > 0 ) {
+                // Checked first (spec §3.5): the resolved account is authoritative,
+                // an attendee who changed their email address still matches.
+                $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
                 $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
             }
+            return $identity;
+        }
+
+        // Owner-only: the resolved account is authoritative, full stop.
+        if ( $user_id > 0 ) {
+            $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
+        }
+        if ( $email !== '' ) {
+            // Email counts only for a seat with NO bound account — one whose
+            // _anchor_event_user_id is absent or unresolved ("0", the
+            // default create_seat() stamps for a guest/anonymous seat).
+            $identity[] = [
+                'relation' => 'AND',
+                [
+                    'relation' => 'OR',
+                    [ 'key' => '_anchor_event_user_id', 'compare' => 'NOT EXISTS' ],
+                    [ 'key' => '_anchor_event_user_id', 'value' => '0', 'compare' => '=' ],
+                ],
+                [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ],
+            ];
         }
         return $identity;
     }

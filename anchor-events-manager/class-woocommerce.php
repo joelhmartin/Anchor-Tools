@@ -4059,7 +4059,7 @@ class WooCommerce {
         // account instead — the registered customer, or (guest checkout) the
         // WP user whose email matches the billing email — and only tokenise
         // for them if they ALSO hold a confirmed seat on this event
-        // (Entitlements::has_confirmed_seat()). A buyer who bought seats for
+        // (Entitlements::buyer_resolves_to_seat()). A buyer who bought seats for
         // other people but holds none themselves gets the plain, untokenised
         // room address (room_link_plain_fallback below) instead of nothing
         // and instead of somebody else's identity.
@@ -4070,7 +4070,7 @@ class WooCommerce {
         }
         $buyer_holds_seat = $buyer_user_id > 0
             && $this->module->entitlements
-            && $this->module->entitlements->has_confirmed_seat( $event_id, $buyer_user_id );
+            && $this->module->entitlements->buyer_resolves_to_seat( $event_id, $buyer_user_id );
 
         $ctx = [
             'event_id'      => $event_id,

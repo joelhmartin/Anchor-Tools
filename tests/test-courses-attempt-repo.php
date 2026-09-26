@@ -56,10 +56,10 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 
 	public function test_open_attempt_finds_only_in_progress_rows() {
 		$attempt = $this->create();
-		$this->assertSame( $attempt->id, QuizAttemptRepository::open_attempt( $this->user, $this->quiz )->id );
+		$this->assertSame( $attempt->id, QuizAttemptRepository::open_attempt( $this->user, $this->quiz, $this->course )->id );
 
 		QuizAttemptRepository::update( $attempt->id, [ 'status' => 'graded' ] );
-		$this->assertNull( QuizAttemptRepository::open_attempt( $this->user, $this->quiz ) );
+		$this->assertNull( QuizAttemptRepository::open_attempt( $this->user, $this->quiz, $this->course ) );
 	}
 
 	public function test_answers_and_grading_data_round_trip_as_arrays() {
@@ -80,7 +80,7 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 		$b = $this->create();
 		QuizAttemptRepository::update( $b->id, [ 'status' => 'graded' ] );
 
-		$this->assertSame( 1, QuizAttemptRepository::count_for_quiz( $this->user, $this->quiz ) );
+		$this->assertSame( 1, QuizAttemptRepository::count_for_quiz( $this->user, $this->quiz, $this->course ) );
 	}
 
 	public function test_best_for_quiz_returns_the_highest_graded_score() {
@@ -89,7 +89,7 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 		$b = $this->create();
 		QuizAttemptRepository::update( $b->id, [ 'status' => 'graded', 'score' => 90.0, 'passed' => 1 ] );
 
-		$best = QuizAttemptRepository::best_for_quiz( $this->user, $this->quiz );
+		$best = QuizAttemptRepository::best_for_quiz( $this->user, $this->quiz, $this->course );
 		$this->assertSame( 90.0, $best->score );
 		$this->assertTrue( $best->passed );
 	}
@@ -99,7 +99,7 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 		QuizAttemptRepository::update( $a->id, [ 'status' => 'graded' ] );
 		$b = $this->create();
 
-		$this->assertSame( $b->id, QuizAttemptRepository::last_for_quiz( $this->user, $this->quiz )->id );
+		$this->assertSame( $b->id, QuizAttemptRepository::last_for_quiz( $this->user, $this->quiz, $this->course )->id );
 	}
 
 	/** Brief 25: even the DTO must not hand a learner the answer key. */

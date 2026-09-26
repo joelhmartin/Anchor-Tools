@@ -634,6 +634,8 @@ class Module {
         // Grant-to-current-attendees backfill.
         \add_action( 'admin_post_anchor_events_delete_role', [ $this, 'handle_delete_role' ] );
         \add_action( 'admin_post_anchor_events_backfill_role', [ $this, 'handle_backfill_role' ] );
+        // Audit F01: check for / remove seat-derived roles no owned seat backs.
+        \add_action( 'admin_post_anchor_events_reconcile_role', [ $this, 'handle_reconcile_role' ] );
 
         // L14: GDPR personal-data exporter + eraser for attendee PII stored on seats.
         \add_filter( 'wp_privacy_personal_data_exporters', [ $this, 'register_privacy_exporter' ] );
@@ -3488,6 +3490,27 @@ class Module {
                 <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Grant role to current attendees', 'anchor-schema' ); ?></button>
                 <span class="anchor-event-hint"><?php echo esc_html__( 'Gives the role (and an account, where they have none) to everyone with a confirmed seat right now. Safe to run more than once.', 'anchor-schema' ); ?></span>
             </form>
+
+            <?php if ( $slug !== '' ) : ?>
+            <?php
+            /*
+             * Audit F01: the reverse of the backfill. "Check" is a dry run
+             * that only reports; "Reconcile roles" removes seat-derived roles
+             * whose holder no longer owns a confirmed seat. Manual grants are
+             * never touched, so no confirm dialog either — but the check is
+             * offered first so the operator can see the count.
+             */
+            ?>
+            <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
+                <input type="hidden" name="action" value="anchor_events_reconcile_role" />
+                <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
+                <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
+                <?php \wp_nonce_field( 'anchor_events_reconcile_role_' . $event_id ); ?>
+                <button type="submit" name="mode" value="check" class="anchor-event-button-secondary"><?php echo esc_html__( 'Check roles', 'anchor-schema' ); ?></button>
+                <button type="submit" name="mode" value="apply" class="anchor-event-button-secondary"><?php echo esc_html__( 'Reconcile roles', 'anchor-schema' ); ?></button>
+                <span class="anchor-event-hint"><?php echo esc_html__( 'Removes the role from anyone who got it from a seat but no longer holds a confirmed seat of their own. Access you granted by hand is never removed.', 'anchor-schema' ); ?></span>
+            </form>
+            <?php endif; ?>
         </div>
         <?php
         return (string) \ob_get_clean();
@@ -3527,6 +3550,60 @@ class Module {
             'anchor_events_role_enabled'    => $enabled ? '1' : '0',
         ], $redirect ) );
         exit;
+    }
+
+    /**
+     * Check for, or remove, seat-derived event roles that no confirmed seat
+     * owned by their holder backs (audit F01) — Entitlements::reconcile().
+     *
+     * Same guard/redirect shape as handle_backfill_role(). `mode=check` is a
+     * dry run; anything else applies.
+     */
+    public function handle_reconcile_role() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        \check_admin_referer( 'anchor_events_reconcile_role_' . $event_id );
+        if ( ! Roster::current_user_can_manage() || \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
+        }
+        $mode     = ( isset( $_POST['mode'] ) && \sanitize_key( \wp_unslash( $_POST['mode'] ) ) === 'check' ) ? 'check' : 'apply';
+        $report   = $this->entitlements
+            ? $this->entitlements->reconcile( $event_id, $mode === 'check' )
+            : [ 'enabled' => false, 'orphaned' => [] ];
+        $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \admin_url();
+        \wp_safe_redirect( \add_query_arg( [
+            'anchor_events_role_reconciled'     => (string) \count( (array) $report['orphaned'] ),
+            'anchor_events_role_reconcile_mode' => $mode,
+            'anchor_events_role_enabled'        => ! empty( $report['enabled'] ) ? '1' : '0',
+        ], $redirect ) );
+        exit;
+    }
+
+    /**
+     * The wording for a finished role check / reconcile.
+     *
+     * @param int  $count   Orphaned seat grants found (check) or removed (apply).
+     * @param bool $dry_run
+     * @param bool $enabled Whether the event's access switch was on.
+     * @return string
+     */
+    public function reconcile_notice_message( $count, $dry_run, $enabled ) {
+        if ( ! $enabled ) {
+            return \__( 'Attendee access is off for this event, so no roles were checked.', 'anchor-schema' );
+        }
+        if ( (int) $count === 0 ) {
+            return \__( 'Every seat-derived role is backed by a confirmed seat.', 'anchor-schema' );
+        }
+        return $dry_run
+            ? \sprintf(
+                /* translators: %d: number of role holders with no confirmed seat. */
+                \_n( '%d holder got the role from a seat but has no confirmed seat now. Reconcile roles to remove it.', '%d holders got the role from a seat but have no confirmed seat now. Reconcile roles to remove it.', (int) $count, 'anchor-schema' ),
+                (int) $count
+            )
+            : \sprintf(
+                /* translators: %d: number of people the event role was removed from. */
+                \_n( 'Removed the event role from %d holder with no confirmed seat.', 'Removed the event role from %d holders with no confirmed seat.', (int) $count, 'anchor-schema' ),
+                (int) $count
+            );
     }
 
     /**
@@ -7594,6 +7671,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( \is_admin() ) {
             return;
         }
+        // A room request used to enqueue room.css/room.js from inside
+        // templates/live-event.php, AFTER get_header() had already run
+        // wp_head() (which prints the styles/scripts queued so far) — the
+        // same unstyled-flash shape as RENDER-D18 below, just for the room
+        // instead of the archive (audit finding b, 2026-09-25). Enqueuing
+        // here, on wp_enqueue_scripts itself, lands them in the normal head
+        // pass regardless of what the active template does.
+        if ( $this->is_room_request() ) {
+            $this->enqueue_room_assets();
+            return;
+        }
         // RENDER-D18: a series archive (templates/taxonomy-event_series.php)
         // was missing from this gate, so frontend.css/.js were enqueued only
         // from inside that template — after wp_head — and WordPress prints
@@ -8703,6 +8791,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $enabled = isset( $_GET['anchor_events_role_enabled'] ) && (string) $_GET['anchor_events_role_enabled'] !== '0';
             $class   = $enabled ? 'is-ok' : 'is-warning';
             $out    .= '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $this->backfill_notice_message( $granted, $enabled ) ) . '</div>';
+        }
+
+        if ( isset( $_GET['anchor_events_role_reconciled'] ) ) {
+            $count   = (int) $_GET['anchor_events_role_reconciled'];
+            $dry_run = isset( $_GET['anchor_events_role_reconcile_mode'] ) && (string) $_GET['anchor_events_role_reconcile_mode'] === 'check';
+            $enabled = isset( $_GET['anchor_events_role_enabled'] ) && (string) $_GET['anchor_events_role_enabled'] !== '0';
+            $class   = ( $enabled && ( $count === 0 || ! $dry_run ) ) ? 'is-ok' : 'is-warning';
+            $out    .= '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $this->reconcile_notice_message( $count, $dry_run, $enabled ) ) . '</div>';
         }
 
         if ( empty( $_GET['event_manager_notice'] ) ) {
@@ -15184,7 +15280,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                     'seat' is given.
      *   - 'room_user_id' (int) A user id the CALLER has already resolved AND
      *                     verified holds a confirmed seat on this event
-     *                     (Entitlements::has_confirmed_seat()) — used only
+     *                     (Entitlements::buyer_resolves_to_seat()) — used only
      *                     when no seat is given. This is the WooCommerce
      *                     buyer-confirmation path: the buyer is not
      *                     necessarily any particular seat, so the caller

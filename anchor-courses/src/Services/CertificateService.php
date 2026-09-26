@@ -37,6 +37,14 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class CertificateService {
 
+	/** Why the last issue() returned null: not_a_course|no_user|certificates_disabled, or ''. */
+	private string $last_skip_reason = '';
+
+	/** Why the most recent issue() call returned null ('' after a Certificate or a WP_Error). */
+	public function last_skip_reason(): string {
+		return $this->last_skip_reason;
+	}
+
 	/**
 	 * AC-{YYYY}-{8-digit zero-padded id}. Pure.
 	 *
@@ -51,15 +59,24 @@ final class CertificateService {
 	 * Issue (or return) the certificate for this learner and course.
 	 *
 	 * Null when the course, the user, or `certificate_enabled` say no
-	 * certificate should exist; otherwise idempotent (brief rule 7 / D13):
-	 * a second call for the same user+course returns the existing row,
-	 * never mints a second one.
+	 * certificate should exist (the reason is in last_skip_reason());
+	 * WP_Error `certificate_insert_failed` when one was due but could not be
+	 * written (audit F02); otherwise idempotent (brief rule 7 / D13): a
+	 * second call for the same user+course returns the existing row, never
+	 * mints a second one.
 	 */
-	public function issue( int $user_id, int $course_id ): ?Certificate {
-		if ( CoursePostType::CPT !== \get_post_type( $course_id ) || ! \get_userdata( $user_id ) ) {
+	public function issue( int $user_id, int $course_id ): Certificate|\WP_Error|null {
+		$this->last_skip_reason = '';
+		if ( CoursePostType::CPT !== \get_post_type( $course_id ) ) {
+			$this->last_skip_reason = 'not_a_course';
+			return null;
+		}
+		if ( ! \get_userdata( $user_id ) ) {
+			$this->last_skip_reason = 'no_user';
 			return null;
 		}
 		if ( 1 !== (int) CourseEditor::setting( $course_id, 'certificate_enabled' ) ) {
+			$this->last_skip_reason = 'certificates_disabled';
 			return null;
 		}
 
@@ -96,12 +113,14 @@ final class CertificateService {
 		// verification_token collision: insert_ignore() is INSERT IGNORE, so
 		// a collision on the now-UNIQUE verification_token key (Migrations
 		// 1.2.0) - not only the (user_id, course_id) key - silently writes no
-		// row, and find() for THIS pair then finds nothing either. Same plain
-		// null return as any other failed insert; never a fatal (see
+		// row, and find() for THIS pair then finds nothing either. Same as any
+		// failed insert; never a fatal (see
 		// tests/test-courses-certificate-repo.php's collision test for the
-		// repository-level proof).
+		// repository-level proof). A WP_Error, not null (audit F02): null
+		// means "no certificate is due", this means "due, and not written".
 		if ( ! $certificate instanceof Certificate ) {
-			return null;
+			Log::write( 'certificate_issue_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+			return new \WP_Error( 'certificate_insert_failed', \__( 'The certificate could not be saved.', 'anchor-schema' ) );
 		}
 
 		// Two-write numbering (deviation D14): the id is only known after

@@ -94,6 +94,14 @@ final class ProgressService {
 	 *
 	 * Sequential progression requires every REQUIRED item before it to be
 	 * complete; optional items never block.
+	 *
+	 * One exception (audit F04): a quiz is not blocked by its PARENT lesson -
+	 * an earlier lesson whose completion_mode is `quiz_pass` with this quiz
+	 * as its `quiz_id`. That lesson's completion depends on the quiz, not the
+	 * other way round, so requiring it first deadlocked the natural "lesson,
+	 * then its quiz" order. Every other earlier required item still gates,
+	 * which includes everything before the parent lesson - so the quiz opens
+	 * exactly when its lesson does.
 	 */
 	public function is_item_available( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
 		$allowed = true;
@@ -107,6 +115,9 @@ final class ProgressService {
 			foreach ( Curriculum::items_before( $course_id, $item_id, $item_type ) as $earlier ) {
 				if ( ! $earlier['required'] ) {
 					continue;
+				}
+				if ( 'quiz' === $item_type && 'lesson' === $earlier['type'] && self::lesson_completes_by_quiz( (int) $earlier['id'], $item_id ) ) {
+					continue; // The quiz's own parent lesson (see docblock).
 				}
 				if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
 					$allowed = false;
@@ -227,6 +238,80 @@ final class ProgressService {
 		return $progress;
 	}
 
+	/** Is this lesson completed by passing exactly this quiz (`quiz_pass` + `quiz_id`)? */
+	public static function lesson_completes_by_quiz( int $lesson_id, int $quiz_id ): bool {
+		return 'quiz_pass' === (string) LessonEditor::setting( $lesson_id, 'completion_mode' )
+			&& (int) LessonEditor::setting( $lesson_id, 'quiz_id' ) === $quiz_id
+			&& $quiz_id > 0;
+	}
+
+	/**
+	 * Required `quiz_pass` lessons whose quiz a learner could never reach in
+	 * this course (audit F04, re-review): the quiz is absent from the
+	 * curriculum (`quiz_absent`), or - sequential progression only - a
+	 * required item sits strictly between the lesson and its quiz
+	 * (`item_between`), which is a genuine deadlock: that item waits for the
+	 * lesson (sequential gating), the quiz waits for that item (same gating,
+	 * since the "skip the parent lesson" exception in is_item_available()
+	 * only ever excuses the lesson itself), and the lesson waits for the quiz
+	 * (`quiz_pass`). Neither can ever finish.
+	 *
+	 * A quiz placed BEFORE its lesson, with nothing required between them, is
+	 * not a problem: the quiz opens with the earlier items (nothing gates it
+	 * on the lesson), and passing it completes the lesson directly via
+	 * `QuizService::complete_gated_lessons()` - so this is deliberately not
+	 * reported, unlike the prior revision of this method.
+	 *
+	 * Surfaced as a warning when the curriculum is saved
+	 * (Admin\CourseEditor::save_curriculum()).
+	 *
+	 * @return array<int,array{lesson_id:int,quiz_id:int,problem:string}>
+	 */
+	public static function quiz_link_problems( int $course_id ): array {
+		$problems   = [];
+		$items      = Curriculum::items( $course_id );
+		$sequential = 'sequential' === (string) CourseEditor::setting( $course_id, 'progression_mode' );
+
+		foreach ( $items as $item ) {
+			if ( 'lesson' !== $item['type'] || ! $item['required'] ) {
+				continue;
+			}
+			$lesson_id = (int) $item['id'];
+			if ( 'quiz_pass' !== (string) LessonEditor::setting( $lesson_id, 'completion_mode' ) ) {
+				continue;
+			}
+			$quiz_id  = (int) LessonEditor::setting( $lesson_id, 'quiz_id' );
+			$position = $quiz_id > 0 ? Curriculum::position( $course_id, $quiz_id, 'quiz' ) : -1;
+			if ( $position < 0 ) {
+				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'quiz_absent' ];
+			} elseif (
+				$sequential
+				// CodeRabbit PR #32: only when the LESSON precedes its quiz.
+				// A quiz placed before its lesson opens with the earlier
+				// items regardless of what sits between them - nothing gates
+				// it on the lesson - so an intervening required item there is
+				// not a deadlock (see the class docblock above).
+				&& (int) $item['index'] < $position
+				&& self::required_item_between( $items, (int) $item['index'], $position )
+			) {
+				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'item_between' ];
+			}
+		}
+		return $problems;
+	}
+
+	/** Any required curriculum item strictly between two flattened positions? */
+	private static function required_item_between( array $items, int $position_a, int $position_b ): bool {
+		$low  = \min( $position_a, $position_b );
+		$high = \max( $position_a, $position_b );
+		foreach ( $items as $item ) {
+			if ( $item['required'] && (int) $item['index'] > $low && (int) $item['index'] < $high ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** Has the lesson's quiz been passed already? */
 	private function quiz_passed_for_lesson( int $user_id, int $course_id, int $lesson_id ): bool {
 		$quiz_id = (int) LessonEditor::setting( $lesson_id, 'quiz_id' );
@@ -299,16 +384,48 @@ final class ProgressService {
 	/**
 	 * Start a learner over on one course (the admin "Reset progress" action).
 	 *
-	 * Deletes every progress row, voids every quiz attempt as `abandoned` (a
-	 * non-counted status, so max_attempts is fully restored while the history
-	 * stays on record - final review I6), and returns the enrolment to
-	 * `enrolled` with no started_at. Credits, certificates and the completion
-	 * role are records of something that happened and are left alone.
+	 * The enrolment row is reopened, and its progress rows deleted and quiz
+	 * attempts voided as `abandoned` (a non-counted status, so max_attempts
+	 * is fully restored while the history stays on record - final review
+	 * I6), under ONE HOLD of the same per-(user, course) completion lock
+	 * `complete()`/`uncomplete()` take (Round 9, Codex + CodeRabbit Major, PR
+	 * #32 finding 1 - supersedes Round 8, which held the lock for the reopen
+	 * write alone and released it before clearing progress: a completion
+	 * racing into that gap could complete the reopened row against the
+	 * still-present OLD progress moments before this deleted it). Both
+	 * halves run inside `CompletionService::reopen_for_reset()` - see its
+	 * docblock for the race this closes. A busy lock, or a failed write,
+	 * leaves the WHOLE reset un-run, never a half-reset with progress erased
+	 * but the enrolment row untouched (or vice versa). Credits, certificates
+	 * and the completion role are records of something that happened and are
+	 * left alone.
+	 *
+	 * @return true|\WP_Error True when the reset ran (including when there
+	 *                        was no enrolment to reset at all).
+	 *                        `WP_Error('reset_busy')` when the completion
+	 *                        lock was held elsewhere - nothing touched, retry
+	 *                        shortly. `WP_Error('reset_failed')` when the
+	 *                        enrolment write itself failed at the database -
+	 *                        also nothing touched, but retrying immediately
+	 *                        will not help (Round 9, PR #32 finding 2:
+	 *                        `Admin\EnrollmentManager`'s `reset` action
+	 *                        reports these as the two distinct notices
+	 *                        `reset_busy` / `reset_failed`, never conflated).
 	 */
-	public function reset_course( int $user_id, int $course_id ): void {
-		ProgressRepository::delete_for_course( $user_id, $course_id );
-		QuizAttemptRepository::abandon_for_course( $user_id, $course_id );
-		$this->enrollments->restart( $user_id, $course_id );
+	public function reset_course( int $user_id, int $course_id ): bool|\WP_Error {
+		// Static (see CompletionService::reopen_for_reset()'s own docblock):
+		// the lock it takes is server-wide, not tied to $this->completion -
+		// this call must serialise against a real completion pipeline
+		// running elsewhere even when THIS instance has none injected.
+		return CompletionService::reopen_for_reset(
+			$user_id,
+			$course_id,
+			[ 'status' => 'enrolled', 'started_at' => null, 'completed_at' => null ],
+			static function () use ( $user_id, $course_id ): void {
+				ProgressRepository::delete_for_course( $user_id, $course_id );
+				QuizAttemptRepository::abandon_for_course( $user_id, $course_id );
+			}
+		);
 	}
 
 	/**

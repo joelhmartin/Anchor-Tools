@@ -13,7 +13,7 @@ admin (Learners tab), a purchase, the PHP API, WP-CLI or any plugin.
 
 | Property | Class | Owns |
 |---|---|---|
-| `enrollments` | `Services\EnrollmentService` | the enrolment row and its status machine; `can_enroll()`, `is_enrolled()`, `restart()`, the expiry sweep |
+| `enrollments` | `Services\EnrollmentService` | the enrolment row and its status machine; `can_enroll()`, `is_enrolled()`, the expiry sweep |
 | `progress` | `Services\ProgressService` | the one progress calculation, item availability, lesson start/complete, `record_item()`, `reset_course()` |
 | `quizzes` | `Services\QuizService` | attempts: start/resume, answer, atomic submit, timers, the attempt sweep |
 | `credits` | `Services\CreditService` | CE credit records |
@@ -35,7 +35,7 @@ the module has booted.
 | `anchor_courses_enroll_user( $user_id, $course_id, array $args = [] )` | `Domain\Enrollment\|WP_Error` | Grants the access role via `Roles::grant_access()` (so prerequisites and publish state are enforced). `$args`: `source` (default `api`), `source_id`. |
 | `anchor_courses_complete_lesson( $user_id, $course_id, $lesson_id )` | `Domain\Progress\|WP_Error` | Idempotent; subject to enrolment and progression. Completing the last required item runs the completion pipeline. |
 | `anchor_courses_get_progress( $user_id, $course_id )` | `Domain\CourseProgress\|WP_Error` | `percent`, `completed_required`, `total_required`, `complete`, `completed_item_keys`. |
-| `anchor_courses_award_ce_credit( $user_id, $course_id, $credits )` | `Domain\Credit\|null` | Idempotent per (user, course); `null` when there is nothing to award. |
+| `anchor_courses_award_ce_credit( $user_id, $course_id, $credits )` | `Domain\Credit\|WP_Error\|null` | Idempotent per (user, course); `null` when there is nothing to award; `WP_Error('credit_insert_failed')` when a credit was due but could not be saved. |
 
 ## Roles and enrolment (`Support\Roles`)
 
@@ -123,19 +123,37 @@ Granted to the roles named by `anchor_courses_capability_roles` (default
 **Curriculum:** `_anchor_course_curriculum` - ordered modules
 `{ id (uuid v4), title, description, items: [ { type: lesson|quiz, id, required } ] }`.
 Modules are not posts. `Content\Curriculum` reads are memoised per request and
-invalidated on any write to that meta key.
+invalidated on any write to that meta key. **`required` lives HERE, and only
+here** - `Curriculum::required_items()` is the one place course completion
+reads it (audit finding d, 2026-09-25). The curriculum builder's per-item
+"Required" checkbox (`admin-curriculum.js`) is the only control that sets it;
+new items default to required.
 
 **Lesson** (`Admin\LessonEditor::setting()`): `completion_mode` `manual`
-(`view`, `quiz_pass`), `required` `1`, `quiz_id` `0`, `type` `content`
+(`view`, `quiz_pass`), `quiz_id` `0`, `type` `content`
 (`live_session`), `event_id` `0`, `session_index` `0`, `require_prior_items` `0`.
+The three live-session fields are **not wired yet** (plan Phase 5 - the
+live-session adapter and the stream prerequisite veto): the lesson editor shows
+them disabled under "Not active until the live-session adapter ships (plan
+Phase 5)", and hidden mirrors keep the stored values across a save. The
+editor used to also carry its own "Required for course completion" checkbox;
+it was removed (audit finding d) because nothing ever read it - a lesson's
+requiredness is the curriculum item's, not the lesson post's. `required` is
+no longer written by `save()` or listed in `defaults()`, though a pre-fix
+row's stray `_anchor_lesson_required` meta is harmless if read directly.
 
 **Quiz** (`_anchor_quiz_settings`, `Admin\QuizEditor::settings()`): `passing_score`
 `80` (1-100), `max_attempts` `0` (unlimited, max 1000), `time_limit_seconds` `0`
 (untimed, max 86400), `shuffle_questions` `0`, `shuffle_answers` `0`,
 `show_correct_answers` `1`, `show_score` `1`, `allow_review` `1`,
-`retry_delay_seconds` `0`, `required` `1`, `on_timer_expiry` `auto_submit` (`expire`).
+`retry_delay_seconds` `0`, `on_timer_expiry` `auto_submit` (`expire`).
 Questions: `_anchor_quiz_questions`, types `single_choice`, `multiple_choice`,
 `true_false`. The time limit and expiry policy are pinned into each attempt at start.
+Same finding-d removal as the lesson editor: the quiz settings box's own
+"Required for course completion" checkbox is gone; `required` is no longer
+part of these settings at all (a pre-fix quiz's stray `required` key inside
+the stored `settings` array is harmless if read directly - `coerce()` simply
+does not touch it).
 
 ### Which course a lesson is read in
 
@@ -159,20 +177,311 @@ one." for an enrolled learner locked by progression.
 ## Lifecycle rules worth knowing
 
 - **Completion pipeline** (`CompletionService::complete()`): requires
-  `is_enrolled()`, then an atomic `status <> 'completed'` UPDATE, then credit
-  award, certificate issue, completion role, `anchor_courses_course_completed`.
-  Exactly once per (user, course). `uncomplete()` reopens the row
-  (`in_progress`); credits, certificate and completion role are kept.
+  `is_enrolled()`, takes the completion lock (below), re-reads the row, then
+  an atomic `status <> 'completed'` UPDATE, then credit award, certificate
+  issue (+ credit link), completion role, `anchor_courses_course_completed`.
+  `anchor_courses_course_completed` fires exactly once per (user, course)
+  lifetime.
+- **Eligibility is re-checked under the lock, not just before it** (Round 7,
+  PR #32 audit re-review, finding 1): the `eligible()` call before
+  `acquire_lock()` is only a short-circuit for the common case (not eligible,
+  nothing to wait for) - it is NOT what makes the transition safe. A caller
+  that WAITS for the completion lock can find the learner has since lost the
+  access role or had progress reset while it waited; under the default
+  `keep` loss policy the enrolment row itself stays active, so checking only
+  `is_active()` after the lock (the old code) would still let the flip
+  through. `complete()` re-runs the FULL `eligible()` check - `is_active()`
+  AND `is_enrolled()` (the role) AND the curriculum evaluation - against the
+  row it just re-read once the lock is held, immediately before the flip,
+  and returns `false` with nothing awarded if it no longer holds.
+- **Completion cycles** (audit finding c; Round 6, PR #32): `uncomplete()`
+  takes the same lock, reopens the row (`in_progress`) and increments
+  `metadata.completion_cycle`; credits, certificate, completion role and
+  `metadata.completion_effects` are all kept (a stored `hook: done` is
+  durable history). The next transition of that row is a RE-completion
+  (a cycle marker, or any stored effect state) and starts a **new cycle**:
+  `credit`/`certificate`/`completion_role` reset to `pending` (idempotent
+  no-ops when already present), `hook` keeps `done` (or `n/a`) forever - it
+  is re-run only if no earlier cycle ever confirmed it - and a
+  `recompleted_hook` effect is added as `pending`, which fires
+  `anchor_courses_course_recompleted` once per cycle and is repaired like
+  any other effect. `uncomplete()` returns `false` (admin notice
+  `uncomplete_failed`) when the row is not completed, the lock is busy or
+  the write failed.
+- **The admin "Reset progress" action is serialised with the completion
+  pipeline, and now clears progress under the SAME lock hold as the reopen**
+  (Round 9, Codex + CodeRabbit Major, PR #32 finding 1, supersedes Round 8
+  below, which held the lock for the reopen write alone): `EnrollmentManager`'s
+  `reset` action goes through `ProgressService::reset_course()` ->
+  `CompletionService::reopen_for_reset( $user_id, $course_id, $data, $clear )`
+  - a STATIC method, same as `lock_name()`/`is_settled()`, because the MySQL
+  named lock it takes is server-wide, not tied to any one `CompletionService`
+  instance. It takes the SAME per-(user, course) completion lock
+  `complete()`/`uncomplete()` take, re-reads the row only once the lock is
+  held, applies the reset's `status`/`started_at`/`completed_at` in the SAME
+  call that bumps `metadata.completion_cycle` (see below), and - Round 9 -
+  invokes the caller's `$clear` closure (progress-row deletion, quiz-attempt
+  abandonment) from inside that SAME lock hold, right after the reopen write
+  succeeds and before the lock is released. Releasing the lock as soon as the
+  reopen write landed (Round 8's shape) left `$clear`'s two writes running
+  with no lock at all: a completion racing into that window could re-read the
+  reopened row, evaluate it against the STILL-PRESENT old progress (which
+  still reports complete) and flip it straight back to `completed` - with
+  effects awarded - moments before the reset deleted that same progress out
+  from under it. One lock-scoped operation now covers reopen + cycle bump +
+  clear, so neither a `complete()`/`uncomplete()` pipeline nor a reset can
+  ever race the other's writes for the same row, and no completion can ever
+  observe the row reopened but not yet cleared.
+  Before Round 8, `EnrollmentService::restart()` read and rewrote a completed
+  row's metadata with no coordination at all: a stale write could restore
+  `hook: failed` (firing the lifetime `course_completed` again next time) or
+  clobber a newer effects map or claim written in between.
+  `EnrollmentService` no longer touches completion metadata OR progress at
+  all - `restart()` is gone. A reset that cannot get the lock, or whose
+  reopen write fails at the database, changes NOTHING (`$clear` never runs
+  either way) and `reset_course()` returns a `WP_Error` instead of a plain
+  `false` (Round 9, PR #32 finding 2): `reset_busy` when the lock is held
+  elsewhere (retry shortly - the old boolean gave `EnrollmentManager` no way
+  to tell this apart from a real failure), `reset_failed` when the write
+  itself failed (retrying immediately will not help). `EnrollmentManager`
+  reports each as its own distinct notice, never conflated, and never
+  `reset` on either.
+- **Reopening a completed row for a reset also bumps the cycle marker**
+  (Round 7, PR #32 audit re-review, finding 2 - now inside
+  `reopen_for_reset()` above): a row that was `completed` has
+  `metadata.completion_cycle` incremented, the same marker `uncomplete()`
+  bumps. Without it, a row that predates effect tracking (or one whose
+  tracked state is otherwise empty) has NEITHER a cycle marker NOR an
+  effects map after a reset, so `run_effects()` cannot tell the next
+  completion apart from the FIRST one and re-fires
+  `anchor_courses_course_completed` for a learner who already completed the
+  course once. The cycle counter alone is enough to fix it: once
+  `run_effects()` knows this is a re-completion at all, its existing
+  "unknown outcome, never re-fired" handling for an empty effects map
+  (above) takes over - `hook` reads back `n/a`, not `pending`.
+- **Completion effects are tracked and repaired** (audit F02): the enrolment's
+  `metadata.completion_effects` = `{ credit, certificate, completion_role, hook }`,
+  each `pending` → `done` / `failed` / `n/a` (credit: nothing to award;
+  certificate: disabled). `complete()` on an already-completed row re-runs
+  only the `pending`/`failed` effects and returns `false` - so the next
+  progress record, or the admin **Repair completion** action, is the repair
+  path. Each is idempotent (existing credit/certificate rows are returned, the
+  role grant is a no-op when held); the certificate waits while the credit is
+  unsettled, and is `done` only once linked to the credit. A throwing
+  consumer of either hook (`anchor_courses_course_completed`,
+  `anchor_courses_course_recompleted`) is contained (Round 6): the exception
+  is caught and logged (`completion_effect_exception`), never escapes
+  `complete()` once the row is committed, marks only that hook effect
+  `failed` (the other effects still run), and the action is fired again on
+  repair; once `done` it never fires again in that cycle. A throwing
+  `anchor_courses_enrollment_status_changed` listener on the transition is
+  likewise caught and logged (`completion_status_hook_failed`).
+  `CompletionService::effects( $user_id, $course_id )` reads the state.
+  **An untracked completed row - no `completion_effects` at all, whether it
+  predates tracking or the tracking write itself failed - has an UNKNOWN
+  outcome, not a done one** (CodeRabbit PR #32, audit F02 re-review):
+  `run_effects()` treats it like a fresh transition and re-runs the
+  idempotent effects (credit, certificate, completion role) so one that
+  genuinely never landed still gets created, but never re-runs the hook
+  (not idempotent; may already have fired once with nothing recorded to
+  prove it). The admin **Repair completion** action therefore always has a
+  real chance to fix an untracked row; the earlier `repair_not_tracked` code
+  (a distinct "nothing could be determined" outcome) can no longer occur
+  through this path and was removed.
+  **`repaired` is reported only once every one of the four tracked effects
+  (plus a cycle's `recompleted_hook`) reads back `done` or `n/a`** (Codex
+  P1 + CodeRabbit, PR #32 re-review; `CompletionService::is_settled()`) -
+  checked against `CompletionService::EFFECTS` explicitly, not by testing
+  for the absence of `pending`/`failed`. That weaker test also passes for
+  two shapes where nothing is actually confirmed: a fresh `running` claim
+  (a pipeline still within `EFFECTS_RUNNING_STALE_SECONDS`, deliberately
+  left alone rather than re-run) is neither `pending` nor `failed`, and
+  neither is a still-empty map (the repair's own `complete()` call could
+  not get the completion lock, so it ran nothing). Anything short of all
+  four settled redirects with **`repair_incomplete`** instead - a step
+  failed, or one is still finishing from moments ago; the operator is
+  told to check the log and try again in a few minutes, never told it
+  succeeded.
+- **The completion lock covers flip + effects** (Codex review, PR #32
+  finding 1; Round 6): every `complete()` and `uncomplete()` takes the same
+  kind of MySQL named lock `start_attempt()` uses
+  (`CompletionService::lock_name( $user_id, $course_id )`, `GET_LOCK`,
+  `anchor_courses_completion_lock_timeout` seconds, default 5, released in
+  `finally`) BEFORE the completed-transition, and holds it through the
+  effects. The row and its effect state are (re)read only once the lock is
+  held - a caller that waited never acts on its pre-lock snapshot, so two
+  repairs that both saw `hook: failed` fire it once. A caller that cannot
+  get the lock returns `false` and changes nothing: a repair runs no
+  effects, and **a fresh completion does not flip the row** - the learner's
+  next progress recalculation (or the admin Complete/Repair action) retries
+  it - so a transition can never be committed without its effects cycle.
+  Before any claimed effect actually runs, `run_effects()` marks it
+  `running` in `completion_effects` with a timestamp in
+  `completion_effects_claimed_at`, so a pipeline that crashes mid-run leaves
+  that exact shape behind. The next call to hold the lock treats a
+  `running` entry older than `CompletionService::EFFECTS_RUNNING_STALE_SECONDS`
+  (300s) as `pending` (the claimant is dead - repair re-runs it) and one
+  still within that window as still owned (left alone - the lock is
+  re-entrant on one connection, so it can only be this caller's own claim).
+- **The effect-tracking write is itself checked** (re-review, audit F02):
+  `CompletionService::save_effects()` returns `false` and `Log::write()`s
+  `completion_effects_save_failed` when `EnrollmentRepository::update()`
+  reports a database error (mirroring the F03 fix below) - a fresh read of
+  the row with the OLD metadata would otherwise look identical to a
+  successful save. The failure never blocks the effects themselves (credit,
+  certificate, role, hook are separate writes and still run for real); it
+  only means their outcome was not durably recorded, logged again from
+  `complete()` as `completion_effects_untracked`.
+- **CE credit / certificate outcomes:** `CreditService::award()` and
+  `CertificateService::issue()` return the row, `null` for not-applicable
+  (reason in `last_skip_reason()`: `not_a_course`, `no_user`, `no_credits` /
+  `certificates_disabled`), or `WP_Error` (`credit_insert_failed` /
+  `certificate_insert_failed`) when the row was due but not written.
 - **Quiz submit** is atomic: the attempt is claimed with a conditional
   `in_progress -> submitted` (or `-> expired`) UPDATE before grading, so
   concurrent submits grade once. A learner-initiated submit/answer from somebody
   no longer enrolled is refused (`not_enrolled`).
+- **The `expire` timer policy re-reads the row after its own transition**
+  (Codex review, PR #32 finding 2): it claims the attempt
+  (`in_progress -> expired`) first, then writes `submitted_at`/
+  `duration_seconds` in a second statement. If that second write fails
+  (`QuizAttemptRepository::update()`'s null-on-error contract), `submit()`
+  re-reads the row with `find()` rather than falling back to the
+  PRE-transition `in_progress` object it read at the top of the method - the
+  transition already happened for real, so the fired
+  `anchor_courses_quiz_expired` hook, a REST read and
+  `sweep_expired_attempts()`'s count must all see the real `expired` status,
+  never a stale one. A failed detail write is logged as
+  `quiz_expire_detail_save_failed`. **That re-read itself is retried once**
+  (CodeRabbit Major, PR #32 re-review) before giving up: a null `find()`
+  right after a write that just succeeded is treated as a transient read
+  blip, not evidence the row reverted, so a second attempt is given a
+  chance to see it. Only if BOTH reads come back empty does `submit()`
+  return `WP_Error('read_failed')` (REST 503, safe to retry) - never the
+  stale `in_progress` object, and logged as `quiz_expire_read_failed`.
+- **Grading reads the claimed row, never the pre-claim snapshot** (Round 6,
+  PR #32): after the `in_progress -> submitted` claim `submit()` re-reads
+  the row, so an autosave acknowledged between its first read and the
+  claim is graded. If that re-read fails, it releases the claim
+  (`submitted -> in_progress`), logs `quiz_submit_read_failed` and returns
+  `WP_Error('read_failed')` (REST 503, safe to retry) - the stored answers
+  are untouched and the retry grades them.
+- **`enforce_timer()` propagates `read_failed` too, through every caller**
+  (Round 7, PR #32 audit re-review, finding 3): `submit()`'s own
+  `read_failed` guarantees above are about what `submit()` itself returns -
+  but `enforce_timer()` (the cron sweep's and a truthful-status read's entry
+  point, above `submit()`) used to convert ANY non-`QuizAttempt` result,
+  `read_failed` included, back into its own PRE-transition `$attempt`
+  argument. That argument can already be stale: the `expire` branch commits
+  the row as `expired` in the database before either of its own two
+  re-reads runs, so a caller seeing `read_failed` from `submit()` still
+  means the transition landed for real. `enforce_timer()` now takes one
+  more, authoritative re-read of its own on any non-`QuizAttempt` result;
+  only when that ALSO fails does it hand back the `WP_Error` - never the
+  stale object. The REST read route (`QuizController::read()`) maps a
+  propagated `read_failed` to 503 rather than reporting `in_progress`.
+- **The sweep counts only CONFIRMED expiry transitions** (Round 8,
+  CodeRabbit, supersedes the sweep-counting half of Round 7 finding 3 above):
+  neither a `WP_Error` result nor a before/after status compare says a call
+  actually transitioned the row - both over-count. The generic
+  claim-then-grade path (any timer policy other than `expire`) ROLLS BACK its
+  own `in_progress -> submitted` claim before returning `read_failed`/
+  `save_failed`, so the row is back exactly where it started even though the
+  result is an error. `submit_tracked()` (private; `submit()`'s real
+  implementation) and `enforce_timer_tracked()` therefore return an explicit
+  `transitioned` bool alongside the `QuizAttempt|WP_Error` result: true only
+  for the `expire` branch once its claim commits (whatever follows - a failed
+  detail write, a failed re-read - THIS call already closed the attempt) and
+  for a successful grade; false for every lost-race short-circuit and every
+  rollback. `sweep_expired_attempts()` reads `transitioned` directly instead
+  of inferring it - a rollback under `auto_submit` counts 0, a confirmed
+  `expire` transition with a failed re-read still counts 1. `submit()` and
+  `enforce_timer()` keep their public `QuizAttempt|WP_Error` contracts
+  unchanged - only the sweep's own counting reads the tracked variant.
+- **A grade counts only once it is saved** (audit F03):
+  `QuizAttemptRepository::update()` returns `null` when `$wpdb->update()`
+  reports an error (a 0-row no-change update is still a success). `submit()`
+  moves progress and fires `_submitted`/`_passed`/`_failed` only when the
+  re-read row is `graded`; otherwise it releases the claim
+  (`submitted -> in_progress`) and returns `WP_Error('save_failed')` (REST 503,
+  safe to retry). A `submitted` claim older than
+  `QuizService::STALE_CLAIM_SECONDS` (300) was orphaned by a crashed request
+  and is re-opened, answers intact, by `QuizService::reopen_stale_claims()` -
+  run by the daily sweep and by the learner's own next start.
+- **Starting an attempt is serialised** (audit F07): `start_attempt()` takes the
+  MySQL named lock `QuizService::attempt_lock_name( $user, $course, $quiz )`
+  (`GET_LOCK`, `anchor_courses_attempt_lock_timeout` seconds, default 5) around
+  the preflight and the create, released in `finally`; a caller that cannot get
+  it receives `WP_Error('attempt_busy')` (REST 409). The lock name folds in
+  `md5( DB_NAME . $wpdb->prefix )` (re-review) - `GET_LOCK()` is server-wide,
+  not scoped by database, so two sites sharing a MySQL server (or two
+  subsites of one multisite) never contend over the same key just because a
+  learner, course and quiz share ids; still at most 64 characters. As a database-level
+  backstop, `QuizAttemptRepository::create()` inserts only while no attempt is
+  open for (user, course, quiz) and fewer than `max_attempts` counted attempts
+  exist; nothing inserted resolves to the open attempt, or to
+  `no_attempts_remaining`. Two simultaneous starts therefore share one attempt
+  or one gets a controlled conflict - never two open attempts.
+- **Answer autosave is a compare-and-swap** (audit F06): `quiz_attempts.revision`
+  (1.3.0) is bumped by every answers write;
+  `QuizAttemptRepository::save_answers( $id, $answers, $expected_revision )`
+  writes only `WHERE status = 'in_progress' AND revision = %d`. `save_answer()`
+  re-reads and retries once on a lost race, then returns
+  `WP_Error('save_conflict')` (REST 409); a database error is
+  `WP_Error('save_failed')` (503). A save can never land after the submit
+  claim, and `submit()` re-reads the row after claiming, so every acknowledged
+  save is graded and the stored answers always match the stored grade.
+  `quiz.js` keeps one save in flight, coalesces queued changes per question,
+  shows a save-error line (`.anchor-quiz-save-status`), and submit waits for
+  the queue to drain.
+- **A lesson and its quiz** (audit F04, re-review): under sequential
+  progression a quiz is not blocked by its parent lesson - an earlier required
+  lesson whose `completion_mode` is `quiz_pass` with this quiz as `quiz_id`
+  (`ProgressService::lesson_completes_by_quiz()`). The quiz opens exactly when
+  that lesson does; every other earlier required item still gates it. A quiz
+  placed BEFORE its lesson also works (it opens with the earlier items, and
+  passing it completes the lesson via `QuizService::complete_gated_lessons()`)
+  and is not a problem. The real deadlock is a REQUIRED item strictly between
+  the lesson and its quiz: that item waits on the lesson, the quiz waits on
+  that item, and the lesson waits on the quiz - none of the three can ever
+  finish. Saving a curriculum in which a required `quiz_pass` lesson's quiz is
+  absent from the course, or (sequential mode only) has a required item
+  between it and its lesson (`ProgressService::quiz_link_problems()`, problems
+  `quiz_absent` / `item_between`), saves anyway and redirects with the
+  `curriculum_quiz_link` warning notice. **Re-checked on lesson save too**
+  (Round 8, Codex, PR #32 finding 3): `quiz_link_problems()` used to run only
+  when a COURSE's curriculum was saved, so changing a lesson's
+  `completion_mode` to `quiz_pass` or repointing its `quiz_id` could create
+  the same deadlock in a course whose curriculum is never re-saved, with no
+  warning anywhere. `Admin\LessonEditor::save()` now runs the same check for
+  every PUBLISHED course the lesson actually belongs to
+  (`Curriculum::courses_for_item()`) and redirects with `lesson_quiz_link`,
+  naming the affected course(s) - the lesson screen has no course of its own
+  to name it from, so the title(s) ride in `Notices::COURSES_QUERY_ARG` and
+  are interpolated into the registered message's `%s` placeholder. **Scoped
+  to the SAVED lesson, never any problem anywhere in the course** (Round 9,
+  PR #32 finding 3): `quiz_link_problems( $course_id )` returns every problem
+  in that course, not only ones involving the lesson just saved, so a course
+  only counts as affected when one of its returned problems' `lesson_id`
+  matches the lesson being saved - otherwise saving a perfectly sound lesson
+  B would warn about a problem an unrelated lesson A already had.
+- **Attempts belong to a course** (audit F05): a quiz may be shared by several
+  courses, and every attempt lifecycle read - `open_attempt()`,
+  `count_for_quiz()`, `last_for_quiz()`, `best_for_quiz()` and the service's
+  `attempts_used()`, `attempts_remaining()`, `retry_available_at()`,
+  `best_attempt()` - takes `( $user_id, $quiz_id, $course_id )`. An open,
+  exhausted, delayed, reset or passed attempt in one course never changes
+  another course's lifecycle; `start_attempt()` never resumes another course's
+  attempt. Cross-course credit, if ever wanted, must be an explicit policy.
 - **Best attempt counts:** a completed item is never downgraded by a later failed
   attempt; a repeat pass keeps the original `completed_at`.
-- **Admin reset** (`ProgressService::reset_course()`): deletes progress rows,
-  voids every counted attempt as `abandoned` (not counted toward
-  `max_attempts`, no retry delay), and restarts the row (`enrolled`, no
-  `started_at` / `completed_at`).
+- **Admin reset** (`ProgressService::reset_course()`): reopens the row,
+  deletes progress rows, voids every counted attempt as `abandoned` (not
+  counted toward `max_attempts`, no retry delay), and restarts the row
+  (`enrolled`, no `started_at` / `completed_at`) - all under ONE hold of the
+  completion lock (see `reopen_for_reset()` above, Round 9). `WP_Error(
+  'reset_busy')` on a busy lock or `WP_Error( 'reset_failed' )` on a write
+  failure, and nothing touched either way.
 - **Certificates** freeze `learner_name`, `course_name`, `credits`,
   `provider_name`, `provider_number` and `instructor_name` into their metadata at
   issue; the page renders that snapshot (live values only for older rows).
@@ -185,7 +494,7 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_access_granted` | `$user_id, $course_id, $source, $source_id` | `Roles::grant_access()` added the role |
 | `anchor_courses_access_revoked` | `$user_id, $course_id, $source` | `Roles::revoke_access()` removed the role |
 | `anchor_courses_enrolled` | `Enrollment $enrollment, $user_id, $course_id` | once, the first time a row is created |
-| `anchor_courses_enrollment_status_changed` | `$user_id, $course_id, $from, $to` | any status change (set_status, reactivation, restart, completion, uncompletion) |
+| `anchor_courses_enrollment_status_changed` | `$user_id, $course_id, $from, $to` | any status change (set_status, reactivation, reset, completion, uncompletion) |
 | `anchor_courses_course_started` | `$user_id, $course_id, Enrollment $enrollment` | first item opened (again after a reset) |
 | `anchor_courses_lesson_started` | `$user_id, $course_id, $lesson_id, Progress $progress` | first view of a lesson |
 | `anchor_courses_lesson_completed` | `$user_id, $course_id, $lesson_id, Progress $progress` | once, first completion of a lesson |
@@ -193,7 +502,8 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_quiz_submitted` | `QuizAttempt $attempt, $user_id, $quiz_id, $course_id` | an attempt was graded |
 | `anchor_courses_quiz_passed` / `anchor_courses_quiz_failed` | same | after `_submitted`, by outcome |
 | `anchor_courses_quiz_expired` | same | a timed attempt closed by the `expire` policy (nothing graded) |
-| `anchor_courses_course_completed` | `$user_id, $course_id, Enrollment $enrollment` | once per (user, course) |
+| `anchor_courses_course_completed` | `$user_id, $course_id, Enrollment $enrollment` | once per (user, course) lifetime; fired again on repair only if a consumer threw (`completion_effects.hook = failed`); never re-fires after an uncomplete()/complete() cycle |
+| `anchor_courses_course_recompleted` | `$user_id, $course_id, Enrollment $enrollment` | once per uncomplete() -> complete() cycle, in place of `anchor_courses_course_completed` |
 | `anchor_courses_ce_credit_awarded` | `$user_id, $course_id, Credit $credit` | a credit record was created |
 | `anchor_courses_certificate_issued` | `$user_id, $course_id, Certificate $certificate` | a certificate was created |
 | `anchor_courses_curriculum_saved` | `$course_id, array $modules` | `Curriculum::save()` |
@@ -206,6 +516,8 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_role_loss_policy` | `'keep', $user_id, $course_id, $role, $source, $source_id` | see Loss policy |
 | `anchor_courses_can_access_lesson` | `bool, $user_id, $course_id, $item_id, $item_type` | item availability (lessons and quizzes) |
 | `anchor_courses_can_start_quiz` | `true\|WP_Error, $user_id, $quiz_id, $course_id` | may this attempt start/resume |
+| `anchor_courses_attempt_lock_timeout` | `5, $user_id, $quiz_id, $course_id` | seconds `start_attempt()` waits for the per-learner start lock before `attempt_busy` |
+| `anchor_courses_completion_lock_timeout` | `5, $user_id, $course_id` | seconds `complete()` waits for the per-(user,course) completion-effects lock before backing off |
 | `anchor_courses_quiz_result` | `array $result, QuizAttempt $attempt` | graded result before it is stored |
 | `anchor_courses_course_completion_status` | `bool, $user_id, $course_id` | does the course count as complete |
 | `anchor_courses_ce_credit_amount` | `float, $user_id, $course_id` | credit amount before the record |
@@ -241,16 +553,21 @@ All routes require a signed-in user (`Routes::require_login`, 401 otherwise).
 | Method | Route | Args | Success |
 |---|---|---|---|
 | POST | `/quizzes/{id}/attempts` | `course_id` (required) | 201, attempt + questions |
-| GET | `/quiz-attempts/{id}` | - | 200, attempt (questions while open); applies the timer first |
-| POST | `/quiz-attempts/{id}/answer` | `question_id`, `value` (string or up to 50 strings) | 200 `{saved:true}` |
-| POST | `/quiz-attempts/{id}/submit` | `answers` (object, question_id => value) | 200, graded attempt |
+| GET | `/quiz-attempts/{id}` | `course_id` (optional) | 200, attempt (questions while open); applies the timer first |
+| POST | `/quiz-attempts/{id}/answer` | `question_id`, `value` (string or up to 50 strings), `course_id` (optional) | 200 `{saved:true}` |
+| POST | `/quiz-attempts/{id}/submit` | `answers` (object, question_id => value), `course_id` (optional) | 200, graded attempt |
 
-Attempt routes check ownership first (`no_attempt` 404, `attempt_not_yours` 403).
+Attempt routes check ownership first (`no_attempt` 404, `attempt_not_yours` 403),
+then course context (audit F05): the attempt row's `course_id` is authoritative,
+and a request naming a different `course_id` is refused 409
+`attempt_course_mismatch` (quiz.js always sends the course it rendered).
 Service errors map through `Routes::error_response()`:
 403 `not_enrolled`, `locked`, `not_in_course`, `course_closed`,
 `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`,
 `attempt_not_yours`; 404 `no_attempt`, `no_course`, `no_user`; 409
-`attempt_closed`, `no_questions`; 400 `unknown_question` and anything unlisted.
+`attempt_closed`, `no_questions`, `attempt_course_mismatch`, `save_conflict`,
+`attempt_busy`; 503 `save_failed`, `read_failed` (both retry); 400
+`unknown_question` and anything unlisted.
 Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 `show_score` is off, grading data only with `show_correct_answers`).
 
@@ -260,7 +577,7 @@ Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 |---|---|
 | `admin-post.php?action=anchor_courses_complete_lesson` (also nopriv) | `Frontend\Actions` - "Mark complete"; redirects with `anchor_courses_notice` |
 | `admin-post.php?action=anchor_courses_add_learner` / `anchor_courses_revoke_access` | `Admin\LearnerReports` (nonce `anchor_courses_learners_{course}`, cap `enrollments`) |
-| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete` |
+| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset` (`reset_busy` when the completion lock is busy, `reset_failed` when the write fails - either way nothing touched), `complete`, `uncomplete`, `repair` (re-run pending/failed/untracked completion effects; `repaired` only once all four read `done`/`n/a`, else `repair_incomplete`; `repair_not_completed` when the row isn't complete at all) |
 | `admin-post.php?action=anchor_courses_delete_role` | `Admin\CourseEditor` (cap `manage`) |
 | `admin-ajax.php?action=anchor_courses_search_items` / `anchor_courses_create_item` | curriculum builder |
 | `/certificate/{token}/` | `Frontend\CertificatePage` - public verification page (query var `anchor_certificate`, noindex) |
@@ -273,7 +590,7 @@ codes registered with `Notices::register()` (anything else becomes `error`).
 
 Five tables, prefix `{$wpdb->prefix}anchor_courses_`: `enrollments`
 (UNIQUE user+course), `progress` (UNIQUE user+course+item+type),
-`quiz_attempts` (UNIQUE user+quiz+attempt_number), `ce_credits` (UNIQUE
+`quiz_attempts` (UNIQUE user+course+quiz+attempt_number), `ce_credits` (UNIQUE
 user+course), `certificates` (UNIQUE user+course, certificate_number,
 verification_token). Version option `anchor_courses_db_version`, run from the
 Module constructor and `admin_init`.
@@ -283,6 +600,7 @@ Module constructor and `admin_init`.
 | 1.0.0 | initial schema; capabilities granted |
 | 1.1.0 | `quiz_attempts.metadata` (pinned timer settings) |
 | 1.2.0 | `certificates.verification_token` becomes UNIQUE |
+| 1.3.0 | `quiz_attempts` unique key becomes `user_course_quiz_attempt` (user, course, quiz, attempt_number) - audit F05; `quiz_attempts.revision` (answers compare-and-swap) - audit F06 |
 
 Statuses: enrolment `enrolled`, `in_progress`, `completed`, `expired`,
 `cancelled`; progress `not_started`, `in_progress`, `completed`, `failed`;
@@ -293,8 +611,9 @@ attempt `in_progress`, `submitted`, `graded`, `expired`, `abandoned`
 
 `anchor_courses_expire_sweep` (daily, scheduled on load, cleared on plugin
 deactivation): `EnrollmentService::sweep_expired()` flips due rows to `expired`
-and removes the access role; `QuizService::sweep_expired_attempts()` applies the
-timer policy to timed attempts left open past their deadline.
+and removes the access role; `QuizService::sweep_expired_attempts()` re-opens
+stale `submitted` claims, then applies the timer policy to timed attempts left
+open past their deadline.
 
 ## Uninstall
 

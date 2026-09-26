@@ -78,7 +78,7 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 		$this->assertSame(
 			[ 'id', 'user_id', 'course_id', 'quiz_id', 'attempt_number', 'status', 'score',
 			  'points_earned', 'points_possible', 'passed', 'started_at', 'submitted_at',
-			  'duration_seconds', 'answers', 'grading_data', 'created_at', 'updated_at', 'metadata' ],
+			  'duration_seconds', 'answers', 'grading_data', 'created_at', 'updated_at', 'metadata', 'revision' ],
 			$this->columns( 'quiz_attempts' )
 		);
 	}
@@ -100,7 +100,8 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 	public function test_uniqueness_constraints_exist() {
 		$this->assertContains( 'user_course', $this->index_names( 'enrollments' ) );
 		$this->assertContains( 'user_course_item', $this->index_names( 'progress' ) );
-		$this->assertContains( 'user_quiz_attempt', $this->index_names( 'quiz_attempts' ) );
+		$this->assertContains( 'user_course_quiz_attempt', $this->index_names( 'quiz_attempts' ) );
+		$this->assertNotContains( 'user_quiz_attempt', $this->index_names( 'quiz_attempts' ), '1.3.0 replaced the course-blind key.' );
 		$this->assertContains( 'user_course', $this->index_names( 'ce_credits' ) );
 		$this->assertContains( 'user_course', $this->index_names( 'certificates' ) );
 		$this->assertContains( 'certificate_number', $this->index_names( 'certificates' ) );
@@ -200,5 +201,37 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 		$this->assertSame( [], $errors, 'Replaying every migration step must raise no database error.' );
 		$this->assertSame( Migrations::DB_VERSION, Migrations::installed_version() );
 		$this->assertTrue( $this->is_unique_index( 'certificates', 'verification_token' ) );
+	}
+
+	/**
+	 * 1.3.0 (audit F05): a site upgrading from 1.2.0 still has the
+	 * course-blind `user_quiz_attempt` key. The migration drops it and adds
+	 * the course-scoped one, and the same learner may then hold attempt 1 of
+	 * one quiz in two courses.
+	 */
+	public function test_1_3_0_replaces_the_course_blind_attempt_key() {
+		global $wpdb;
+		$table = Migrations::table( 'quiz_attempts' );
+		// Recreate the 1.2.0 shape.
+		$wpdb->query( "ALTER TABLE {$table} DROP INDEX user_course_quiz_attempt" ); // phpcs:ignore WordPress.DB
+		$wpdb->query( "ALTER TABLE {$table} ADD UNIQUE KEY user_quiz_attempt (user_id,quiz_id,attempt_number)" ); // phpcs:ignore WordPress.DB
+		update_option( Migrations::OPTION, '1.2.0', false );
+
+		Migrations::maybe_migrate();
+
+		$this->assertSame( '1.3.0', Migrations::installed_version() );
+		$this->assertTrue( $this->is_unique_index( 'quiz_attempts', 'user_course_quiz_attempt' ) );
+		$this->assertNotContains( 'user_quiz_attempt', $this->index_names( 'quiz_attempts' ) );
+
+		$row = [
+			'user_id' => 5, 'course_id' => 1, 'quiz_id' => 3, 'attempt_number' => 1, 'status' => 'graded',
+			'started_at' => '2026-01-01 00:00:00', 'created_at' => '2026-01-01 00:00:00', 'updated_at' => '2026-01-01 00:00:00',
+		];
+		$this->assertSame( 1, $wpdb->insert( $table, $row ) );
+		$row['course_id'] = 2;
+		$this->assertSame( 1, $wpdb->insert( $table, $row ), 'Attempt 1 of the same quiz in another course.' );
+		$wpdb->suppress_errors( true );
+		$this->assertFalse( $wpdb->insert( $table, $row ), 'Still unique within one course.' );
+		$wpdb->suppress_errors( false );
 	}
 }

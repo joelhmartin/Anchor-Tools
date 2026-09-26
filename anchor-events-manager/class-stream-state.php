@@ -117,19 +117,30 @@ class Stream_State {
         if ( ! $any_streamable ) {
             return self::result( self::UNAVAILABLE, 0, 0, [] );
         }
-        // A streamable session exists but nothing resolves an embed, or no
-        // session has a date yet: the room says "details will appear here".
-        $has_embed = false;
+
+        // A window only enters the state machine when THAT session resolves
+        // its own embed (event-level or an override — Module::resolved_
+        // sessions()/event_level_embed() is what already folds the two into
+        // one `stream_embed` per row). A later session's embed can never pull
+        // an earlier, embed-less session into countdown/live/between: doing
+        // so used to let render_room() pick that session's index and hand it
+        // to can_access_stream(), which correctly refuses a session with no
+        // embed — telling a registered attendee they were not registered at
+        // all (audit finding a, 2026-09-25).
+        $streamed_windows = [];
         foreach ( $windows as $w ) {
             if ( ! empty( $w['embed']['src'] ) ) {
-                $has_embed = true;
-                break;
+                $streamed_windows[] = $w;
             }
         }
-        if ( empty( $windows ) || ! $has_embed ) {
+
+        // No session (streamable or not) resolves an embed, or none has a
+        // date yet: the room says "details will appear here".
+        if ( empty( $streamed_windows ) ) {
             return self::result( self::PENDING, 0, 0, [] );
         }
 
+        $windows = $streamed_windows;
         \usort( $windows, static function ( $a, $b ) {
             return $a['open'] <=> $b['open'];
         } );

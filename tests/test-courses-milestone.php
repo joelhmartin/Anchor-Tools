@@ -105,7 +105,7 @@ class Test_Courses_Milestone extends Anchor_Courses_TestCase {
 		$this->assertNull( CreditRepository::find( $user, $course ), 'A failed attempt must award nothing.' );
 
 		// --- Attempt 2: passes --------------------------------------------
-		$this->assertSame( 1, $module->quizzes->attempts_remaining( $user, $quiz ) );
+		$this->assertSame( 1, $module->quizzes->attempts_remaining( $user, $quiz, $course ) );
 
 		$attempt2 = $module->quizzes->start_attempt( $user, $quiz, $course );
 		$this->assertSame( 2, $attempt2->attempt_number );

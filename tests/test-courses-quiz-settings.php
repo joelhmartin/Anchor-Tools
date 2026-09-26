@@ -20,12 +20,41 @@ class Test_Courses_Quiz_Settings extends Anchor_Courses_TestCase {
 	public function test_defaults_cover_every_brief_setting() {
 		$this->assertSame(
 			[ 'passing_score', 'max_attempts', 'time_limit_seconds', 'shuffle_questions', 'shuffle_answers',
-			  'show_correct_answers', 'show_score', 'allow_review', 'retry_delay_seconds', 'required',
+			  'show_correct_answers', 'show_score', 'allow_review', 'retry_delay_seconds',
 			  'on_timer_expiry' ],
 			array_keys( QuizEditor::defaults() )
 		);
 		$this->assertSame( 'auto_submit', QuizEditor::defaults()['on_timer_expiry'] );
 		$this->assertSame( 0, QuizEditor::defaults()['max_attempts'], '0 means unlimited (brief 8.1).' );
+	}
+
+	/**
+	 * Audit finding (d), 2026-09-25: the metabox's own "Required for course
+	 * completion" checkbox was removed - it was saved but nothing ever read
+	 * it. Requiredness lives on the curriculum item
+	 * (Curriculum::required_items()). A settings save must not write a
+	 * `required` key any more, though an old row's stray value is tolerated
+	 * (never crashes, simply unread).
+	 */
+	public function test_required_is_no_longer_a_writable_setting() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$quiz = $this->make_quiz();
+
+		$this->submit( $quiz, [ 'passing_score' => '80', 'required' => '0' ] );
+
+		$this->assertArrayNotHasKey( 'required', QuizEditor::settings( $quiz ) );
+	}
+
+	/** The removed checkbox must not linger in the rendered metabox either. */
+	public function test_render_settings_no_longer_shows_the_required_checkbox() {
+		$quiz = $this->make_quiz();
+
+		ob_start();
+		( new QuizEditor() )->render_settings( get_post( $quiz ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringNotContainsString( 'anchor_quiz[required]', $html );
+		$this->assertStringContainsString( 'Curriculum builder', $html, 'A hint must point authors at where requiredness actually lives.' );
 	}
 
 	public function test_settings_merge_stored_values_over_defaults() {

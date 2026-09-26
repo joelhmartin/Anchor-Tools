@@ -31,7 +31,10 @@ final class QuizAttempt {
 		public readonly array $grading_data,
 		public readonly array $metadata,
 		public readonly string $created_at,
-		public readonly string $updated_at
+		public readonly string $updated_at,
+		// Bumped by every answers write (audit F06): the compare-and-swap
+		// token QuizAttemptRepository::save_answers() checks.
+		public readonly int $revision = 0
 	) {}
 
 	public static function from_row( array $row ): self {
@@ -53,7 +56,8 @@ final class QuizAttempt {
 			Json::decode( $row['grading_data'] ?? null ),
 			Json::decode( $row['metadata'] ?? null ),
 			(string) ( $row['created_at'] ?? '' ),
-			(string) ( $row['updated_at'] ?? '' )
+			(string) ( $row['updated_at'] ?? '' ),
+			(int) ( $row['revision'] ?? 0 )
 		);
 	}
 
@@ -126,6 +130,7 @@ final class QuizAttempt {
 			'metadata'         => $this->metadata,
 			'created_at'       => $this->created_at,
 			'updated_at'       => $this->updated_at,
+			'revision'         => $this->revision,
 		];
 	}
 }

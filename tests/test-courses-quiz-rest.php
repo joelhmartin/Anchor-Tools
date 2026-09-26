@@ -13,6 +13,7 @@
 
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\Questions;
+use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Rest\Routes;
 use Anchor\Courses\Support\Roles;
 
@@ -350,6 +351,94 @@ class Test_Courses_Quiz_Rest extends Anchor_Courses_TestCase {
 		$this->assertNull( $response->get_data()['attempt']['score'] );
 	}
 
+	/**
+	 * Codex review, PR #32 finding 2: a failed submitted_at/duration_seconds
+	 * write - a second statement AFTER the atomic in_progress -> expired
+	 * transition - must never leave the REST response (or a later read)
+	 * reporting the pre-transition `in_progress` status.
+	 */
+	public function test_submitting_after_the_deadline_with_a_failed_detail_write_still_reports_expired() {
+		global $wpdb;
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		$wpdb->suppress_errors( true );
+		$break = static function ( $query ) {
+			return preg_match( '/^UPDATE `?\S*anchor_courses_quiz_attempts`? SET `?submitted_at`?/', (string) $query )
+				? 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor'
+				: $query;
+		};
+		add_filter( 'query', $break );
+		$response = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q1 => 'a2', $this->q2 => 'b1' ] ] );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( 'expired', $response->get_data()['attempt']['status'], 'The transition happened for real; the response must not fall back to the stale in_progress object.' );
+
+		$reread = $this->request( 'GET', "/quiz-attempts/{$attempt_id}", [ 'course_id' => $this->course ] );
+		$this->assertSame( 'expired', $reread->get_data()['attempt']['status'], 'A later read must agree - not report stale in_progress data.' );
+	}
+
+	/**
+	 * CodeRabbit Major, PR #32 re-review: the expire branch's OWN re-read
+	 * (the one 3288e9c above added to fix the pre-transition fallback) can
+	 * itself fail to read anything back - a transient blip on the SELECT,
+	 * not on either write. When BOTH that read and its one retry come back
+	 * empty, there is no safe attempt object to report: the fix must return
+	 * a `read_failed` WP_Error rather than the old `in_progress` fallback,
+	 * and this REST boundary must map it to 503 (retryable), not 400/404 -
+	 * the transition itself really did succeed, only reading it back
+	 * failed.
+	 */
+	public function test_submitting_after_the_deadline_with_a_persistently_failed_re_read_reports_503_not_the_stale_status() {
+		global $wpdb;
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		// Fail every read of this row from the fifth one onward. This REST
+		// boundary reads the attempt twice before submit() ever runs
+		// (owned_attempt()'s get_attempt() and owns_attempt(), #1-#2);
+		// #3 is submit()'s own read at the top (must succeed - it is what
+		// finds the deadline passed at all); #4 is
+		// QuizAttemptRepository::update()'s internal re-read once the
+		// detail write itself succeeds. #5 and every read after it (the
+		// fix's own re-read AND its one retry) are broken here, so neither
+		// ever comes back.
+		$wpdb->suppress_errors( true );
+		$hits  = 0;
+		$break = static function ( $query ) use ( &$hits ) {
+			if ( \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = \d+$/', (string) $query ) ) {
+				$hits++;
+				if ( $hits >= 5 ) {
+					return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+				}
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+		$response = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q1 => 'a2', $this->q2 => 'b1' ] ] );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertSame( 503, $response->get_status(), 'A persistent read failure is a retryable server error, not a client error.' );
+		$this->assertSame( 'read_failed', $response->get_data()['code'] );
+		$this->assertArrayNotHasKey( 'attempt', $response->get_data(), 'No attempt object - stale or otherwise - escapes on this path.' );
+
+		$reread = QuizAttemptRepository::find( $attempt_id );
+		$this->assertSame( 'expired', $reread->status, 'The transition itself succeeded - only reading it back failed.' );
+	}
+
 	public function test_a_no_answer_submit_body_defaults_to_an_empty_object() {
 		wp_set_current_user( $this->user );
 		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
@@ -482,5 +571,54 @@ class Test_Courses_Quiz_Rest extends Anchor_Courses_TestCase {
 
 		$this->assertSame( 200, $submitted->get_status() );
 		$this->assertSame( 100.0, $submitted->get_data()['attempt']['score'], 'A missing key must keep the saved answer, not clear it.' );
+	}
+
+	/**
+	 * Round 7, finding 3: a GET while every post-transition read on this
+	 * attempt fails must return 503 `read_failed` - never a 200 reporting
+	 * `in_progress`, which is what handing back the pre-timer $attempt
+	 * (this route's own read() code used to do via enforce_timer()) would
+	 * report for a row that the database actually holds as `expired`.
+	 */
+	public function test_a_read_after_every_post_transition_read_fails_is_503_not_a_stale_in_progress() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		global $wpdb;
+		$wpdb->suppress_errors( true );
+		// owned_attempt() reads this attempt twice before enforce_timer() is
+		// even reached (get_attempt(), then owns_attempt()), and submit()'s
+		// own top-of-method read is a third - all three are left alone so
+		// the request reaches the `expire` branch at all. Everything after
+		// that - submit()'s two post-transition re-reads AND
+		// enforce_timer()'s additional one - fails.
+		$reads = 0;
+		$break = function ( $query ) use ( $attempt_id, &$reads ) {
+			$query = (string) $query;
+			if ( \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = ' . $attempt_id . '$/', $query ) ) {
+				$reads++;
+				if ( $reads > 3 ) {
+					return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+				}
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+		$response = $this->request( 'GET', "/quiz-attempts/{$attempt_id}" );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertGreaterThan( 3, $reads, 'Precondition: every post-transition read on this attempt was reached and failed.' );
+		$this->assertSame( 503, $response->get_status() );
+		$this->assertSame( 'read_failed', $response->get_data()['code'] );
+
+		// A later, unimpeded read sees the truth: the transition landed for
+		// real even though nothing could confirm it a moment ago.
+		$this->assertSame( 'expired', QuizAttemptRepository::find( $attempt_id )->status );
 	}
 }

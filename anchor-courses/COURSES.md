@@ -182,6 +182,18 @@ one." for an enrolled learner locked by progression.
   issue (+ credit link), completion role, `anchor_courses_course_completed`.
   `anchor_courses_course_completed` fires exactly once per (user, course)
   lifetime.
+- **Eligibility is re-checked under the lock, not just before it** (Round 7,
+  PR #32 audit re-review, finding 1): the `eligible()` call before
+  `acquire_lock()` is only a short-circuit for the common case (not eligible,
+  nothing to wait for) - it is NOT what makes the transition safe. A caller
+  that WAITS for the completion lock can find the learner has since lost the
+  access role or had progress reset while it waited; under the default
+  `keep` loss policy the enrolment row itself stays active, so checking only
+  `is_active()` after the lock (the old code) would still let the flip
+  through. `complete()` re-runs the FULL `eligible()` check - `is_active()`
+  AND `is_enrolled()` (the role) AND the curriculum evaluation - against the
+  row it just re-read once the lock is held, immediately before the flip,
+  and returns `false` with nothing awarded if it no longer holds.
 - **Completion cycles** (audit finding c; Round 6, PR #32): `uncomplete()`
   takes the same lock, reopens the row (`in_progress`) and increments
   `metadata.completion_cycle`; credits, certificate, completion role and
@@ -196,6 +208,20 @@ one." for an enrolled learner locked by progression.
   any other effect. `uncomplete()` returns `false` (admin notice
   `uncomplete_failed`) when the row is not completed, the lock is busy or
   the write failed.
+- **The admin "Reset progress" action also bumps the cycle marker** (Round 7,
+  PR #32 audit re-review, finding 2): `EnrollmentManager`'s `reset` action
+  goes through `ProgressService::reset_course()` -> `EnrollmentService::
+  restart()`, never `CompletionService::uncomplete()`. Reopening a row that
+  was `completed` now bumps `metadata.completion_cycle` there too, the same
+  marker `uncomplete()` bumps. Without it, a row that predates effect
+  tracking (or one whose tracked state is otherwise empty) has NEITHER a
+  cycle marker NOR an effects map after a reset, so `run_effects()` cannot
+  tell the next completion apart from the FIRST one and re-fires
+  `anchor_courses_course_completed` for a learner who already completed the
+  course once. The cycle counter alone is enough to fix it: once
+  `run_effects()` knows this is a re-completion at all, its existing
+  "unknown outcome, never re-fired" handling for an empty effects map
+  (above) takes over - `hook` reads back `n/a`, not `pending`.
 - **Completion effects are tracked and repaired** (audit F02): the enrolment's
   `metadata.completion_effects` = `{ credit, certificate, completion_role, hook }`,
   each `pending` → `done` / `failed` / `n/a` (credit: nothing to award;
@@ -303,6 +329,25 @@ one." for an enrolled learner locked by progression.
   (`submitted -> in_progress`), logs `quiz_submit_read_failed` and returns
   `WP_Error('read_failed')` (REST 503, safe to retry) - the stored answers
   are untouched and the retry grades them.
+- **`enforce_timer()` propagates `read_failed` too, through every caller**
+  (Round 7, PR #32 audit re-review, finding 3): `submit()`'s own
+  `read_failed` guarantees above are about what `submit()` itself returns -
+  but `enforce_timer()` (the cron sweep's and a truthful-status read's entry
+  point, above `submit()`) used to convert ANY non-`QuizAttempt` result,
+  `read_failed` included, back into its own PRE-transition `$attempt`
+  argument. That argument can already be stale: the `expire` branch commits
+  the row as `expired` in the database before either of its own two
+  re-reads runs, so a caller seeing `read_failed` from `submit()` still
+  means the transition landed for real. `enforce_timer()` now takes one
+  more, authoritative re-read of its own on any non-`QuizAttempt` result;
+  only when that ALSO fails does it hand back the `WP_Error` - never the
+  stale object. Every caller follows through: the REST read route
+  (`QuizController::read()`) maps a propagated `read_failed` to 503 rather
+  than reporting `in_progress`, and `sweep_expired_attempts()` counts the
+  attempt as closed on a propagated `WP_Error` too (the transition it
+  performed is real regardless of whether anything could read the row back
+  afterwards) rather than silently under-counting because there is no
+  `$after->status` left to compare.
 - **A grade counts only once it is saved** (audit F03):
   `QuizAttemptRepository::update()` returns `null` when `$wpdb->update()`
   reports an error (a 0-row no-change update is still a success). `submit()`

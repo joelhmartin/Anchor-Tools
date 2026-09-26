@@ -812,6 +812,16 @@ final class CompletionService {
 				// later Reset (or this method run again) retries the
 				// clearing and lifts the marker.
 				Log::write( 'completion_reset_clear_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+				// The reopen write above is committed, so its status change is
+				// still announced (Codex, PR #34) - a later successful Reset
+				// starts from the reopened status and would never emit it.
+				if ( $from !== $updated->status ) {
+					try {
+						\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, $updated->status );
+					} catch ( \Throwable $e ) {
+						Log::write( 'completion_status_hook_failed', [ 'user' => $user_id, 'course' => $course_id, 'error' => $e->getMessage() ] );
+					}
+				}
 				return new \WP_Error( 'reset_failed', 'The progress clear failed.' );
 			}
 

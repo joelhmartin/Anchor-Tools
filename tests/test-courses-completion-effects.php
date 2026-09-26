@@ -712,4 +712,106 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ) );
 		$this->assertNotNull( CertificateRepository::find( $this->user, $this->course ) );
 	}
+
+	/* --- Round 7, PR #32 audit re-review --- */
+
+	/**
+	 * Finding 1: the pre-lock eligible() check in complete() is only a
+	 * short-circuit. A caller that WAITS for the completion lock must
+	 * re-check eligibility against the row it re-reads once it holds the
+	 * lock, not act on its pre-lock snapshot: is_active() alone is not
+	 * enough, because under the default `keep` loss policy a revoked
+	 * learner's row stays active.
+	 *
+	 * Simulated without real concurrency, the same way the class's other
+	 * "waited for the lock" tests are (see the docblock on the Round 6
+	 * findings below): a second connection holds the lock; the
+	 * `anchor_courses_completion_lock_timeout` filter runs immediately
+	 * before this caller's own GET_LOCK, so revoking the role and releasing
+	 * the other connection's lock from inside it reproduces exactly "became
+	 * ineligible while waiting, then the lock came free" in one thread.
+	 */
+	public function test_complete_revalidates_eligibility_after_waiting_for_the_lock() {
+		// Reach "eligible, not yet completed" without a fresh transition
+		// already having happened: hold the lock elsewhere FIRST (its
+		// timeout=0 filter makes any complete() fail fast), then finish the
+		// lesson - the progress write lands for real, but the automatic
+		// recalculate_course() -> complete() this triggers finds the lock
+		// busy and backs off, leaving the row un-flipped with a fresh
+		// transition still ahead of it.
+		$this->hold_lock_elsewhere();
+		$this->finish_lesson();
+		$this->assertFalse( $this->completion->is_complete( $this->user, $this->course ), 'Precondition: the automatic completion backed off, lock busy.' );
+		$this->assertTrue( $this->completion->evaluate( $this->user, $this->course ), 'Precondition: the curriculum is done.' );
+
+		// Swap the lock-busy filter for one that simulates "waited, then it
+		// came free, but eligibility changed in the meantime": while THIS
+		// caller waits for the lock, the learner's access role is revoked
+		// elsewhere - the row itself stays ACTIVE under the default `keep`
+		// loss policy - then the other connection's lock is released so
+		// this caller's own GET_LOCK (about to run) succeeds.
+		remove_all_filters( 'anchor_courses_completion_lock_timeout' );
+		add_filter(
+			'anchor_courses_completion_lock_timeout',
+			function ( $timeout ) {
+				Roles::revoke_access( $this->user, $this->course, 'test' );
+				$name = CompletionService::lock_name( $this->user, $this->course );
+				$this->other->query( "SELECT RELEASE_LOCK('" . $this->other->real_escape_string( $name ) . "')" );
+				return $timeout;
+			}
+		);
+
+		$result = $this->completion->complete( $this->user, $this->course );
+
+		$this->assertFalse( $result, 'The learner lost eligibility while this caller waited for the lock.' );
+		$this->assertFalse( $this->completion->is_complete( $this->user, $this->course ), 'The row must never flip for a learner no longer eligible.' );
+		$this->assertNull( CreditRepository::find( $this->user, $this->course ), 'Nothing awarded.' );
+		$this->assertSame( 0, $this->fired['course'], 'The completed hook never fires for an ineligible learner.' );
+
+		// Sanity check on the precondition this finding is about: the row
+		// alone is still active - is_active() by itself would have let this
+		// through, which is exactly the bug.
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$this->assertTrue( $enrollment->is_active() );
+	}
+
+	/**
+	 * Finding 2: a completed row that predates effect tracking entirely -
+	 * completed directly at the repository here, exactly as one from before
+	 * `completion_effects` existed would read - has NO cycle marker and NO
+	 * effects map when EnrollmentService::restart() (the admin "Reset
+	 * progress" action, via ProgressService::reset_course()) reopens it.
+	 * Without a bumped `completion_cycle`, CompletionService::run_effects()
+	 * cannot tell this apart from a first-ever completion, so the next
+	 * completion re-fires `anchor_courses_course_completed` for a learner
+	 * who already completed this course once.
+	 */
+	public function test_admin_reset_of_a_legacy_completed_row_preserves_the_cycle_marker() {
+		$recompleted = 0;
+		add_action( 'anchor_courses_course_recompleted', function () use ( &$recompleted ) { $recompleted++; } );
+
+		// A legacy row: completed directly at the repository, bypassing
+		// CompletionService entirely, so it carries no completion_effects
+		// and no completion_cycle - exactly what a row completed before
+		// either existed looks like.
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		EnrollmentRepository::complete( $enrollment->id, gmdate( 'Y-m-d H:i:s' ) );
+		$this->assertSame( [], $this->completion->effects( $this->user, $this->course ), 'Precondition: no tracked effect state at all.' );
+		$this->assertSame( 0, $this->fired['course'], 'Precondition: the hook never fired through this bypass.' );
+
+		// The admin "Reset progress" action - ProgressService::reset_course(),
+		// never CompletionService::uncomplete().
+		$this->progress->reset_course( $this->user, $this->course );
+		$this->assertFalse( $this->completion->is_complete( $this->user, $this->course ) );
+
+		$this->finish_lesson(); // Re-complete the course.
+
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ) );
+		$this->assertSame(
+			0,
+			$this->fired['course'],
+			'A legacy completion of unknown outcome must never be treated as the first - course_completed must not (re)fire.'
+		);
+		$this->assertSame( 1, $recompleted, 'The reopened row starts a new cycle: course_recompleted fires once.' );
+	}
 }

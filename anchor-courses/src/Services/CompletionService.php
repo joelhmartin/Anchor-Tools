@@ -90,6 +90,15 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * try/catch: a throwing listener marks that effect `failed` and is logged
  * (`completion_effect_failed`), never escapes after the row is committed,
  * and the other effects still run.
+ *
+ * Eligibility is re-checked under the lock (Round 7, PR #32 finding 1). The
+ * pre-lock `eligible()` call above is a short-circuit for the common case
+ * only - a caller that WAITS for the lock can find the learner has since
+ * lost the access role (kept active under the default `keep` loss policy;
+ * `is_active()` alone would miss this) or had progress reset. `complete()`
+ * re-runs the full `eligible()` check against the row it just re-read under
+ * the lock, immediately before the flip, and refuses the transition if it no
+ * longer holds.
  */
 final class CompletionService {
 
@@ -225,8 +234,16 @@ final class CompletionService {
 				}
 				return false;
 			}
-			if ( ! $enrollment->is_active() ) {
-				return false; // Became inactive between the pre-check and the lock.
+			if ( ! $this->eligible( $enrollment ) ) {
+				// Round 7 finding 1: the pre-lock eligible() above is only a
+				// short-circuit - this caller may have WAITED for the lock, and
+				// the learner can lose the access role (kept active under the
+				// default `keep` loss policy - is_active() alone would miss
+				// this) or have progress reset while it waited. The full check
+				// is re-run now, against the row just re-read under the lock,
+				// so a caller that becomes ineligible in that window is
+				// refused here rather than flipping the row on stale grounds.
+				return false;
 			}
 
 			$from = $enrollment->status;

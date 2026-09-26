@@ -431,7 +431,17 @@ one." for an enrolled learner locked by progression.
   absent from the course, or (sequential mode only) has a required item
   between it and its lesson (`ProgressService::quiz_link_problems()`, problems
   `quiz_absent` / `item_between`), saves anyway and redirects with the
-  `curriculum_quiz_link` warning notice.
+  `curriculum_quiz_link` warning notice. **Re-checked on lesson save too**
+  (Round 8, Codex, PR #32 finding 3): `quiz_link_problems()` used to run only
+  when a COURSE's curriculum was saved, so changing a lesson's
+  `completion_mode` to `quiz_pass` or repointing its `quiz_id` could create
+  the same deadlock in a course whose curriculum is never re-saved, with no
+  warning anywhere. `Admin\LessonEditor::save()` now runs the same check for
+  every PUBLISHED course the lesson actually belongs to
+  (`Curriculum::courses_for_item()`) and redirects with `lesson_quiz_link`,
+  naming the affected course(s) - the lesson screen has no course of its own
+  to name it from, so the title(s) ride in `Notices::COURSES_QUERY_ARG` and
+  are interpolated into the registered message's `%s` placeholder.
 - **Attempts belong to a course** (audit F05): a quiz may be shared by several
   courses, and every attempt lifecycle read - `open_attempt()`,
   `count_for_quiz()`, `last_for_quiz()`, `best_for_quiz()` and the service's

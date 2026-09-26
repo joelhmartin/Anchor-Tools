@@ -13,6 +13,7 @@
  */
 
 use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Admin\LessonEditor;
 use Anchor\Courses\Admin\Notices;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\Questions;
@@ -251,6 +252,76 @@ class Test_Courses_Lesson_Quiz_Dependency extends Anchor_Courses_TestCase {
 		( new CourseEditor() )->save_curriculum( $this->course );
 
 		$location = apply_filters( 'redirect_post_location', 'https://example.org/wp-admin/post.php?post=' . $this->course, $this->course );
+		$this->assertStringNotContainsString( Notices::QUERY_ARG, $location );
+	}
+
+	/* --- lesson-save warning (Round 8, Codex, PR #32 finding 3) ------------- */
+
+	private function save_lesson( int $lesson_id, array $fields ): void {
+		$_POST = [
+			LessonEditor::NONCE => wp_create_nonce( LessonEditor::NONCE ),
+			'anchor_lesson'     => $fields,
+		];
+		( new LessonEditor() )->save( $lesson_id );
+		$_POST = [];
+	}
+
+	/**
+	 * quiz_link_problems() used to run only on curriculum save
+	 * (CourseEditor::save_curriculum()). A course saved clean as
+	 * `[L(manual), X, Q]` never has its curriculum re-saved, so flipping L to
+	 * `quiz_pass` + this quiz here must still warn - naming the course, since
+	 * the lesson screen has no course of its own in view.
+	 */
+	public function test_saving_a_lesson_that_newly_deadlocks_its_course_warns_naming_the_course() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$quiz    = $this->quiz();
+		$lesson  = $this->make_lesson( [ 'completion_mode' => 'manual' ] );
+		$between = $this->make_lesson();
+		$this->curriculum( [
+			[ 'type' => 'lesson', 'id' => $lesson ],
+			[ 'type' => 'lesson', 'id' => $between ],
+			[ 'type' => 'quiz', 'id' => $quiz ],
+		] );
+		$this->assertSame( [], ProgressService::quiz_link_problems( $this->course ), 'Precondition: [L(manual), X, Q] is clean.' );
+
+		$this->save_lesson( $lesson, [ 'completion_mode' => 'quiz_pass', 'quiz_id' => (string) $quiz ] );
+
+		$this->assertNotSame( [], ProgressService::quiz_link_problems( $this->course ), 'The lesson save itself now deadlocks the course.' );
+
+		$location = apply_filters( 'redirect_post_location', 'https://example.org/wp-admin/post.php?post=' . $lesson, $lesson );
+		$this->assertStringContainsString( Notices::QUERY_ARG . '=lesson_quiz_link', $location );
+
+		$query = [];
+		\parse_str( (string) \wp_parse_url( $location, PHP_URL_QUERY ), $query );
+		$this->assertSame( 'Test Course', $query[ Notices::COURSES_QUERY_ARG ] ?? null, 'The affected course is named.' );
+	}
+
+	/** A lesson save that keeps every course sound must add no warning at all. */
+	public function test_saving_a_lesson_with_no_dependency_problem_adds_no_warning() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$quiz   = $this->quiz();
+		$lesson = $this->make_lesson( [ 'completion_mode' => 'manual' ] );
+		$this->curriculum( [
+			[ 'type' => 'lesson', 'id' => $lesson ],
+			[ 'type' => 'quiz', 'id' => $quiz ],
+		] );
+
+		$this->save_lesson( $lesson, [ 'completion_mode' => 'quiz_pass', 'quiz_id' => (string) $quiz ] );
+
+		$this->assertSame( [], ProgressService::quiz_link_problems( $this->course ) );
+		$location = apply_filters( 'redirect_post_location', 'https://example.org/wp-admin/post.php?post=' . $lesson, $lesson );
+		$this->assertStringNotContainsString( Notices::QUERY_ARG, $location );
+	}
+
+	/** A lesson that belongs to no course at all must not error. */
+	public function test_saving_an_orphan_lesson_adds_no_warning() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson( [ 'completion_mode' => 'manual' ] );
+
+		$this->save_lesson( $lesson, [ 'completion_mode' => 'view' ] );
+
+		$location = apply_filters( 'redirect_post_location', 'https://example.org/wp-admin/post.php?post=' . $lesson, $lesson );
 		$this->assertStringNotContainsString( Notices::QUERY_ARG, $location );
 	}
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Courses\Admin;
 
 use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Content\LessonPostType;
 use Anchor\Courses\Support\Capabilities;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -33,6 +34,16 @@ final class Notices {
 	/** The query arg every redirect carries its notice code in. */
 	public const QUERY_ARG = 'anchor_courses_admin_notice';
 
+	/**
+	 * The query arg a redirect may carry alongside QUERY_ARG when the
+	 * registered message has a `%s` placeholder (Round 8, PR #32 finding 3:
+	 * `Admin\LessonEditor::save()`'s `lesson_quiz_link` names which course(s)
+	 * are affected - a lesson can belong to more than one, and the redirect
+	 * happens on the LESSON screen, which has no course of its own in view).
+	 * Every other registered message has no placeholder and ignores this arg.
+	 */
+	public const COURSES_QUERY_ARG = 'anchor_courses_admin_notice_courses';
+
 	public const TYPE_SUCCESS = 'success';
 	public const TYPE_ERROR   = 'error';
 
@@ -45,7 +56,7 @@ final class Notices {
 	 *
 	 * @var string[]
 	 */
-	private const ALLOWED_SCREENS = [ CoursePostType::CPT, 'profile', 'user-edit' ];
+	private const ALLOWED_SCREENS = [ CoursePostType::CPT, LessonPostType::CPT, 'profile', 'user-edit' ];
 
 	/** @var array<string,array{type:string,message:string}> */
 	private static array $registry = [];
@@ -134,11 +145,23 @@ final class Notices {
 		}
 
 		$notice = self::$registry[ $code ];
+		$message = $notice['message'];
+
+		// A registered message may carry a `%s` placeholder for the ONE
+		// piece of per-request context this static registry cannot hold
+		// (Round 8, PR #32 finding 3): which course(s) a lesson-save warning
+		// applies to. Every other message has no placeholder and this is a
+		// no-op for it.
+		if ( false !== \strpos( $message, '%s' ) ) {
+			// phpcs:ignore WordPress.Security.NonceVerification -- a read, not a state change; see the QUERY_ARG check above.
+			$courses = \sanitize_text_field( \wp_unslash( (string) ( $_GET[ self::COURSES_QUERY_ARG ] ?? '' ) ) );
+			$message = \sprintf( $message, '' !== $courses ? $courses : \__( 'a course', 'anchor-schema' ) );
+		}
 
 		\printf(
 			'<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
 			\esc_attr( $notice['type'] ),
-			\esc_html( $notice['message'] )
+			\esc_html( $message )
 		);
 	}
 
@@ -175,6 +198,15 @@ final class Notices {
 		// Admin\CourseEditor::save_curriculum() (audit F04) - a warning, the
 		// curriculum itself was saved.
 		self::register( 'curriculum_quiz_link', self::TYPE_ERROR, \__( 'Curriculum saved, but a required lesson set to "Complete when its quiz passes" has that quiz missing from this course, or a required item sits between the lesson and its quiz, so neither can be finished. Move the quiz so nothing required sits between it and its lesson, or add it to the course.', 'anchor-schema' ) );
+
+		// Admin\LessonEditor::save() (Round 8, PR #32 finding 3) - the same
+		// quiz_link_problems() check CourseEditor::save_curriculum() runs,
+		// re-run for every course this lesson belongs to, since changing a
+		// lesson's completion_mode/quiz_id here can create the same deadlock
+		// in a course whose curriculum is never re-saved. `%s` is the
+		// affected course title(s), carried in COURSES_QUERY_ARG - the
+		// lesson screen has no course of its own to name it from.
+		self::register( 'lesson_quiz_link', self::TYPE_ERROR, \__( 'Lesson saved, but this creates the same quiz-link problem the Curriculum builder warns about, in: %s. Move the quiz so nothing required sits between it and this lesson, or add it to the course.', 'anchor-schema' ) );
 		self::register( 'forbidden', self::TYPE_ERROR, \__( 'You are not allowed to do that.', 'anchor-schema' ) );
 		self::register( 'error', self::TYPE_ERROR, \__( 'That action could not be completed.', 'anchor-schema' ) );
 

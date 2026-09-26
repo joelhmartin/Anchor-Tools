@@ -3,8 +3,10 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Admin;
 
+use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\LessonPostType;
 use Anchor\Courses\Content\QuizPostType;
+use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Capabilities;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -205,5 +207,45 @@ final class LessonEditor {
 		foreach ( $values as $key => $value ) {
 			\update_post_meta( $post_id, LessonPostType::meta_key( $key ), $value );
 		}
+
+		$this->warn_courses_with_quiz_link_problems( $post_id );
+	}
+
+	/**
+	 * Audit F04 used to check for the `[lesson, X, quiz]` deadlock only when
+	 * a COURSE's curriculum was saved (`CourseEditor::save_curriculum()`).
+	 * Flipping a lesson's `completion_mode` to `quiz_pass`, or repointing its
+	 * `quiz_id`, here can create that same deadlock without ever re-saving
+	 * any course's curriculum - silently, with no warning anywhere (Round 8,
+	 * Codex, PR #32 finding 3). Re-checked here for every PUBLISHED course
+	 * this lesson actually belongs to (`Curriculum::courses_for_item()`), and
+	 * reported with the SAME check CourseEditor uses
+	 * (`ProgressService::quiz_link_problems()`) and the same notice family,
+	 * naming which course(s) - never blocking the save.
+	 */
+	private function warn_courses_with_quiz_link_problems( int $lesson_id ): void {
+		$affected = [];
+		foreach ( Curriculum::courses_for_item( $lesson_id, 'lesson' ) as $course_id ) {
+			if ( [] !== ProgressService::quiz_link_problems( $course_id ) ) {
+				$affected[] = (string) \get_the_title( $course_id );
+			}
+		}
+		if ( [] === $affected ) {
+			return;
+		}
+
+		$courses = \implode( ', ', $affected );
+		\add_filter(
+			'redirect_post_location',
+			static function ( $location, $redirect_post_id = 0 ) use ( $lesson_id, $courses ) {
+				if ( (int) $redirect_post_id !== $lesson_id ) {
+					return $location;
+				}
+				$location = \add_query_arg( Notices::QUERY_ARG, 'lesson_quiz_link', (string) $location );
+				return \add_query_arg( Notices::COURSES_QUERY_ARG, $courses, $location );
+			},
+			10,
+			2
+		);
 	}
 }

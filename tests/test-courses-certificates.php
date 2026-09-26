@@ -133,6 +133,31 @@ class Test_Courses_Certificates extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( 'Somebody Else', $html );
 	}
 
+	/** The course's template slug, frozen at issue, picks certificate-{slug}.php from the theme; a missing file falls back. */
+	public function test_the_certificate_template_slug_selects_a_theme_template_or_falls_back() {
+		update_post_meta( $this->course, '_anchor_course_certificate_template', 'gold' );
+		$certificate = $this->certificates->issue( $this->user, $this->course );
+		$this->assertSame( 'gold', $certificate->metadata['template'] ?? null, 'the slug is frozen into the certificate at issue' );
+
+		// No certificate-gold.php anywhere yet: the default renders (a typo never blanks a certificate).
+		$this->assertSame( 'certificate', $this->certificates->template_name( $certificate ) );
+		$this->assertStringContainsString( 'Ada Lovelace', $this->certificates->render( $certificate ) );
+
+		$theme_dir = get_stylesheet_directory() . '/anchor-courses';
+		if ( ! is_dir( $theme_dir ) ) {
+			mkdir( $theme_dir, 0755, true ); // plain mkdir: see test-courses-shortcodes.php for why not wp_mkdir_p()
+		}
+		$file = $theme_dir . '/certificate-gold.php';
+		file_put_contents( $file, '<p class="gold">GOLD <?php echo esc_html( $data[\'learner_name\'] ); ?></p>' );
+		try {
+			$this->assertSame( 'certificate-gold', $this->certificates->template_name( $certificate ) );
+			$html = $this->certificates->render( $certificate );
+			$this->assertStringContainsString( 'GOLD Ada Lovelace', $html );
+		} finally {
+			unlink( $file );
+		}
+	}
+
 	/** A row issued before snapshots existed still renders, from live values. */
 	public function test_a_pre_snapshot_certificate_falls_back_to_live_values() {
 		$certificate = $this->certificates->issue( $this->user, $this->course );

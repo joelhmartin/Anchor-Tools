@@ -324,4 +324,56 @@ class Test_Courses_Lesson_Quiz_Dependency extends Anchor_Courses_TestCase {
 		$location = apply_filters( 'redirect_post_location', 'https://example.org/wp-admin/post.php?post=' . $lesson, $lesson );
 		$this->assertStringNotContainsString( Notices::QUERY_ARG, $location );
 	}
+
+	/* --- Round 9, PR #32 finding 3: the lesson-save warning is scoped to
+	   the SAVED lesson, not to any problem anywhere in the course ---------- */
+
+	/**
+	 * `quiz_link_problems()` returns problems for every lesson in the
+	 * course, not just the one being saved. A course with an existing,
+	 * unrelated problem on lesson A must not warn when a perfectly sound
+	 * lesson B in the same course is saved - the warning names only a
+	 * problem THIS save is responsible for.
+	 */
+	public function test_saving_a_sound_lesson_does_not_warn_about_an_existing_problem_on_another_lesson() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$missing  = $this->quiz(); // Never added to the curriculum below.
+		$lesson_a = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $missing ] );
+		$lesson_b = $this->make_lesson( [ 'completion_mode' => 'manual' ] );
+		$this->curriculum( [
+			[ 'type' => 'lesson', 'id' => $lesson_a ],
+			[ 'type' => 'lesson', 'id' => $lesson_b ],
+		] );
+		$this->assertNotSame(
+			[],
+			ProgressService::quiz_link_problems( $this->course ),
+			'Precondition: lesson A already has a quiz_absent problem.'
+		);
+
+		$this->save_lesson( $lesson_b, [ 'completion_mode' => 'manual' ] );
+
+		$location = apply_filters( 'redirect_post_location', 'https://example.org/wp-admin/post.php?post=' . $lesson_b, $lesson_b );
+		$this->assertStringNotContainsString(
+			Notices::QUERY_ARG,
+			$location,
+			'Saving sound lesson B must not warn about a problem it did not create, on lesson A.'
+		);
+	}
+
+	/** The same course: saving the lesson that actually OWNS the problem still warns. */
+	public function test_saving_the_lesson_that_owns_the_problem_still_warns() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$missing  = $this->quiz();
+		$lesson_a = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $missing ] );
+		$lesson_b = $this->make_lesson( [ 'completion_mode' => 'manual' ] );
+		$this->curriculum( [
+			[ 'type' => 'lesson', 'id' => $lesson_a ],
+			[ 'type' => 'lesson', 'id' => $lesson_b ],
+		] );
+
+		$this->save_lesson( $lesson_a, [ 'completion_mode' => 'quiz_pass', 'quiz_id' => (string) $missing ] );
+
+		$location = apply_filters( 'redirect_post_location', 'https://example.org/wp-admin/post.php?post=' . $lesson_a, $lesson_a );
+		$this->assertStringContainsString( Notices::QUERY_ARG . '=lesson_quiz_link', $location );
+	}
 }

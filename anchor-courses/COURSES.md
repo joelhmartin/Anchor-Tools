@@ -458,7 +458,13 @@ one." for an enrolled learner locked by progression.
   (`Curriculum::courses_for_item()`) and redirects with `lesson_quiz_link`,
   naming the affected course(s) - the lesson screen has no course of its own
   to name it from, so the title(s) ride in `Notices::COURSES_QUERY_ARG` and
-  are interpolated into the registered message's `%s` placeholder.
+  are interpolated into the registered message's `%s` placeholder. **Scoped
+  to the SAVED lesson, never any problem anywhere in the course** (Round 9,
+  PR #32 finding 3): `quiz_link_problems( $course_id )` returns every problem
+  in that course, not only ones involving the lesson just saved, so a course
+  only counts as affected when one of its returned problems' `lesson_id`
+  matches the lesson being saved - otherwise saving a perfectly sound lesson
+  B would warn about a problem an unrelated lesson A already had.
 - **Attempts belong to a course** (audit F05): a quiz may be shared by several
   courses, and every attempt lifecycle read - `open_attempt()`,
   `count_for_quiz()`, `last_for_quiz()`, `best_for_quiz()` and the service's

@@ -222,12 +222,23 @@ final class LessonEditor {
 	 * reported with the SAME check CourseEditor uses
 	 * (`ProgressService::quiz_link_problems()`) and the same notice family,
 	 * naming which course(s) - never blocking the save.
+	 *
+	 * `quiz_link_problems()` returns every problem in the course, not only
+	 * ones involving THIS lesson - a course can carry an unrelated problem on
+	 * some other lesson entirely. A course only counts as "affected" here
+	 * when one of its returned problems names THIS lesson
+	 * (`lesson_id === $lesson_id`) - otherwise saving a perfectly sound
+	 * lesson B would warn about a problem lesson A created, that this save
+	 * had nothing to do with (Round 9, PR #32 finding 3).
 	 */
 	private function warn_courses_with_quiz_link_problems( int $lesson_id ): void {
 		$affected = [];
 		foreach ( Curriculum::courses_for_item( $lesson_id, 'lesson' ) as $course_id ) {
-			if ( [] !== ProgressService::quiz_link_problems( $course_id ) ) {
-				$affected[] = (string) \get_the_title( $course_id );
+			foreach ( ProgressService::quiz_link_problems( $course_id ) as $problem ) {
+				if ( $lesson_id === (int) ( $problem['lesson_id'] ?? 0 ) ) {
+					$affected[] = (string) \get_the_title( $course_id );
+					break;
+				}
 			}
 		}
 		if ( [] === $affected ) {

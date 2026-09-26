@@ -153,9 +153,21 @@ final class ProgressRepository {
 		);
 	}
 
-	public static function delete_for_course( int $user_id, int $course_id ): int {
+	/**
+	 * @return int|false Rows deleted, or `false` when the database reported a
+	 *                    real error (Round 10, CodeRabbit Major, PR #32
+	 *                    finding 1) - mirrors EnrollmentRepository::update()'s
+	 *                    null-on-error convention: `$wpdb->delete()` returning
+	 *                    `false` is a failed write, and casting it to `(int)`
+	 *                    (the old shape here) would make it indistinguishable
+	 *                    from a real "nothing to delete" outcome. Zero rows
+	 *                    deleted - the learner had no progress for this course -
+	 *                    is a genuine success, never a failure.
+	 */
+	public static function delete_for_course( int $user_id, int $course_id ): int|false {
 		global $wpdb;
-		return (int) $wpdb->delete( self::table(), [ 'user_id' => $user_id, 'course_id' => $course_id ], [ '%d', '%d' ] );
+		$result = $wpdb->delete( self::table(), [ 'user_id' => $user_id, 'course_id' => $course_id ], [ '%d', '%d' ] );
+		return false === $result ? false : (int) $result;
 	}
 
 	/** Latest updated_at for this learner in this course, or ''. */

@@ -300,19 +300,28 @@ final class QuizAttemptRepository {
 	 * final review I6). `abandoned` is not in COUNTED_STATUSES, so the
 	 * max_attempts allowance is fully restored; the rows stay as history.
 	 *
-	 * @return int Attempts voided.
+	 * @return int|false Attempts voided, or `false` when the database
+	 *                    reported a real error (Round 10, CodeRabbit Major,
+	 *                    PR #32 finding 1) - mirrors `update()`'s F03
+	 *                    null-on-error convention: `$wpdb->query()` returning
+	 *                    `false` is a failed write, and casting it to `(int)`
+	 *                    (the old shape here) would make it indistinguishable
+	 *                    from a real "nothing to void" outcome. Zero attempts
+	 *                    voided - the learner had none counted in this course -
+	 *                    is a genuine success, never a failure.
 	 */
-	public static function abandon_for_course( int $user_id, int $course_id ): int {
+	public static function abandon_for_course( int $user_id, int $course_id ): int|false {
 		global $wpdb;
 
 		$placeholders = \implode( ', ', \array_fill( 0, \count( self::COUNTED_STATUSES ), '%s' ) );
 
-		return (int) $wpdb->query(
+		$result = $wpdb->query(
 			$wpdb->prepare(
 				'UPDATE ' . self::table() . " SET status = 'abandoned', updated_at = %s WHERE user_id = %d AND course_id = %d AND status IN ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL
 				\array_merge( [ Clock::now(), $user_id, $course_id ], self::COUNTED_STATUSES )
 			)
 		);
+		return false === $result ? false : (int) $result;
 	}
 
 	public static function last_for_quiz( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {

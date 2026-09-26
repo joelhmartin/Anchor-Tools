@@ -310,14 +310,22 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		);
 		add_filter( 'anchor_courses_completion_lock_timeout', static fn () => 0 );
 
-		wp_set_current_user( $this->admin );
-		$redirect = $this->post_enrollment_action(
-			[ 'anchor_courses_action' => 'reset', 'user_id' => (string) $this->learner ]
-		);
-
-		remove_all_filters( 'anchor_courses_completion_lock_timeout' );
-		$other->query( "SELECT RELEASE_LOCK('" . $other->real_escape_string( $name ) . "')" );
-		$other->close();
+		// CodeRabbit Minor, PR #32 finding 3: the lock-timeout filter, the
+		// "other" connection's MySQL lock and the connection itself are
+		// released in `finally` - not only after a successful redirect - so a
+		// failed assertion or an exception from the action under test can
+		// never leave any of the three lingering for a later test in this
+		// same process. The class teardown does not know about any of them.
+		try {
+			wp_set_current_user( $this->admin );
+			$redirect = $this->post_enrollment_action(
+				[ 'anchor_courses_action' => 'reset', 'user_id' => (string) $this->learner ]
+			);
+		} finally {
+			remove_all_filters( 'anchor_courses_completion_lock_timeout' );
+			$other->query( "SELECT RELEASE_LOCK('" . $other->real_escape_string( $name ) . "')" );
+			$other->close();
+		}
 
 		$this->assertStringContainsString( 'anchor_courses_admin_notice=reset_busy', $redirect );
 	}
@@ -342,13 +350,19 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		};
 		add_filter( 'query', $breaker );
 
-		wp_set_current_user( $this->admin );
-		$redirect = $this->post_enrollment_action(
-			[ 'anchor_courses_action' => 'reset', 'user_id' => (string) $this->learner ]
-		);
-
-		remove_filter( 'query', $breaker );
-		$wpdb->suppress_errors( false );
+		// CodeRabbit Minor, PR #32 finding 3: same finally-based cleanup as
+		// the lock-busy test above - the query breaker and $wpdb's error
+		// suppression are restored even if the action under test (or a later
+		// assertion) fails, never left to leak into a later test.
+		try {
+			wp_set_current_user( $this->admin );
+			$redirect = $this->post_enrollment_action(
+				[ 'anchor_courses_action' => 'reset', 'user_id' => (string) $this->learner ]
+			);
+		} finally {
+			remove_filter( 'query', $breaker );
+			$wpdb->suppress_errors( false );
+		}
 
 		$this->assertStringContainsString( 'anchor_courses_admin_notice=reset_failed', $redirect );
 	}

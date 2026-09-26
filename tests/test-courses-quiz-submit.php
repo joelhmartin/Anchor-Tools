@@ -291,6 +291,79 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		$this->assertSame( 'expired', $reread->status );
 	}
 
+	/**
+	 * Round 10, Codex re-review, PR #32 finding: when BOTH post-transition
+	 * reads fail (the confirming read and its one retry, above), the old
+	 * shape returned `read_failed` before recording the failed quiz progress,
+	 * firing `anchor_courses_quiz_expired`, or recalculating the course - and
+	 * a retry cannot repair the omission: submit_tracked()'s own "already
+	 * closed" short-circuit refuses any later call on this attempt (it is no
+	 * longer `in_progress`), while the sweep already counted this call as
+	 * closed via `transitioned`. The in_progress -> expired transition is the
+	 * truth even though nothing could read it back just now, so these
+	 * effects now run against a SYNTHESISED attempt built from the
+	 * pre-transition object with its status overridden to `expired` - no
+	 * `in_progress` object ever reaches the hook.
+	 */
+	public function test_both_post_transition_reads_failing_still_runs_the_expiry_effects_once() {
+		global $wpdb;
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+		$this->quizzes->save_answer( $attempt->id, $this->q1, 'a2' );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		$seen = [];
+		add_action(
+			'anchor_courses_quiz_expired',
+			static function ( $expired ) use ( &$seen ) {
+				$seen[] = $expired->status;
+			}
+		);
+
+		// #1 is submit_tracked()'s own top read (must succeed - it is what
+		// finds the deadline passed at all); #2 is
+		// QuizAttemptRepository::update()'s own re-read once the detail write
+		// succeeds. #3 (the confirming read) AND #4 (its one retry) - BOTH
+		// post-transition reads - are broken here, so neither ever confirms
+		// the row.
+		$wpdb->suppress_errors( true );
+		$hits  = 0;
+		$break = static function ( $query ) use ( &$hits ) {
+			if ( \preg_match( '/^SELECT \* FROM \S*anchor_courses_quiz_attempts WHERE id = \d+$/', (string) $query ) ) {
+				$hits++;
+				if ( $hits >= 3 ) {
+					return 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor';
+				}
+			}
+			return $query;
+		};
+		add_filter( 'query', $break );
+
+		try {
+			// Driven through the sweep, same as the tests above, so the count
+			// itself is proven, not just the return value.
+			$closed = $this->quizzes->sweep_expired_attempts();
+		} finally {
+			remove_filter( 'query', $break );
+			$wpdb->suppress_errors( false );
+		}
+
+		$this->assertGreaterThanOrEqual( 2, $hits, 'Precondition: both post-transition reads were reached.' );
+		$this->assertSame( 1, $closed, 'The transition landed for real, so the sweep still counts it closed.' );
+		$this->assertSame( [ 'expired' ], $seen, 'The expiry hook still fires once, with the real status - never in_progress.' );
+
+		$progress_row = \Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $this->quiz, 'quiz' );
+		$this->assertNotNull( $progress_row, 'The failed quiz progress is still recorded even though the row could not be read back.' );
+		$this->assertSame( 'failed', $progress_row->status );
+
+		$reread = QuizAttemptRepository::find( $attempt->id );
+		$this->assertSame( 'expired', $reread->status, 'A later read shows the real, confirmed status.' );
+	}
+
 	public function test_an_in_window_submission_records_its_duration() {
 		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600 ] );
 		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );

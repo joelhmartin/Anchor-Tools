@@ -394,23 +394,35 @@ final class ProgressService {
 	 * racing into that gap could complete the reopened row against the
 	 * still-present OLD progress moments before this deleted it). Both
 	 * halves run inside `CompletionService::reopen_for_reset()` - see its
-	 * docblock for the race this closes. A busy lock, or a failed write,
-	 * leaves the WHOLE reset un-run, never a half-reset with progress erased
-	 * but the enrolment row untouched (or vice versa). Credits, certificates
-	 * and the completion role are records of something that happened and are
-	 * left alone.
+	 * docblock for the race this closes. A busy lock, or a failed reopen
+	 * write, leaves the WHOLE reset un-run, never a half-reset with progress
+	 * erased but the enrolment row untouched (or vice versa). A failed CLEAR
+	 * (this closure's own two writes) is different - the reopen already
+	 * committed by then - and is left RECOVERABLE rather than silently
+	 * reported as success (Round 10, CodeRabbit Major, PR #32 finding 1): see
+	 * `reopen_for_reset()`'s docblock for the `RESET_PENDING_META` marker
+	 * that blocks `complete()` until a later Reset heals it. This closure
+	 * reports its own writes' success back to `reopen_for_reset()` - `false`
+	 * only for a genuine database error in either write
+	 * (`ProgressRepository::delete_for_course()` /
+	 * `QuizAttemptRepository::abandon_for_course()` both return `int|false`
+	 * now, never masking an error as "zero rows"), never for a learner who
+	 * simply had nothing to clear. Credits, certificates and the completion
+	 * role are records of something that happened and are left alone.
 	 *
 	 * @return true|\WP_Error True when the reset ran (including when there
 	 *                        was no enrolment to reset at all).
 	 *                        `WP_Error('reset_busy')` when the completion
 	 *                        lock was held elsewhere - nothing touched, retry
 	 *                        shortly. `WP_Error('reset_failed')` when the
-	 *                        enrolment write itself failed at the database -
-	 *                        also nothing touched, but retrying immediately
-	 *                        will not help (Round 9, PR #32 finding 2:
-	 *                        `Admin\EnrollmentManager`'s `reset` action
-	 *                        reports these as the two distinct notices
-	 *                        `reset_busy` / `reset_failed`, never conflated).
+	 *                        enrolment write OR the clear itself failed at the
+	 *                        database - retrying immediately will not help,
+	 *                        but the row is left recoverable for a later
+	 *                        retry (Round 9 finding 2 for the write, Round 10
+	 *                        finding 1 for the clear; `Admin\EnrollmentManager`'s
+	 *                        `reset` action reports these as the two distinct
+	 *                        notices `reset_busy` / `reset_failed`, never
+	 *                        conflated).
 	 */
 	public function reset_course( int $user_id, int $course_id ): bool|\WP_Error {
 		// Static (see CompletionService::reopen_for_reset()'s own docblock):
@@ -421,9 +433,14 @@ final class ProgressService {
 			$user_id,
 			$course_id,
 			[ 'status' => 'enrolled', 'started_at' => null, 'completed_at' => null ],
-			static function () use ( $user_id, $course_id ): void {
-				ProgressRepository::delete_for_course( $user_id, $course_id );
-				QuizAttemptRepository::abandon_for_course( $user_id, $course_id );
+			static function () use ( $user_id, $course_id ): bool {
+				// Round 10, CodeRabbit Major, PR #32 finding 1: report each
+				// write's own success back to reopen_for_reset() - `false`
+				// only for a genuine database error (both repositories now
+				// distinguish that from "zero rows", their real success).
+				$progress = ProgressRepository::delete_for_course( $user_id, $course_id );
+				$attempts = QuizAttemptRepository::abandon_for_course( $user_id, $course_id );
+				return false !== $progress && false !== $attempts;
 			}
 		);
 	}

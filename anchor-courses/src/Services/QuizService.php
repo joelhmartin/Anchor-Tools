@@ -582,30 +582,51 @@ final class QuizService {
 			if ( ! $expired instanceof QuizAttempt ) {
 				// Both reads failed: there is no safe object to publish as
 				// `expired` (and definitely not the stale `in_progress`
-				// one). Report it as a retryable server error rather than
-				// letting the wrong status escape.
+				// one). The transition above landed for real (Codex, Round
+				// 8) - and a retry cannot repair a skipped effect here
+				// (Round 10, Codex re-review, PR #32 finding): the "already
+				// closed" short-circuit at the top of this method refuses
+				// any later call on this attempt (it is no longer
+				// `in_progress`), while the sweep already counts this call
+				// as `transitioned` below. So the effects a confirmed expiry
+				// always runs - record the failed quiz progress, fire the
+				// hook, recalculate the course - still run here, against a
+				// SYNTHESISED attempt built from the pre-transition object
+				// with its status overridden to `expired`: the transition is
+				// the truth, even though nothing could confirm it just now.
+				// No `in_progress` object ever reaches the hook.
 				Log::write( 'quiz_expire_read_failed', [ 'attempt' => $attempt_id ] );
+				// Prefer the object the detail write returned when it already
+				// carries the expired state (Codex, PR #34): its submitted_at
+				// and duration agree with the stored row. Synthesise only when
+				// nothing authoritative is available.
+				$expired = ( isset( $saved ) && $saved instanceof QuizAttempt && 'expired' === $saved->status ) ? $saved : new QuizAttempt(
+					$attempt->id,
+					$attempt->user_id,
+					$attempt->course_id,
+					$attempt->quiz_id,
+					$attempt->attempt_number,
+					'expired',
+					$attempt->score,
+					$attempt->points_earned,
+					$attempt->points_possible,
+					$attempt->passed,
+					$attempt->started_at,
+					$attempt->submitted_at,
+					$attempt->duration_seconds,
+					$attempt->answers,
+					$attempt->grading_data,
+					$attempt->metadata,
+					$attempt->created_at,
+					$attempt->updated_at,
+					$attempt->revision
+				);
+				$this->fire_expiry_effects( $expired, $attempt->user_id, $attempt->quiz_id, $attempt->course_id );
 				// The transition above landed for real (Codex, Round 8): this
 				// still counts, even though nothing could read it back.
 				return [ 'result' => new \WP_Error( 'read_failed', \__( 'The attempt expired, but its record could not be read back. Try again.', 'anchor-schema' ) ), 'transitioned' => true ];
 			}
-			$this->progress->record_item( $attempt->user_id, $attempt->course_id, $attempt->quiz_id, 'quiz', 'failed' );
-
-			Log::write( 'quiz_expired', [ 'attempt' => $attempt_id ] );
-
-			/**
-			 * Fires once, when a timed attempt is closed by the `expire`
-			 * timer policy (nothing graded). A graded attempt fires
-			 * anchor_courses_quiz_submitted + _passed/_failed instead.
-			 *
-			 * @param QuizAttempt $expired
-			 * @param int         $user_id
-			 * @param int         $quiz_id
-			 * @param int         $course_id
-			 */
-			\do_action( 'anchor_courses_quiz_expired', $expired, $attempt->user_id, $attempt->quiz_id, $attempt->course_id );
-
-			$this->progress->recalculate_course( $attempt->user_id, $attempt->course_id );
+			$this->fire_expiry_effects( $expired, $attempt->user_id, $attempt->quiz_id, $attempt->course_id );
 			return [ 'result' => $expired, 'transitioned' => true ];
 		}
 
@@ -746,6 +767,39 @@ final class QuizService {
 		$this->progress->recalculate_course( $saved->user_id, $saved->course_id );
 
 		return [ 'result' => $saved, 'transitioned' => true ];
+	}
+
+	/**
+	 * Run a confirmed `expire` transition's effects: record the failed quiz
+	 * progress, log and fire `anchor_courses_quiz_expired`, then recalculate
+	 * the course. Shared (Round 10, Codex re-review, PR #32 finding) by the
+	 * ordinary path in `submit_tracked()`'s `expire` branch above (a real
+	 * re-read confirms the row) and its double-read-failure path, which
+	 * passes a SYNTHESISED attempt built from the pre-transition object with
+	 * status overridden to `expired` - the `in_progress -> expired`
+	 * transition already committed for real, and this is the one chance
+	 * these effects get to run: neither a learner retry (the attempt is no
+	 * longer `in_progress`) nor the sweep's own count (already `transitioned`)
+	 * gives them a second one.
+	 */
+	private function fire_expiry_effects( QuizAttempt $expired, int $user_id, int $quiz_id, int $course_id ): void {
+		$this->progress->record_item( $user_id, $course_id, $quiz_id, 'quiz', 'failed' );
+
+		Log::write( 'quiz_expired', [ 'attempt' => $expired->id ] );
+
+		/**
+		 * Fires once, when a timed attempt is closed by the `expire`
+		 * timer policy (nothing graded). A graded attempt fires
+		 * anchor_courses_quiz_submitted + _passed/_failed instead.
+		 *
+		 * @param QuizAttempt $expired
+		 * @param int         $user_id
+		 * @param int         $quiz_id
+		 * @param int         $course_id
+		 */
+		\do_action( 'anchor_courses_quiz_expired', $expired, $user_id, $quiz_id, $course_id );
+
+		$this->progress->recalculate_course( $user_id, $course_id );
 	}
 
 	/**

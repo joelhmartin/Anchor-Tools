@@ -975,4 +975,67 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 			'clear() must never run when the reopen write itself failed.'
 		);
 	}
+
+	/* --- Round 10, CodeRabbit Major, PR #32 finding 1: a half-reset must be
+	   RECOVERABLE, never a silently-reported failure that leaves a stale
+	   completed row completable again on the progress that failed to clear
+	   ------------------------------------------------------------------- */
+
+	/**
+	 * `$clear()` failing after the reopen write commits used to be invisible:
+	 * `reopen_for_reset()` ignored its result and reported success, with the
+	 * enrolment reopened but the old progress still in place. Reopen now
+	 * persists a `reset_pending_at` marker in the SAME write as the reopen,
+	 * BEFORE `$clear()` ever runs, and lifts it only once `$clear()` succeeds -
+	 * so a failed clear is reported as `reset_failed`, the row is left with
+	 * the marker set, and `complete()` refuses it outright rather than
+	 * completing it against progress that never actually got deleted. A later
+	 * Reset, once the underlying failure is healed, retries the clearing and
+	 * lifts the marker.
+	 */
+	public function test_a_failed_progress_clear_sets_a_recoverable_marker_and_blocks_completion() {
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ), 'fixture: completed' );
+
+		$this->break_queries( '/^DELETE FROM \S*anchor_courses_progress\b/i' );
+		$result = $this->progress->reset_course( $this->user, $this->course );
+		$this->heal();
+
+		$this->assertTrue( is_wp_error( $result ), 'A failed clear must be reported, never swallowed as success.' );
+		$this->assertSame( 'reset_failed', $result->get_error_code() );
+
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$this->assertNotSame( 'completed', $enrollment->status, 'The reopen write itself still committed.' );
+		$this->assertNotEmpty( $enrollment->metadata['reset_pending_at'] ?? null, 'The recoverable marker is set.' );
+		$this->assertNotNull(
+			\Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $this->lesson, 'lesson' ),
+			'The failed delete really did leave the stale progress in place.'
+		);
+
+		// The learner's stale progress still reports the course complete; the
+		// marker must refuse this outright, never complete it on that stale
+		// progress.
+		$this->assertFalse( $this->completion->complete( $this->user, $this->course ), 'complete() must refuse a row with a pending reset.' );
+		$this->assertFalse( $this->completion->is_complete( $this->user, $this->course ), 'Still not completed - the refusal changed nothing.' );
+
+		// Healing: the clear can now run for real. A later Reset retries it -
+		// zero-row deletes are not failures, so this is a real success - and
+		// lifts the marker.
+		$this->assertTrue( $this->progress->reset_course( $this->user, $this->course ), 'A re-run of Reset retries the clearing and clears the marker.' );
+		$healed = $this->enrollments->get( $this->user, $this->course );
+		$this->assertArrayNotHasKey( 'reset_pending_at', $healed->metadata, 'The marker is lifted once the clear succeeds.' );
+		$this->assertNull( \Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $this->lesson, 'lesson' ) );
+
+		// And completion works normally again.
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ) );
+	}
+
+	/** Zero rows to clear (a learner who never recorded any progress at all) is a real success, never `reset_failed`. */
+	public function test_reset_of_a_learner_with_no_progress_at_all_still_succeeds() {
+		$this->assertTrue( $this->progress->reset_course( $this->user, $this->course ) );
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$this->assertSame( 'enrolled', $enrollment->status );
+		$this->assertArrayNotHasKey( 'reset_pending_at', $enrollment->metadata, 'The marker never outlives a successful clear.' );
+	}
 }

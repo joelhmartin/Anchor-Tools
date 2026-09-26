@@ -816,13 +816,23 @@ final class CompletionService {
 			}
 
 			// Clearing landed for real - lift the marker in a second write.
-			// A failure HERE is logged but never turned into a reported
-			// failure: the learner's progress genuinely is clear, and a
-			// stray marker left behind is healed by the next Reset run,
-			// whose $clear() is idempotent (zero rows left is success).
+			// If THIS write fails the marker stays and complete() keeps
+			// refusing the row, so it must be reported as a failure (both
+			// reviewers, PR #34): the operator is told to run Reset again,
+			// whose $clear() is idempotent (zero rows left is success). The
+			// reopen itself is committed, so its status change is still
+			// announced before returning.
 			unset( $metadata[ self::RESET_PENDING_META ] );
 			if ( ! EnrollmentRepository::update( $enrollment->id, [ 'metadata' => $metadata ] ) instanceof Enrollment ) {
 				Log::write( 'completion_reset_marker_clear_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+				if ( $from !== $updated->status ) {
+					try {
+						\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, $updated->status );
+					} catch ( \Throwable $e ) {
+						Log::write( 'completion_status_hook_failed', [ 'user' => $user_id, 'course' => $course_id, 'error' => $e->getMessage() ] );
+					}
+				}
+				return new \WP_Error( 'reset_failed', 'Progress was cleared but the reset marker could not be lifted; run Reset again.' );
 			}
 
 			// The reset is already committed; a throwing listener must not

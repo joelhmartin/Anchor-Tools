@@ -343,12 +343,14 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		};
 		add_filter( 'query', $break );
 
-		// Driven through the sweep, same as the tests above, so the count
-		// itself is proven, not just the return value.
-		$closed = $this->quizzes->sweep_expired_attempts();
-
-		remove_filter( 'query', $break );
-		$wpdb->suppress_errors( false );
+		try {
+			// Driven through the sweep, same as the tests above, so the count
+			// itself is proven, not just the return value.
+			$closed = $this->quizzes->sweep_expired_attempts();
+		} finally {
+			remove_filter( 'query', $break );
+			$wpdb->suppress_errors( false );
+		}
 
 		$this->assertGreaterThanOrEqual( 2, $hits, 'Precondition: both post-transition reads were reached.' );
 		$this->assertSame( 1, $closed, 'The transition landed for real, so the sweep still counts it closed.' );

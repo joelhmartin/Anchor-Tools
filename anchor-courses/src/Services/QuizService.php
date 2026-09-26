@@ -596,7 +596,11 @@ final class QuizService {
 				// the truth, even though nothing could confirm it just now.
 				// No `in_progress` object ever reaches the hook.
 				Log::write( 'quiz_expire_read_failed', [ 'attempt' => $attempt_id ] );
-				$expired = new QuizAttempt(
+				// Prefer the object the detail write returned when it already
+				// carries the expired state (Codex, PR #34): its submitted_at
+				// and duration agree with the stored row. Synthesise only when
+				// nothing authoritative is available.
+				$expired = ( isset( $saved ) && $saved instanceof QuizAttempt && 'expired' === $saved->status ) ? $saved : new QuizAttempt(
 					$attempt->id,
 					$attempt->user_id,
 					$attempt->course_id,

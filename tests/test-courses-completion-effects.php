@@ -815,6 +815,72 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$this->assertSame( 1, $recompleted, 'The reopened row starts a new cycle: course_recompleted fires once.' );
 	}
 
+	/* --- Round 8, Codex + CodeRabbit Major, PR #32 finding 1: the admin
+	   reset is serialised with the completion pipeline --------------------- */
+
+	/**
+	 * A second connection holds this learner's completion lock, standing in
+	 * for a still-running complete()/uncomplete() pipeline: the reset must
+	 * back off entirely - not the enrolment row, not the progress rows, not
+	 * the quiz attempts - and report false, never a half-reset.
+	 */
+	public function test_reset_backs_off_entirely_while_the_completion_lock_is_held_elsewhere() {
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ), 'fixture: completed' );
+
+		$this->hold_lock_elsewhere();
+
+		$this->assertFalse( $this->progress->reset_course( $this->user, $this->course ), 'A busy completion lock refuses the whole reset.' );
+
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$this->assertSame( 'completed', $enrollment->status, 'The row is untouched while the lock is busy.' );
+		$this->assertNotNull(
+			\Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $this->lesson, 'lesson' ),
+			'Progress rows are untouched too - the reset never half-runs.'
+		);
+
+		$this->release_lock_elsewhere();
+		$this->assertTrue( $this->progress->reset_course( $this->user, $this->course ), 'The retry succeeds once the lock is free.' );
+		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status );
+		$this->assertNull( \Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $this->lesson, 'lesson' ) );
+	}
+
+	/**
+	 * The reset's cycle bump and its status/timestamp update are ONE
+	 * lock-scoped read-then-write (CompletionService::reopen_for_reset()):
+	 * metadata another pipeline wrote while the lock was held elsewhere -
+	 * simulating a completion pipeline's own effects write landing in that
+	 * window - is read fresh once the lock is free, never overwritten by a
+	 * stale pre-lock snapshot.
+	 */
+	public function test_reset_bumps_the_cycle_without_clobbering_effect_state_written_while_the_lock_was_busy() {
+		$this->finish_lesson();
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ), 'fixture: completed' );
+		$before_cycle = (int) ( $this->enrollments->get( $this->user, $this->course )->metadata['completion_cycle'] ?? 0 );
+
+		$this->hold_lock_elsewhere();
+		$this->assertFalse( $this->progress->reset_course( $this->user, $this->course ) );
+
+		// Simulate another pipeline's own metadata write landing in this
+		// window - never something the reset itself may act on.
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$metadata   = $enrollment->metadata;
+		$metadata['completion_effects']['hook'] = 'done';
+		$metadata['probe']                      = 'written-while-locked';
+		EnrollmentRepository::update( $enrollment->id, [ 'metadata' => $metadata ] );
+
+		$this->release_lock_elsewhere();
+		$this->assertTrue( $this->progress->reset_course( $this->user, $this->course ) );
+
+		$after = $this->enrollments->get( $this->user, $this->course );
+		$this->assertSame( $before_cycle + 1, (int) ( $after->metadata['completion_cycle'] ?? 0 ), 'The cycle marker is bumped.' );
+		$this->assertSame(
+			'written-while-locked',
+			$after->metadata['probe'] ?? null,
+			'Metadata written by another pipeline while the lock was busy is preserved, not clobbered by a stale pre-lock snapshot.'
+		);
+	}
+
 	/** CodeRabbit: a throwing status listener must not escape uncomplete() once the reopen is committed. */
 	public function test_uncomplete_contains_a_throwing_status_listener() {
 		$this->finish_lesson();

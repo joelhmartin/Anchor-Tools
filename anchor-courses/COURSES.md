@@ -13,7 +13,7 @@ admin (Learners tab), a purchase, the PHP API, WP-CLI or any plugin.
 
 | Property | Class | Owns |
 |---|---|---|
-| `enrollments` | `Services\EnrollmentService` | the enrolment row and its status machine; `can_enroll()`, `is_enrolled()`, `restart()`, the expiry sweep |
+| `enrollments` | `Services\EnrollmentService` | the enrolment row and its status machine; `can_enroll()`, `is_enrolled()`, the expiry sweep |
 | `progress` | `Services\ProgressService` | the one progress calculation, item availability, lesson start/complete, `record_item()`, `reset_course()` |
 | `quizzes` | `Services\QuizService` | attempts: start/resume, answer, atomic submit, timers, the attempt sweep |
 | `credits` | `Services\CreditService` | CE credit records |
@@ -208,15 +208,35 @@ one." for an enrolled learner locked by progression.
   any other effect. `uncomplete()` returns `false` (admin notice
   `uncomplete_failed`) when the row is not completed, the lock is busy or
   the write failed.
-- **The admin "Reset progress" action also bumps the cycle marker** (Round 7,
-  PR #32 audit re-review, finding 2): `EnrollmentManager`'s `reset` action
-  goes through `ProgressService::reset_course()` -> `EnrollmentService::
-  restart()`, never `CompletionService::uncomplete()`. Reopening a row that
-  was `completed` now bumps `metadata.completion_cycle` there too, the same
-  marker `uncomplete()` bumps. Without it, a row that predates effect
-  tracking (or one whose tracked state is otherwise empty) has NEITHER a
-  cycle marker NOR an effects map after a reset, so `run_effects()` cannot
-  tell the next completion apart from the FIRST one and re-fires
+- **The admin "Reset progress" action is serialised with the completion
+  pipeline** (Round 8, Codex + CodeRabbit Major, PR #32 finding 1, supersedes
+  Round 7 finding 2 below): `EnrollmentManager`'s `reset` action goes through
+  `ProgressService::reset_course()` -> `CompletionService::
+  reopen_for_reset()` - a STATIC method, same as `lock_name()`/`is_settled()`,
+  because the MySQL named lock it takes is server-wide, not tied to any one
+  `CompletionService` instance. It takes the SAME per-(user, course)
+  completion lock `complete()`/`uncomplete()` take, re-reads the row only
+  once the lock is held, and applies the reset's `status`/`started_at`/
+  `completed_at` in the SAME call that bumps `metadata.completion_cycle` (see
+  below) - one lock-scoped operation, so a reset can never race a
+  `complete()`/`uncomplete()` pipeline's metadata write for the same row.
+  Before this, `EnrollmentService::restart()` read and rewrote a completed
+  row's metadata with no coordination at all: a stale write could restore
+  `hook: failed` (firing the lifetime `course_completed` again next time) or
+  clobber a newer effects map or claim written in between.
+  `EnrollmentService` no longer touches completion metadata at all -
+  `restart()` is gone. A reset that cannot get the lock changes NOTHING
+  (progress rows are deleted and attempts abandoned only AFTER the lock-held
+  update succeeds) and `reset_course()` returns `false`; `EnrollmentManager`
+  reports the distinct notice `reset_busy`, never `reset`.
+- **Reopening a completed row for a reset also bumps the cycle marker**
+  (Round 7, PR #32 audit re-review, finding 2 - now inside
+  `reopen_for_reset()` above): a row that was `completed` has
+  `metadata.completion_cycle` incremented, the same marker `uncomplete()`
+  bumps. Without it, a row that predates effect tracking (or one whose
+  tracked state is otherwise empty) has NEITHER a cycle marker NOR an
+  effects map after a reset, so `run_effects()` cannot tell the next
+  completion apart from the FIRST one and re-fires
   `anchor_courses_course_completed` for a learner who already completed the
   course once. The cycle counter alone is enough to fix it: once
   `run_effects()` knows this is a re-completion at all, its existing
@@ -409,10 +429,12 @@ one." for an enrolled learner locked by progression.
   attempt. Cross-course credit, if ever wanted, must be an explicit policy.
 - **Best attempt counts:** a completed item is never downgraded by a later failed
   attempt; a repeat pass keeps the original `completed_at`.
-- **Admin reset** (`ProgressService::reset_course()`): deletes progress rows,
-  voids every counted attempt as `abandoned` (not counted toward
-  `max_attempts`, no retry delay), and restarts the row (`enrolled`, no
-  `started_at` / `completed_at`).
+- **Admin reset** (`ProgressService::reset_course()`): reopens the row first,
+  under the completion lock (see `reopen_for_reset()` above; `false` on a
+  busy lock or a write failure, `reset_busy`, and nothing else touched), then
+  deletes progress rows, voids every counted attempt as `abandoned` (not
+  counted toward `max_attempts`, no retry delay), and restarts the row
+  (`enrolled`, no `started_at` / `completed_at`).
 - **Certificates** freeze `learner_name`, `course_name`, `credits`,
   `provider_name`, `provider_number` and `instructor_name` into their metadata at
   issue; the page renders that snapshot (live values only for older rows).
@@ -425,7 +447,7 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_access_granted` | `$user_id, $course_id, $source, $source_id` | `Roles::grant_access()` added the role |
 | `anchor_courses_access_revoked` | `$user_id, $course_id, $source` | `Roles::revoke_access()` removed the role |
 | `anchor_courses_enrolled` | `Enrollment $enrollment, $user_id, $course_id` | once, the first time a row is created |
-| `anchor_courses_enrollment_status_changed` | `$user_id, $course_id, $from, $to` | any status change (set_status, reactivation, restart, completion, uncompletion) |
+| `anchor_courses_enrollment_status_changed` | `$user_id, $course_id, $from, $to` | any status change (set_status, reactivation, reset, completion, uncompletion) |
 | `anchor_courses_course_started` | `$user_id, $course_id, Enrollment $enrollment` | first item opened (again after a reset) |
 | `anchor_courses_lesson_started` | `$user_id, $course_id, $lesson_id, Progress $progress` | first view of a lesson |
 | `anchor_courses_lesson_completed` | `$user_id, $course_id, $lesson_id, Progress $progress` | once, first completion of a lesson |
@@ -508,7 +530,7 @@ Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 |---|---|
 | `admin-post.php?action=anchor_courses_complete_lesson` (also nopriv) | `Frontend\Actions` - "Mark complete"; redirects with `anchor_courses_notice` |
 | `admin-post.php?action=anchor_courses_add_learner` / `anchor_courses_revoke_access` | `Admin\LearnerReports` (nonce `anchor_courses_learners_{course}`, cap `enrollments`) |
-| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete`, `repair` (re-run pending/failed/untracked completion effects; `repaired` only once all four read `done`/`n/a`, else `repair_incomplete`; `repair_not_completed` when the row isn't complete at all) |
+| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset` (`reset_busy` when the completion lock is busy or the write fails - nothing touched), `complete`, `uncomplete`, `repair` (re-run pending/failed/untracked completion effects; `repaired` only once all four read `done`/`n/a`, else `repair_incomplete`; `repair_not_completed` when the row isn't complete at all) |
 | `admin-post.php?action=anchor_courses_delete_role` | `Admin\CourseEditor` (cap `manage`) |
 | `admin-ajax.php?action=anchor_courses_search_items` / `anchor_courses_create_item` | curriculum builder |
 | `/certificate/{token}/` | `Frontend\CertificatePage` - public verification page (query var `anchor_certificate`, noindex) |

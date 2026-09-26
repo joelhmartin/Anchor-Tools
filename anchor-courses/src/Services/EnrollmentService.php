@@ -281,46 +281,6 @@ final class EnrollmentService {
 		return $updated;
 	}
 
-	/**
-	 * Return a row to "never opened": status `enrolled`, started_at cleared,
-	 * so the next item opened fires anchor_courses_course_started again.
-	 * Used by ProgressService::reset_course(). completed_at is cleared too -
-	 * credits/certificates are separate records and stay.
-	 *
-	 * Reopening a COMPLETED row also bumps `completion_cycle` (Round 7, PR
-	 * #32 finding 2) - the same marker CompletionService::uncomplete() bumps.
-	 * Without it, a row that predates effect tracking (or whose tracked
-	 * state is otherwise empty) reads back to CompletionService::run_effects()
-	 * as a row with no history at all: the next completion is treated as the
-	 * FIRST one and `anchor_courses_course_completed` fires again for a
-	 * learner who already completed this course once. The cycle counter
-	 * alone is enough - run_effects() already treats a `completed_effects`
-	 * map that predates tracking as an UNKNOWN, not re-fireable, outcome
-	 * once it knows this is a re-completion at all.
-	 */
-	public function restart( int $user_id, int $course_id ): ?Enrollment {
-		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
-		if ( ! $enrollment instanceof Enrollment ) {
-			return null;
-		}
-
-		$data = [ 'status' => 'enrolled', 'started_at' => null, 'completed_at' => null ];
-		if ( 'completed' === $enrollment->status ) {
-			$metadata = $enrollment->metadata;
-			$metadata[ CompletionService::CYCLE_META ] = (int) ( $metadata[ CompletionService::CYCLE_META ] ?? 0 ) + 1;
-			$data['metadata'] = $metadata;
-		}
-
-		$updated = EnrollmentRepository::update( $enrollment->id, $data );
-
-		if ( 'enrolled' !== $enrollment->status ) {
-			/** This action is documented in set_status(). */
-			\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $enrollment->status, 'enrolled' );
-		}
-
-		return $updated;
-	}
-
 	public function set_status( int $user_id, int $course_id, string $status ): ?Enrollment {
 		if ( ! \in_array( $status, Enrollment::STATUSES, true ) ) {
 			return null;

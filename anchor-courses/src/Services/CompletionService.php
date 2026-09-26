@@ -214,7 +214,7 @@ final class CompletionService {
 			return false;
 		}
 
-		$lock = $this->acquire_lock( $user_id, $course_id );
+		$lock = self::acquire_lock( $user_id, $course_id );
 		if ( null === $lock ) {
 			return false; // Another pipeline owns this row right now; nothing flipped, nothing run.
 		}
@@ -273,7 +273,7 @@ final class CompletionService {
 			}
 			return true;
 		} finally {
-			$this->release_lock( $lock );
+			self::release_lock( $lock );
 		}
 	}
 
@@ -300,7 +300,7 @@ final class CompletionService {
 	 *
 	 * @return string|null The lock name to release, or null on a timeout.
 	 */
-	private function acquire_lock( int $user_id, int $course_id ): ?string {
+	private static function acquire_lock( int $user_id, int $course_id ): ?string {
 		global $wpdb;
 
 		$lock = self::lock_name( $user_id, $course_id );
@@ -320,7 +320,7 @@ final class CompletionService {
 		return $lock;
 	}
 
-	private function release_lock( string $lock ): void {
+	private static function release_lock( string $lock ): void {
 		global $wpdb;
 		$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
 	}
@@ -605,7 +605,7 @@ final class CompletionService {
 	 *              the write failed.
 	 */
 	public function uncomplete( int $user_id, int $course_id ): bool {
-		$lock = $this->acquire_lock( $user_id, $course_id );
+		$lock = self::acquire_lock( $user_id, $course_id );
 		if ( null === $lock ) {
 			return false;
 		}
@@ -635,7 +635,89 @@ final class CompletionService {
 			}
 			return true;
 		} finally {
-			$this->release_lock( $lock );
+			self::release_lock( $lock );
+		}
+	}
+
+	/**
+	 * Reopen a row for the admin "Reset progress" action
+	 * (`Services\ProgressService::reset_course()`, `Admin\EnrollmentManager`'s
+	 * `reset` action), under the SAME per-(user, course) completion lock
+	 * `complete()`/`uncomplete()` take (Round 8, Codex + CodeRabbit Major,
+	 * PR #32 finding 1).
+	 *
+	 * Before this method existed, `EnrollmentService::restart()` read the
+	 * row's metadata, bumped `completion_cycle` in its OWN copy, and wrote
+	 * status + metadata back with no coordination with a completion pipeline
+	 * that might be mid-run for the same (user, course) at the same moment: a
+	 * stale write here could restore `hook: failed` (so the lifetime
+	 * `anchor_courses_course_completed` fires again next time) or clobber a
+	 * newer effects map or claim `complete()`/`uncomplete()` wrote in
+	 * between. This is now the ONE place that reads and rewrites a completed
+	 * row's completion metadata for a reset - `EnrollmentService` no longer
+	 * touches it at all.
+	 *
+	 * $data is applied via `EnrollmentRepository::update()` exactly as given
+	 * (the reset's `status`/`started_at`/`completed_at`) - never `metadata`;
+	 * the cycle bump below is the only metadata this call ever writes, and it
+	 * merges into the row's CURRENT metadata, read only once the lock is
+	 * held, never a caller's pre-lock snapshot.
+	 *
+	 * Static (like `lock_name()`/`is_settled()`): the lock is a server-wide
+	 * MySQL named lock, not per-instance state, and this method touches
+	 * nothing else CompletionService carries (no injected EnrollmentService/
+	 * CreditService/CertificateService) - a caller with no wired
+	 * CompletionService INSTANCE (several tests construct `ProgressService`
+	 * bare) must still serialise a reset against a real completion pipeline
+	 * running elsewhere in the same MySQL server.
+	 *
+	 * @param array $data status/started_at/completed_at (never `metadata`).
+	 * @return bool False when the lock is busy or the write failed - nothing
+	 *              is read or changed either way. True when there was
+	 *              nothing to reset (no enrolment for this user/course) or
+	 *              the update succeeded.
+	 */
+	public static function reopen_for_reset( int $user_id, int $course_id, array $data ): bool {
+		$lock = self::acquire_lock( $user_id, $course_id );
+		if ( null === $lock ) {
+			return false;
+		}
+		try {
+			$enrollment = EnrollmentRepository::find( $user_id, $course_id );
+			if ( ! $enrollment instanceof Enrollment ) {
+				return true; // Nothing to reset.
+			}
+
+			$from = $enrollment->status;
+			if ( 'completed' === $from ) {
+				// Same marker uncomplete() bumps (Round 6/7 rulings, see the
+				// class docblock and COURSES.md): a reset of a completed row
+				// is a RE-completion the next time round, not a first one.
+				$metadata                      = $enrollment->metadata;
+				$metadata[ self::CYCLE_META ] = (int) ( $metadata[ self::CYCLE_META ] ?? 0 ) + 1;
+				$data['metadata']              = $metadata;
+			}
+
+			$updated = EnrollmentRepository::update( $enrollment->id, $data );
+			if ( ! $updated instanceof Enrollment ) {
+				Log::write( 'completion_reset_failed', [ 'user' => $user_id, 'course' => $course_id ] );
+				return false;
+			}
+
+			// The reset is already committed; a throwing listener must not
+			// mask it (same containment as complete()/uncomplete()).
+			if ( $from !== $updated->status ) {
+				try {
+					/** This action is documented in EnrollmentService::set_status(). */
+					\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, $updated->status );
+				} catch ( \Throwable $e ) {
+					Log::write( 'completion_status_hook_failed', [ 'user' => $user_id, 'course' => $course_id, 'error' => $e->getMessage() ] );
+				}
+			}
+
+			return true;
+		} finally {
+			self::release_lock( $lock );
 		}
 	}
 }

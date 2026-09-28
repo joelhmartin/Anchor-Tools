@@ -42,6 +42,18 @@ class Anchor_Compliance_Script_Blocker {
 	 * ('script', 'iframe', 'img').
 	 */
 	const SRC_TAG_PATTERN_TEMPLATE = '#<%s\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is';
+
+	/**
+	 * Per-element opt-out. A <script> or <iframe> carrying this attribute is
+	 * never gated, by this rewrite or by the front-end MutationObserver guard
+	 * (assets/frontend.js neutralizeIframe()/neutralizeScript()), whatever
+	 * its src matches. It is for resources that ARE the service the visitor
+	 * asked for - e.g. the events module's hosted stream player in the room a
+	 * signed-in attendee registered for - not for analytics or marketing on
+	 * the same page, which stay gated. Use `anchor_compliance_should_run` to
+	 * skip a whole response; use this to exempt one element. (3.32.1)
+	 */
+	const EXEMPT_ATTR = 'data-anchor-consent-exempt';
 	const INLINE_SCRIPT_PATTERN    = '#<script\b(?![^>]*(?<![\w:.-])src\s*=)([^>]*)>(.*?)</script>#is';
 
 	/**
@@ -557,6 +569,11 @@ class Anchor_Compliance_Script_Blocker {
 	 * x-bind:src — never real src attributes); anything beyond the tag's own
 	 * ">" no matter how the quote or value is malformed.
 	 */
+	/** Whether a tag's attribute string carries EXEMPT_ATTR (any value, or bare). */
+	public static function is_exempt( $attrs ) {
+		return (bool) preg_match( '/\s' . preg_quote( self::EXEMPT_ATTR, '/' ) . '(?=[\s=>\/]|$)/i', (string) $attrs );
+	}
+
 	private function rewrite_src_tags( $html, $tag, array $rules, array $allowed ) {
 		if ( ! $rules ) {
 			return $html; // no rule can match in this context — skip the whole-document scan.
@@ -574,6 +591,10 @@ class Anchor_Compliance_Script_Blocker {
 				$before = $m[1];
 				$url    = ( '' !== $m[2] ) ? $m[3] : $m[4];
 				$after  = $this->strip_self_closing_slash( $m[5] );
+
+				if ( self::is_exempt( $before . $after ) ) {
+					return $m[0];
+				}
 
 				$category = $this->category_for( $url, $rules );
 				if ( null === $category || ! empty( $allowed[ $category ] ) ) {

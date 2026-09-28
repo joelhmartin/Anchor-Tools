@@ -160,4 +160,19 @@ class Test_Embed extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'title="My &quot;Event&quot;"', $html );
 		$this->assertStringContainsString( 'loading="eager"', $html );
 	}
+
+	/**
+	 * 3.32.1: the room player carries the compliance module's per-element
+	 * opt-out, so a consent blocker in strict posture cannot swap the stream
+	 * for an "Accept & Load" placeholder for an entitled attendee. A link-kind
+	 * embed (Zoom) has no iframe and no attribute.
+	 */
+	public function test_room_player_declares_itself_exempt_from_consent_blocking() {
+		$html = Embed::render( Embed::normalize( 'https://vimeo.com/76979871' ), 'Room' );
+		$this->assertStringContainsString( '<iframe src="https://player.vimeo.com/video/76979871"', $html );
+		$this->assertStringContainsString( ' data-anchor-consent-exempt="stream"', $html );
+
+		$link = Embed::render( [ 'kind' => 'link', 'src' => 'https://zoom.us/j/1', 'provider' => 'zoom' ], 'Room' );
+		$this->assertStringNotContainsString( 'data-anchor-consent-exempt', $link );
+	}
 }

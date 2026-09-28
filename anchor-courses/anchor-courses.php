@@ -30,6 +30,7 @@ class Module {
 	public Services\CreditService $credits;
 	public Services\CompletionService $completion;
 	public Frontend\Shortcodes $shortcodes;
+	public ?Integrations\WooCommerce $woocommerce = null;
 
 	public function __construct() {
 		self::$instance = $this;
@@ -126,6 +127,13 @@ class Module {
 		// on its own action hooks and no-ops off those, so there is nothing
 		// to gate it behind.
 		new Integrations\Analytics();
+		// The WooCommerce adapter (Task 38) - product/course mapping and,
+		// through it, the course page's "Enrol" link. Core LMS stays usable
+		// without WooCommerce: nothing outside this file mentions it, and the
+		// adapter is only constructed when WooCommerce is active.
+		if ( \class_exists( 'WooCommerce' ) ) {
+			$this->woocommerce = new Integrations\WooCommerce();
+		}
 
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).

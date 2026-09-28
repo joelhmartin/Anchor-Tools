@@ -44,7 +44,12 @@ if ( $module ) {
                 // Task 2.4: a group parent is a container, not directly
                 // bookable — the "choose a date" picker over its live
                 // children REPLACES the (already-suppressed) registration form.
-                echo $module->render_choose_date_list( $event_id );
+                // Since 3.24.0 the auto-appended [event_registration] shortcode
+                // renders that same picker inside the content, so only render
+                // it here when the content did not (3.32.1: it showed twice).
+                if ( ! $module->content_already_rendered_registration( $event_id ) ) {
+                    echo $module->render_choose_date_list( $event_id );
+                }
             } else {
                 if ( ! $module->content_already_rendered_registration( $event_id ) ) {
                     echo $module->render_registration_form( $event_id );

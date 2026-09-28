@@ -93,4 +93,32 @@ class Test_Shortcode_Parent extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'anchor-event-choose-date-list', $html );
 		$this->assertStringNotContainsString( 'anchor-event-inline-dates', $html );
 	}
+
+	/**
+	 * 3.32.1: the plugin's own single-event.php ALSO renders the picker for a
+	 * parent, so the shortcode must leave the "content already rendered it"
+	 * marker set for the parent - the template consults it and skips its own
+	 * copy. Before this the default template showed the picker twice.
+	 */
+	public function test_shortcode_marks_the_parent_content_as_rendered() {
+		$parent = $this->make_event( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'registration_mode'    => 'free',
+			'timezone'             => 'UTC',
+		] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-10-23', 'end_date' => '2030-10-24', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0, 'tier_id' => '' ],
+		] );
+		$this->module()->occurrences->reconcile( $parent );
+
+		$this->assertFalse( $this->module()->content_already_rendered_registration( $parent ) );
+		do_shortcode( '[event_registration id="' . $parent . '"]' );
+		$this->assertTrue( $this->module()->content_already_rendered_registration( $parent ) );
+
+		// The template's guard: with the marker set it must not print a second
+		// picker. Rendered the way single-event.php does it.
+		$second = $this->module()->content_already_rendered_registration( $parent ) ? '' : $this->module()->render_choose_date_list( $parent );
+		$this->assertSame( '', $second );
+	}
 }

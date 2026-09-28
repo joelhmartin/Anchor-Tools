@@ -982,7 +982,7 @@ service) is mapped to a status code:
 |---|---|
 | 400 | `unknown_question`, `invalid_date`, and anything not listed below |
 | 403 | `not_enrolled`, `locked`, `not_in_course`, `course_closed`, `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`, `attempt_not_yours` |
-| 404 | `no_attempt`, `no_course`, `no_user` |
+| 404 | `no_attempt`, `no_course`, `no_user`, `no_lesson` (lesson not `publish`) |
 | 409 | `attempt_closed`, `no_questions`, `attempt_course_mismatch` (audit F05), `save_conflict` (audit F06), `attempt_busy` (audit F07), `quiz_required` (completing a `quiz_pass` lesson by hand) |
 | 503 | `save_failed` (audit F03), `read_failed` (safe to retry either way) |
 

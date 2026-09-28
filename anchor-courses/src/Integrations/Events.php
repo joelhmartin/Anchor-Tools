@@ -176,7 +176,9 @@ final class Events {
 
 		$cpt = \class_exists( '\Anchor\Events\Module' ) ? \Anchor\Events\Module::CPT : self::EVENT_CPT_FALLBACK;
 
-		return $cpt === (string) \get_post_type( $event_id );
+		// A trashed event still answers get_post_type(); it is not a live
+		// event a lesson can point at (PR36 closing pass, Codex + CodeRabbit).
+		return $cpt === (string) \get_post_type( $event_id ) && 'trash' !== \get_post_status( $event_id );
 	}
 
 	/**

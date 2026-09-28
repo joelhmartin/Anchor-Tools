@@ -224,6 +224,20 @@ class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( 'Join the livestream', $html );
 	}
 
+	/** Trashing (the normal admin delete) must read the same as a hard delete (PR36 closing pass). */
+	public function test_the_lesson_shows_unavailable_after_the_saved_event_is_trashed() {
+		$event_id = $this->streamed_event();
+		update_post_meta( $this->lesson, '_anchor_lesson_event_id', $event_id );
+
+		wp_trash_post( $event_id );
+
+		$this->assertFalse( Events::event_exists( $event_id ) );
+		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
+
+		$this->assertStringContainsString( 'Live session unavailable.', $html );
+		$this->assertStringNotContainsString( 'Join the livestream', $html );
+	}
+
 	/* ---------------------------------------------------------------------
 	 * Rendering.
 	 * ------------------------------------------------------------------- */

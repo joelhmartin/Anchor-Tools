@@ -92,7 +92,8 @@ class Module {
 		new Rest\Routes(
 			new Rest\QuizController( $this->quizzes ),
 			new Rest\CoursesController(),
-			new Rest\MeController( $this->enrollments, $this->progress, $this->credits, $this->certificates )
+			new Rest\MeController( $this->enrollments, $this->progress, $this->credits, $this->certificates ),
+			new Rest\AdminController()
 		);
 
 		// admin-post.php, not wp-admin, so it must be constructed unconditionally

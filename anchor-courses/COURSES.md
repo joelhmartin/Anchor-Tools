@@ -660,6 +660,28 @@ Service errors map through `Routes::error_response()`:
 Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 `show_score` is off, grading data only with `show_correct_answers`).
 
+### Admin reporting routes (`Rest\AdminController`, Task 34)
+
+Staff-only reads. Each route names the capability it needs rather than a
+blanket "is admin" check: `reports` (`view_anchor_course_reports`) for the
+roster and completions routes, `credits` (`manage_anchor_credits`) for the CE
+ledger - a user can hold one without the other. Logged out is 401; signed in
+without the capability is 403.
+
+| Method | Route | Args | Success |
+|---|---|---|---|
+| GET | `/admin/courses/{id}/learners` | `per_page` (50, max 200), `page` (1) | 200, `Admin\LearnerReports::rows()` - the same batch-loaded roster the Learners metabox renders; 404 `no_course` |
+| GET | `/admin/users/{id}/courses` | - | 200, `Admin\LearnerReports::user_rows()` - the same rows the user-profile Courses block renders; 404 `no_user` |
+| GET | `/admin/reports/completions` | `course_id` (optional), `from`, `to` (`Y-m-d`, inclusive) | 200 `{total, rows}` of `EnrollmentRepository::completions()` (status `completed`), each row `user_id`, `display_name`, `course_id`, `course_title`, `completed_at` |
+| GET | `/admin/reports/credits` | `course_id` (optional), `from`, `to` (`Y-m-d`, inclusive) | 200 `{total_credits, rows}` of `CreditRepository::report()`, each row a `Credit::to_array()` plus `display_name`, `user_email`, `course_title` |
+
+There is no REST route for enrol/revoke/cancel/reset/complete/uncomplete: those
+already have a door (`admin-post.php?action=anchor_courses_add_learner` /
+`anchor_courses_revoke_access` / `anchor_courses_manage_enrollment` - see
+"Other endpoints" below) and this controller is read-only, so it does not open
+a second one. `completions()`/`credits()` cap the result at 1000 rows (no page
+param on a report) rather than leaving either query unbounded.
+
 ## Other endpoints
 
 | Endpoint | Handler |

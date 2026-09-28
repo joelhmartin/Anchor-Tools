@@ -156,6 +156,44 @@ final class CreditRepository {
 		return $out;
 	}
 
+	/**
+	 * Every credit row, across every course or scoped to one, optionally
+	 * bounded by `awarded_at` date - the query behind `GET
+	 * /admin/reports/credits` (Task 34). Mirrors
+	 * EnrollmentRepository::completions()'s shape: same reason (this class
+	 * owns this table's SQL), same `$limit` used as the report's only bound
+	 * since there is no page param.
+	 *
+	 * @return Credit[]
+	 */
+	public static function report( int $course_id = 0, string $from = '', string $to = '', int $limit = 1000 ): array {
+		global $wpdb;
+
+		$conditions = [];
+		$params     = [];
+
+		if ( $course_id > 0 ) {
+			$conditions[] = 'course_id = %d';
+			$params[]     = $course_id;
+		}
+		if ( '' !== $from ) {
+			$conditions[] = 'awarded_at >= %s';
+			$params[]     = $from . ' 00:00:00';
+		}
+		if ( '' !== $to ) {
+			$conditions[] = 'awarded_at <= %s';
+			$params[]     = $to . ' 23:59:59';
+		}
+
+		$where    = [] === $conditions ? '' : ' WHERE ' . \implode( ' AND ', $conditions );
+		$sql      = 'SELECT * FROM ' . self::table() . $where . ' ORDER BY awarded_at DESC LIMIT %d';
+		$params[] = \max( 1, $limit );
+
+		$rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+		return \array_map( [ Credit::class, 'from_row' ], (array) $rows );
+	}
+
 	public static function total_for_user( int $user_id ): float {
 		global $wpdb;
 		return (float) $wpdb->get_var(

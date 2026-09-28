@@ -202,6 +202,47 @@ final class EnrollmentRepository {
 	}
 
 	/**
+	 * Completed enrolments, across every course or scoped to one, optionally
+	 * bounded by `completed_at` date - the query behind `GET
+	 * /admin/reports/completions` (Task 34). Lives here, not in the REST
+	 * controller, for the same reason every other read in this file does:
+	 * this class is the one place that owns SQL against this table.
+	 *
+	 * `$limit` is the report's only bound (there is no page param): a hard
+	 * cap, not a page size, so the report response itself never grows
+	 * unbounded.
+	 *
+	 * @return Enrollment[]
+	 */
+	public static function completions( int $course_id = 0, string $from = '', string $to = '', int $limit = 1000 ): array {
+		global $wpdb;
+
+		$conditions = [ "status = 'completed'" ];
+		$params     = [];
+
+		if ( $course_id > 0 ) {
+			$conditions[] = 'course_id = %d';
+			$params[]     = $course_id;
+		}
+		if ( '' !== $from ) {
+			$conditions[] = 'completed_at >= %s';
+			$params[]     = $from . ' 00:00:00';
+		}
+		if ( '' !== $to ) {
+			$conditions[] = 'completed_at <= %s';
+			$params[]     = $to . ' 23:59:59';
+		}
+
+		$sql      = 'SELECT * FROM ' . self::table() . ' WHERE ' . \implode( ' AND ', $conditions )
+			. ' ORDER BY completed_at DESC LIMIT %d';
+		$params[] = \max( 1, $limit );
+
+		$rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+		return \array_map( [ Enrollment::class, 'from_row' ], (array) $rows );
+	}
+
+	/**
 	 * Flip active enrolments whose expires_at has passed. @return int rows changed.
 	 *
 	 * The zero-date exclusion covers rows written before nulls were stored as

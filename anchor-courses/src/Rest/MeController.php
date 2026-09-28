@@ -6,6 +6,7 @@ namespace Anchor\Courses\Rest;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Services\CertificateService;
 use Anchor\Courses\Services\CreditService;
+use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
 
@@ -74,8 +75,18 @@ final class MeController {
 	}
 
 	public function progress( \WP_REST_Request $request ): \WP_REST_Response {
+		$course_id = (int) $request['id'];
+		// Same guards the write routes get from ProgressService: a course the
+		// caller cannot see is 404, one they are not enrolled in is 403 - never a
+		// required-item count for somebody else's course (Task 33 review).
+		if ( CoursePostType::CPT !== \get_post_type( $course_id ) || 'publish' !== \get_post_status( $course_id ) ) {
+			return Routes::error_response( new \WP_Error( 'no_course', \__( 'Not found.', 'anchor-schema' ) ) );
+		}
+		if ( ! $this->enrollments->is_enrolled( \get_current_user_id(), $course_id ) ) {
+			return Routes::error_response( new \WP_Error( 'not_enrolled', \__( 'You are not enrolled in this course.', 'anchor-schema' ) ) );
+		}
 		return new \WP_REST_Response(
-			$this->progress->get_course_progress( \get_current_user_id(), (int) $request['id'] )->to_array(),
+			$this->progress->get_course_progress( \get_current_user_id(), $course_id )->to_array(),
 			200
 		);
 	}

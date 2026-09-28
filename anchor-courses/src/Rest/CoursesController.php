@@ -95,6 +95,11 @@ final class CoursesController {
 		foreach ( Curriculum::get( $course_id ) as $module ) {
 			$items = [];
 			foreach ( $module['items'] as $item ) {
+				// A draft lesson staged into a live course must not surface its
+				// title publicly (Task 33 review); the front end skips it too.
+				if ( 'publish' !== \get_post_status( (int) $item['id'] ) ) {
+					continue;
+				}
 				// Titles and types only. Quiz CONTENT belongs to an attempt.
 				$items[] = [
 					'type'     => $item['type'],

@@ -128,6 +128,28 @@ class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
 		$this->assertSame( 50.0, $progress->get_data()['percent'] );
 	}
 
+	/** Task 33 review: progress for a course you are not enrolled in is 403; an unknown/draft course is 404. */
+	public function test_progress_is_403_when_unenrolled_and_404_for_an_invisible_course() {
+		wp_set_current_user( $this->make_learner() );
+		$this->assertSame( 403, $this->request( 'GET', "/me/courses/{$this->course}/progress" )->get_status() );
+		$draft = self::factory()->post->create( [ 'post_type' => \Anchor\Courses\Content\CoursePostType::CPT, 'post_status' => 'draft' ] );
+		$this->assertSame( 404, $this->request( 'GET', "/me/courses/{$draft}/progress" )->get_status() );
+		$this->assertSame( 404, $this->request( 'GET', '/me/courses/999999/progress' )->get_status() );
+	}
+
+	/** Task 33 review: a draft lesson staged into a live course does not surface its title publicly. */
+	public function test_curriculum_hides_unpublished_items() {
+		$draft = self::factory()->post->create( [ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Secret Draft Lesson' ] );
+		$modules = \Anchor\Courses\Content\Curriculum::get( $this->course );
+		$modules[0]['items'][] = [ 'type' => 'lesson', 'id' => $draft, 'required' => true ];
+		\Anchor\Courses\Content\Curriculum::save( $this->course, $modules );
+
+		wp_set_current_user( 0 );
+		$body = wp_json_encode( $this->request( 'GET', "/courses/{$this->course}/curriculum" )->get_data() );
+		$this->assertStringNotContainsString( 'Secret Draft Lesson', $body );
+		$this->assertStringNotContainsString( (string) $draft, $body );
+	}
+
 	public function test_completing_a_lesson_while_unenrolled_is_403() {
 		wp_set_current_user( $this->make_learner() );
 		$response = $this->request( 'POST', "/lessons/{$this->lesson}/complete", [ 'course_id' => $this->course ] );

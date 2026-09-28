@@ -107,11 +107,14 @@ class Module {
 		Frontend\ContentGuard::register();
 
 		// The read-only view of the (optional) events module a live_session
-		// lesson renders against (design spec 3.3). Guarded from the inside,
-		// so a site with the events module disabled simply gets
+		// lesson renders against (design spec 3.3), and - Task 37 - the
+		// pre-work veto on stream access. Guarded from the inside, so a site
+		// with the events module disabled simply gets
 		// Integrations\Events::available() === false; constructed
-		// unconditionally like ContentGuard/Templates above.
-		new Integrations\Events();
+		// unconditionally like ContentGuard/Templates above. Shares this
+		// Module's own $progress/$enrollments instances rather than minting
+		// its own, so there is one progress/enrolment source of truth.
+		new Integrations\Events( $this->progress, $this->enrollments );
 		new Frontend\Assets();
 		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments, $this->credits, $this->certificates );
 

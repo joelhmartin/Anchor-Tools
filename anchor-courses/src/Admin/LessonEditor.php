@@ -121,15 +121,12 @@ final class LessonEditor {
 	 * must be in range for that event's real schedule
 	 * (`Events::sessions()`).
 	 *
-	 * "Block stream access until earlier items are complete" stays DISABLED
-	 * with its own, narrower notice: nothing reads `require_prior_items`
-	 * yet - the pre-work veto is Task 37, which attaches
-	 * `Integrations\Events::veto_stream_access()` to the events module's
-	 * `anchor_events_can_access_stream` filter. Enabling this checkbox
-	 * before that ships would promise protection that does not exist,
-	 * exactly the failure mode the original audit item called out. The
-	 * stored value still round-trips via a hidden mirror, same technique
-	 * the audit item used for all three fields.
+	 * "Block stream access until earlier items are complete" is ACTIVE
+	 * (Task 37): `Integrations\Events::veto_stream_access()` is attached to
+	 * the events module's `anchor_events_can_access_stream` filter and reads
+	 * `require_prior_items` for real, so the checkbox no longer promises
+	 * protection that does not exist - the failure mode the original audit
+	 * item called out, and the reason Task 36 shipped it disabled.
 	 */
 	private function render_live_session_fields( int $id ): void {
 		$event_id      = (int) self::setting( $id, 'event_id' );
@@ -197,12 +194,8 @@ final class LessonEditor {
 				: ''
 		);
 
-		echo '<p class="description anchor-courses-inactive-notice"><em>'
-			. \esc_html__( 'The checkbox below is not active until the pre-work veto ships (plan Phase 5, Task 37). It is kept but does not block stream access yet.', 'anchor-schema' )
-			. '</em></p>';
-		\printf( '<input type="hidden" name="anchor_lesson[require_prior_items]" value="%d" />', $require_prior ? 1 : 0 );
 		\printf(
-			'<p><label><input type="checkbox" name="anchor_lesson[require_prior_items]" value="1"%s disabled="disabled" /> %s</label></p>',
+			'<p><label><input type="checkbox" name="anchor_lesson[require_prior_items]" value="1"%s /> %s</label></p>',
 			\checked( $require_prior, true, false ),
 			\esc_html__( 'Block stream access until earlier items are complete', 'anchor-schema' )
 		);

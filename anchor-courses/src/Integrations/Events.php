@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Integrations;
 
+use Anchor\Courses\Admin\LessonEditor;
+use Anchor\Courses\Content\Curriculum;
+use Anchor\Courses\Content\LessonPostType;
+use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Clock;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -10,9 +15,10 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /**
  * The events module, seen from the courses side (design spec 3.3).
  *
- * A READER, and nothing else. It resolves an event's sessions, its room URL
- * and its stream state so a `live_session` lesson can render, and - once
- * Task 37 adds it - it may veto stream access until a learner's pre-work is
+ * A READER first: it resolves an event's sessions, its room URL and its
+ * stream state so a `live_session` lesson can render. Task 37 gives it one
+ * more job, and the only one that WRITES a decision rather than just
+ * reporting one - it may veto stream access until a learner's pre-work is
  * done. That is the whole surface.
  *
  * It does not enrol anybody, and there is no auto-enrolment from events. An
@@ -37,7 +43,11 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * returns at least one row, session or not) rather than the narrower
  * `get_sessions()` the stale draft assumed. The normalisation below is kept
  * defensive anyway - if a future release of the events module ever narrows
- * that shape again, this still degrades instead of fataling.
+ * that shape again, this still degrades instead of fataling. The same
+ * correction applies to Task 37 below: `anchor_events_can_access_stream`
+ * already exists and already fires (`Entitlements::can_access_stream()`),
+ * so `veto_stream_access()` is wired against the real filter from the
+ * start, not a placeholder waiting for the events module to catch up.
  */
 final class Events {
 
@@ -50,6 +60,47 @@ final class Events {
 	 * module happens not to be booted but the post still is what it is.
 	 */
 	private const EVENT_CPT_FALLBACK = 'event';
+
+	/**
+	 * Static, like every other symbol on this class (`sessions()`,
+	 * `room_url()` ...): callers - and this class's own tests - reach
+	 * `veto_stream_access()` as `Events::veto_stream_access()`, never
+	 * through an instance. The constructor below is what SETS these, once,
+	 * from the Module bootstrap's own `$progress`/`$enrollments` instances
+	 * (one progress/enrolment source of truth, not two); the lazy fallbacks
+	 * in `progress()`/`enrollments()` below exist only for a request where,
+	 * for whatever reason, `new Integrations\Events()` never ran - mirroring
+	 * `Support\Roles`'s own `self::$enrollments ?? new EnrollmentService()`
+	 * pattern.
+	 */
+	private static ?ProgressService $progress = null;
+	private static ?EnrollmentService $enrollments = null;
+
+	/**
+	 * Constructed unconditionally by the Module bootstrap (like
+	 * ContentGuard/Templates), sharing the same `ProgressService`/
+	 * `EnrollmentService` instances the rest of the module uses rather than
+	 * minting its own.
+	 */
+	public function __construct( ?ProgressService $progress = null, ?EnrollmentService $enrollments = null ) {
+		self::$enrollments = $enrollments ?? new EnrollmentService();
+		self::$progress    = $progress ?? new ProgressService( self::$enrollments );
+
+		// The events module's single "may this person watch?" filter (events
+		// spec 4.5, `Entitlements::can_access_stream()`). Registered
+		// unconditionally: attaching to a filter the (optional) events
+		// module never fires is free, and it must already be attached
+		// before that module's own bootstrap can possibly call it.
+		\add_filter( 'anchor_events_can_access_stream', [ self::class, 'veto_stream_access' ], 10, 4 );
+	}
+
+	private static function enrollments(): EnrollmentService {
+		return self::$enrollments ??= new EnrollmentService();
+	}
+
+	private static function progress(): ProgressService {
+		return self::$progress ??= new ProgressService( self::enrollments() );
+	}
 
 	/** Is the events module booted in this request? */
 	public static function available(): bool {
@@ -168,5 +219,119 @@ final class Events {
 		$state = \Anchor\Events\Stream_State::for_event( $event_id, Clock::timestamp() );
 
 		return ( \is_array( $state ) && isset( $state['state'] ) ) ? $state : [ 'state' => 'unknown' ];
+	}
+
+	/**
+	 * Live-session lessons that gate stream access on prior items - one row
+	 * per (lesson, course) pairing. A `live_session` lesson shared by more
+	 * than one PUBLISHED course (`Curriculum::courses_for_item()`) produces
+	 * one row per course, so `veto_stream_access()` weighs each course's
+	 * enrolment and progress separately and denies as soon as any one
+	 * applicable course blocks - the same "deny if ANY blocks" rule already
+	 * applies across LESSONS below; this is what makes it also apply across
+	 * COURSES for a lesson shared between them.
+	 *
+	 * @return array<int,array{lesson_id:int,course_id:int,session_index:int}>
+	 */
+	public static function live_lessons_for_event( int $event_id ): array {
+		if ( $event_id <= 0 ) {
+			return [];
+		}
+
+		$lessons = \get_posts(
+			[
+				'post_type'      => LessonPostType::CPT,
+				'post_status'    => [ 'publish', 'private' ],
+				'fields'         => 'ids',
+				'posts_per_page' => -1,
+				'no_found_rows'  => true,
+				'meta_query'     => [ // phpcs:ignore WordPress.DB.SlowDBQuery
+					[ 'key' => LessonPostType::meta_key( 'event_id' ), 'value' => $event_id, 'type' => 'NUMERIC' ],
+					[ 'key' => LessonPostType::meta_key( 'require_prior_items' ), 'value' => '1' ],
+				],
+			]
+		);
+
+		$rows = [];
+		foreach ( $lessons as $lesson_id ) {
+			$lesson_id = (int) $lesson_id;
+			// event_id/require_prior_items meta can survive a lesson's type
+			// changing away from live_session - only a lesson CURRENTLY
+			// typed live_session actually renders/points at a room.
+			if ( 'live_session' !== (string) LessonEditor::setting( $lesson_id, 'type' ) ) {
+				continue;
+			}
+
+			$session_index = (int) LessonEditor::setting( $lesson_id, 'session_index' );
+			foreach ( Curriculum::courses_for_item( $lesson_id, 'lesson' ) as $course_id ) {
+				$rows[] = [
+					'lesson_id'     => $lesson_id,
+					'course_id'     => (int) $course_id,
+					'session_index' => $session_index,
+				];
+			}
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * `anchor_events_can_access_stream` (events spec 4.5,
+	 * `Entitlements::can_access_stream()`).
+	 *
+	 * Courses may only SUBTRACT access: a `false` coming in stays `false`
+	 * going out - this veto never grants access the events module itself
+	 * already refused. When a `live_session` lesson for this event and
+	 * session has `require_prior_items` ticked, every required curriculum
+	 * item ordered before it - in every PUBLISHED course that lists it
+	 * (`live_lessons_for_event()`) - must be complete for this learner in
+	 * THAT course; access is denied as soon as any one applicable
+	 * (lesson, course) row blocks.
+	 *
+	 * Two exemptions, both evaluated per row (so per lesson/course), not
+	 * globally:
+	 *   - A learner who is not enrolled in that particular course has no
+	 *     pre-work to owe it and is skipped, not denied - the course cannot
+	 *     block an event it does not own the attendee of.
+	 *   - Staff - anyone who can edit THIS LESSON post
+	 *     (`user_can( $user_id, 'edit_post', $lesson_id )`, resolved through
+	 *     `LessonPostType::register()`'s own `map_meta_cap` capability map)
+	 *     - is never vetoed, so an instructor managing or previewing the
+	 *     room is not locked out by their own unfinished "pre-work".
+	 *
+	 * The prior-items rule itself is
+	 * `ProgressService::prior_required_items_complete()` - the exact loop
+	 * `is_item_available()` runs for sequential progression, reused here
+	 * rather than re-implemented, and applied regardless of the course's
+	 * own `progression_mode`: a `free` course can still gate one specific
+	 * `live_session` lesson on its own pre-work, which a plain call to
+	 * `is_item_available()` (mode-gated) would not do.
+	 */
+	public static function veto_stream_access( bool $allowed, int $event_id, int $session_index = 0, int $user_id = 0 ): bool {
+		if ( ! $allowed ) {
+			return false;
+		}
+
+		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
+		if ( $user_id <= 0 ) {
+			return $allowed;
+		}
+
+		foreach ( self::live_lessons_for_event( $event_id ) as $row ) {
+			if ( $row['session_index'] !== $session_index ) {
+				continue;
+			}
+			if ( \user_can( $user_id, 'edit_post', $row['lesson_id'] ) ) {
+				continue; // Staff: never vetoed by their own pre-work.
+			}
+			if ( ! self::enrollments()->is_enrolled( $user_id, $row['course_id'] ) ) {
+				continue; // Not on this course: no pre-work owed to it.
+			}
+			if ( ! self::progress()->prior_required_items_complete( $user_id, $row['course_id'], $row['lesson_id'], 'lesson' ) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 }

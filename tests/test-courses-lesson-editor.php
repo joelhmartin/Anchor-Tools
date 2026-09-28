@@ -272,9 +272,10 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 
 	/* -----------------------------------------------------------------
 	 * Task 36: the event picker and session index are ACTIVE - the audit's
-	 * blanket "not active" notice is gone for those two. The pre-work-veto
-	 * checkbox (require_prior_items) stays disabled with its OWN, narrower
-	 * notice: Task 37 is what wires it up, and nothing reads it yet.
+	 * blanket "not active" notice is gone for those two. Task 37 activates
+	 * the third: the pre-work-veto checkbox (require_prior_items) is now a
+	 * normal, enabled checkbox with no narrowing notice, because
+	 * Integrations\Events::veto_stream_access() reads it for real.
 	 * --------------------------------------------------------------- */
 
 	private function render_html( int $lesson_id ): string {
@@ -337,27 +338,31 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		$this->assertSame( (string) $event, $selected->getAttribute( 'value' ) );
 	}
 
-	public function test_the_pre_work_veto_checkbox_stays_disabled_with_its_own_notice() {
+	public function test_the_pre_work_veto_checkbox_is_active() {
 		$lesson = $this->make_lesson( [ 'require_prior_items' => 1 ] );
 		$html   = $this->render_html( $lesson );
 
-		$this->assertStringContainsString( 'not active until the pre-work veto ships', $html );
+		$this->assertStringNotContainsString( 'not active until the pre-work veto ships', $html );
 
-		$doc = $this->dom( $html );
+		$doc   = $this->dom( $html );
+		$found = false;
 		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
 			if ( 'checkbox' === $input->getAttribute( 'type' ) && 'anchor_lesson[require_prior_items]' === $input->getAttribute( 'name' ) ) {
-				$this->assertTrue( $input->hasAttribute( 'disabled' ) );
+				$found = true;
+				$this->assertFalse( $input->hasAttribute( 'disabled' ), 'The pre-work veto checkbox must not be disabled (Task 37).' );
+				$this->assertTrue( $input->hasAttribute( 'checked' ) );
 			}
 		}
+		$this->assertTrue( $found, 'The require_prior_items checkbox must be rendered.' );
 	}
 
 	/**
-	 * Submitting the editor as rendered round-trips the real event picker
-	 * and session index (now active - real <select>/<input> values are
-	 * posted), while the disabled pre-work-veto checkbox keeps riding its
-	 * hidden mirror (Task 37 is what makes it postable for real).
+	 * Submitting the editor as rendered round-trips all three live-session
+	 * fields, including the now-active pre-work-veto checkbox (Task 37 - a
+	 * real, checked/unchecked <input type="checkbox"> is posted like any
+	 * other field, no hidden mirror needed any more).
 	 */
-	public function test_saving_the_rendered_form_round_trips_the_active_fields_and_keeps_the_disabled_one() {
+	public function test_saving_the_rendered_form_round_trips_all_three_live_session_fields() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
 		$event  = $this->make_event(
 			[
@@ -402,8 +407,8 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 
 		$this->assertSame( $event, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
 		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
-		// require_prior_items: disabled, so only its hidden mirror posts -
-		// the stored value (1) survives unchanged.
+		// require_prior_items is a real, enabled checkbox now (Task 37): the
+		// rendered "checked" state is what actually posts and round-trips.
 		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_require_prior_items', true ) );
 	}
 }

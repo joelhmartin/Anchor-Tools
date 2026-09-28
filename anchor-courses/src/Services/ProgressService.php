@@ -111,19 +111,7 @@ final class ProgressService {
 		} elseif ( ! Curriculum::contains( $course_id, $item_id, $item_type ) ) {
 			$allowed = false;
 		} elseif ( 'sequential' === (string) CourseEditor::setting( $course_id, 'progression_mode' ) ) {
-			$completed = ProgressRepository::completed_keys( $user_id, $course_id );
-			foreach ( Curriculum::items_before( $course_id, $item_id, $item_type ) as $earlier ) {
-				if ( ! $earlier['required'] ) {
-					continue;
-				}
-				if ( 'quiz' === $item_type && 'lesson' === $earlier['type'] && self::lesson_completes_by_quiz( (int) $earlier['id'], $item_id ) ) {
-					continue; // The quiz's own parent lesson (see docblock).
-				}
-				if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
-					$allowed = false;
-					break;
-				}
-			}
+			$allowed = $this->prior_required_items_complete( $user_id, $course_id, $item_id, $item_type );
 		}
 
 		/**
@@ -136,6 +124,39 @@ final class ProgressService {
 		 * @param string $item_type
 		 */
 		return (bool) \apply_filters( 'anchor_courses_can_access_lesson', $allowed, $user_id, $course_id, $item_id, $item_type );
+	}
+
+	/**
+	 * Are every REQUIRED item ordered before $item_id, in this course,
+	 * already complete for this learner?
+	 *
+	 * This is the one prior-items loop `is_item_available()`'s sequential
+	 * branch runs. It is exposed on its own (Task 37) so a gate that must
+	 * apply regardless of the course's own `progression_mode` - the
+	 * `live_session` lesson's "block stream access until earlier items are
+	 * complete" checkbox, `Integrations\Events::veto_stream_access()` - can
+	 * reuse the exact same rule the lesson UI applies, rather than
+	 * re-implementing prior-item progression a second time. Unlike
+	 * `is_item_available()` this does not check enrolment or curriculum
+	 * membership itself, and it does not fire `anchor_courses_can_access_lesson`
+	 * - callers that need those run `is_item_available()` instead, or check
+	 * them themselves (as `veto_stream_access()` does for enrolment, since it
+	 * must weigh it per-course rather than refuse outright).
+	 */
+	public function prior_required_items_complete( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
+		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
+		foreach ( Curriculum::items_before( $course_id, $item_id, $item_type ) as $earlier ) {
+			if ( ! $earlier['required'] ) {
+				continue;
+			}
+			if ( 'quiz' === $item_type && 'lesson' === $earlier['type'] && self::lesson_completes_by_quiz( (int) $earlier['id'], $item_id ) ) {
+				continue; // The quiz's own parent lesson (see docblock above).
+			}
+			if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**

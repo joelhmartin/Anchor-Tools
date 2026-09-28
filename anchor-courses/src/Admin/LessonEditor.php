@@ -280,6 +280,11 @@ final class LessonEditor {
 			\update_post_meta( $post_id, LessonPostType::meta_key( $key ), $value );
 		}
 
+		// A saved lesson can change event_id, session_index or
+		// require_prior_items out from under Events::live_lessons_for_event()'s
+		// per-request memo (Task 37 fix round 1).
+		Events::flush();
+
 		$this->warn_courses_with_quiz_link_problems( $post_id );
 	}
 

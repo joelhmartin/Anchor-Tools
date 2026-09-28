@@ -77,6 +77,24 @@ final class Events {
 	private static ?EnrollmentService $enrollments = null;
 
 	/**
+	 * Per-request memo for `live_lessons_for_event()`, keyed by event id.
+	 *
+	 * `veto_stream_access()` calls `live_lessons_for_event()` on every single
+	 * `can_access_stream()` check - one `get_posts()` plus a
+	 * `Curriculum::courses_for_item()` scan per lesson found, every time the
+	 * room's stream-state JS polls or a page full of live-session lessons
+	 * renders. Nothing about that answer can change mid-request except a
+	 * save this same request makes, so it is memoised for the life of the
+	 * request and dropped by `flush()` - hooked to `anchor_courses_
+	 * curriculum_saved` and called directly from `LessonEditor::save()` -
+	 * whenever a lesson's or a course's curriculum changes the answer out
+	 * from under it.
+	 *
+	 * @var array<int,array<int,array{lesson_id:int,course_id:int,session_index:int}>>
+	 */
+	private static array $live_lessons_cache = [];
+
+	/**
 	 * Constructed unconditionally by the Module bootstrap (like
 	 * ContentGuard/Templates), sharing the same `ProgressService`/
 	 * `EnrollmentService` instances the rest of the module uses rather than
@@ -92,6 +110,14 @@ final class Events {
 		// module never fires is free, and it must already be attached
 		// before that module's own bootstrap can possibly call it.
 		\add_filter( 'anchor_events_can_access_stream', [ self::class, 'veto_stream_access' ], 10, 4 );
+
+		// live_lessons_for_event()'s per-request memo (Task 37 fix round 1):
+		// `Curriculum::save()` is the one place curriculum writes actually
+		// happen - CourseEditor::save_curriculum() and every direct test
+		// fixture both go through it - so its own `do_action()` is the
+		// single correct invalidation point, not something re-derived at
+		// each caller.
+		\add_action( 'anchor_courses_curriculum_saved', [ self::class, 'flush' ] );
 	}
 
 	private static function enrollments(): EnrollmentService {
@@ -238,6 +264,10 @@ final class Events {
 			return [];
 		}
 
+		if ( \array_key_exists( $event_id, self::$live_lessons_cache ) ) {
+			return self::$live_lessons_cache[ $event_id ];
+		}
+
 		$lessons = \get_posts(
 			[
 				'post_type'      => LessonPostType::CPT,
@@ -272,7 +302,23 @@ final class Events {
 			}
 		}
 
-		return $rows;
+		return self::$live_lessons_cache[ $event_id ] = $rows; // phpcs:ignore Squiz.PHP.DisallowMultipleAssignments
+	}
+
+	/**
+	 * Drop the `live_lessons_for_event()` memo (all events, not just one -
+	 * a lesson's `event_id` can itself change on the save that triggers
+	 * this, so the safe invalidation is "everything", not "the event this
+	 * post happens to name right now"). Hooked to `anchor_courses_curriculum_
+	 * saved` (fired by `Curriculum::save()` itself, so every writer - the
+	 * admin curriculum builder and every direct-call test fixture alike -
+	 * is covered) and called directly from `LessonEditor::save()`, whose
+	 * own `event_id`/`session_index`/`require_prior_items` writes never
+	 * touch a course's curriculum meta and so never fire that action. Safe
+	 * to call even when the events module never booted.
+	 */
+	public static function flush(): void {
+		self::$live_lessons_cache = [];
 	}
 
 	/**

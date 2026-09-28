@@ -25,6 +25,15 @@ abstract class Anchor_Courses_TestCase extends WP_UnitTestCase {
 			}
 		}
 		$this->minted_courses = [];
+		// Events::live_lessons_for_event()'s per-request memo (Task 37 fix
+		// round 1) is a STATIC, so it survives PHPUnit's per-test transaction
+		// rollback: a test that populates it for an event id another test
+		// reuses (this suite's stream-veto fixtures do exactly that) would
+		// otherwise read stale lesson/course rows for posts the rollback
+		// already erased. Dropped after every test, not just courses tests
+		// that touch it directly - any test that reaches Entitlements::
+		// can_access_stream() on the events side populates it too.
+		\Anchor\Courses\Integrations\Events::flush();
 		// Context-less role losses queue for shutdown (Support\Roles, final
 		// review I8); a test that never resolves them must not hand them to
 		// the next test - or to the process's own shutdown.

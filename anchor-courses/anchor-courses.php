@@ -105,6 +105,13 @@ class Module {
 		// The lesson-body gate on the_content/the_excerpt (and the sitemap
 		// exclusion) - on every request, front end or not.
 		Frontend\ContentGuard::register();
+
+		// The read-only view of the (optional) events module a live_session
+		// lesson renders against (design spec 3.3). Guarded from the inside,
+		// so a site with the events module disabled simply gets
+		// Integrations\Events::available() === false; constructed
+		// unconditionally like ContentGuard/Templates above.
+		new Integrations\Events();
 		new Frontend\Assets();
 		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments, $this->credits, $this->certificates );
 

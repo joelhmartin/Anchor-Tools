@@ -6,6 +6,7 @@ namespace Anchor\Courses\Admin;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\LessonPostType;
 use Anchor\Courses\Content\QuizPostType;
+use Anchor\Courses\Integrations\Events;
 use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Capabilities;
 
@@ -110,15 +111,25 @@ final class LessonEditor {
 	}
 
 	/**
-	 * The live-session fields, shown DISABLED with an inline notice (audit UI
-	 * item): nothing reads them yet - the live-session adapter and the
-	 * stream prerequisite veto are plan Phase 5 - so an enabled "Block stream
-	 * access" checkbox would promise protection that does not exist.
+	 * The live-session fields (design spec 3.3).
 	 *
-	 * The stored values still round-trip: disabled inputs are never posted,
-	 * so each value also rides in a hidden input of the same name and
-	 * save() writes it back unchanged (a programmatic save can still set
-	 * them). When Phase 5 ships, drop the hidden mirrors and `disabled`.
+	 * The event picker and session index are ACTIVE (Task 36 - the
+	 * live-session adapter, `Integrations\Events` and
+	 * `Shortcodes::render_live_session()`, now reads them for real). The
+	 * audit's blanket "not active" notice is gone for those two; `save()`
+	 * validates both - a picked event must exist, and the session index
+	 * must be in range for that event's real schedule
+	 * (`Events::sessions()`).
+	 *
+	 * "Block stream access until earlier items are complete" stays DISABLED
+	 * with its own, narrower notice: nothing reads `require_prior_items`
+	 * yet - the pre-work veto is Task 37, which attaches
+	 * `Integrations\Events::veto_stream_access()` to the events module's
+	 * `anchor_events_can_access_stream` filter. Enabling this checkbox
+	 * before that ships would promise protection that does not exist,
+	 * exactly the failure mode the original audit item called out. The
+	 * stored value still round-trips via a hidden mirror, same technique
+	 * the audit item used for all three fields.
 	 */
 	private function render_live_session_fields( int $id ): void {
 		$event_id      = (int) self::setting( $id, 'event_id' );
@@ -126,26 +137,70 @@ final class LessonEditor {
 		$require_prior = 1 === (int) self::setting( $id, 'require_prior_items' );
 
 		echo '<h4>' . \esc_html__( 'Live session', 'anchor-schema' ) . '</h4>';
-		echo '<p class="description anchor-courses-inactive-notice"><em>'
-			. \esc_html__( 'Not active until the live-session adapter ships (plan Phase 5). These settings are kept but do not affect access yet.', 'anchor-schema' )
-			. '</em></p>';
 
-		\printf( '<input type="hidden" name="anchor_lesson[event_id]" value="%d" />', $event_id );
-		\printf( '<input type="hidden" name="anchor_lesson[session_index]" value="%d" />', $session_index );
-		if ( $require_prior ) {
-			echo '<input type="hidden" name="anchor_lesson[require_prior_items]" value="1" />';
+		echo '<p><label><strong>' . \esc_html__( 'Event', 'anchor-schema' ) . '</strong><br />';
+		echo '<select name="anchor_lesson[event_id]"><option value="0">' . \esc_html__( '- none -', 'anchor-schema' ) . '</option>';
+
+		$events = Events::available() ? \get_posts(
+			[
+				'post_type'      => 'event',
+				'post_status'    => [ 'publish', 'draft' ],
+				'posts_per_page' => 200,
+				'orderby'        => 'title',
+				'order'          => 'ASC',
+				'no_found_rows'  => true,
+			]
+		) : [];
+
+		$listed = false;
+		foreach ( $events as $event ) {
+			if ( (int) $event->ID === $event_id ) {
+				$listed = true;
+			}
+			\printf(
+				'<option value="%d"%s>%s</option>',
+				(int) $event->ID,
+				\selected( $event_id, (int) $event->ID, false ),
+				\esc_html( (string) $event->post_title )
+			);
+		}
+		// A stored event that does not appear above - deleted, or the events
+		// module happens to be inactive on this admin request - still
+		// round-trips: shown as its own option rather than silently swapping
+		// the select to "- none -" under the author's feet.
+		if ( $event_id > 0 && ! $listed ) {
+			\printf(
+				'<option value="%1$d" selected="selected">%2$s (#%1$d)</option>',
+				$event_id,
+				\esc_html__( 'Unknown event', 'anchor-schema' )
+			);
+		}
+		echo '</select></label></p>';
+
+		if ( ! Events::available() ) {
+			echo '<p class="description">' . \esc_html__( 'The events module is not active, so events cannot be listed here right now.', 'anchor-schema' ) . '</p>';
 		}
 
+		$session_count = $event_id > 0 ? \count( Events::sessions( $event_id ) ) : 0;
 		\printf(
-			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[event_id]" value="%d" class="small-text" disabled="disabled" /></label></p>',
-			\esc_html__( 'Event ID', 'anchor-schema' ),
-			$event_id
-		);
-		\printf(
-			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[session_index]" value="%d" class="small-text" disabled="disabled" /></label></p>',
+			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[session_index]" value="%d" class="small-text" /></label>%s</p>',
 			\esc_html__( 'Session index', 'anchor-schema' ),
-			$session_index
+			$session_index,
+			$session_count > 0
+				? ' <span class="description">' . \esc_html(
+					\sprintf(
+						/* translators: %d: number of sessions this event resolves to. */
+						\__( '(this event has %d session(s), indexed from 0)', 'anchor-schema' ),
+						$session_count
+					)
+				) . '</span>'
+				: ''
 		);
+
+		echo '<p class="description anchor-courses-inactive-notice"><em>'
+			. \esc_html__( 'The checkbox below is not active until the pre-work veto ships (plan Phase 5, Task 37). It is kept but does not block stream access yet.', 'anchor-schema' )
+			. '</em></p>';
+		\printf( '<input type="hidden" name="anchor_lesson[require_prior_items]" value="%d" />', $require_prior ? 1 : 0 );
 		\printf(
 			'<p><label><input type="checkbox" name="anchor_lesson[require_prior_items]" value="1"%s disabled="disabled" /> %s</label></p>',
 			\checked( $require_prior, true, false ),
@@ -195,12 +250,36 @@ final class LessonEditor {
 			$quiz_id = 0;
 		}
 
+		// A picked event must name a real event post; anything else (a
+		// deleted event, or a fabricated id) stores 0 - never trusted
+		// unchecked (Task 36).
+		$event_id = \absint( $input['event_id'] ?? 0 );
+		if ( $event_id > 0 && ! Events::event_exists( $event_id ) ) {
+			$event_id = 0;
+		}
+
+		$session_index = \absint( $input['session_index'] ?? 0 );
+		if ( $event_id <= 0 ) {
+			$session_index = 0; // No event: the index means nothing.
+		} else {
+			// Events::sessions() already degrades to [] when the events
+			// module cannot resolve the event right now (module inactive) -
+			// $session_count stays 0 and the posted value is kept rather
+			// than guessed at, so a value authored while the module was
+			// active is never silently clobbered by a request where it
+			// happens not to be.
+			$session_count = \count( Events::sessions( $event_id ) );
+			if ( $session_count > 0 && $session_index >= $session_count ) {
+				$session_index = 0;
+			}
+		}
+
 		$values = [
 			'completion_mode'     => $mode,
 			'type'                => $type,
 			'quiz_id'             => $quiz_id,
-			'event_id'            => \absint( $input['event_id'] ?? 0 ),
-			'session_index'       => \absint( $input['session_index'] ?? 0 ),
+			'event_id'            => $event_id,
+			'session_index'       => $session_index,
 			'require_prior_items' => empty( $input['require_prior_items'] ) ? 0 : 1,
 		];
 

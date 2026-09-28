@@ -211,4 +211,74 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 
 		$this->assertFalse( $this->progress->get_course_progress( $this->user, $this->course )->complete );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * PR36 bot review finding e - an unpublished curriculum item never gates
+	 * progression, and never counts toward the completion percentage.
+	 * ------------------------------------------------------------------- */
+
+	public function test_a_draft_required_lesson_never_gates_sequential_progression() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Lesson' ]
+		);
+
+		Curriculum::save(
+			$this->course,
+			[ [ 'title' => 'M1', 'items' => [
+				[ 'type' => 'lesson', 'id' => $this->l1 ],
+				[ 'type' => 'lesson', 'id' => $draft ],
+				[ 'type' => 'lesson', 'id' => $this->l2 ],
+			] ] ]
+		);
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->l1 );
+
+		$this->assertTrue(
+			$this->progress->is_item_available( $this->user, $this->course, $this->l2 ),
+			'A draft required lesson must never gate sequential progression - it cannot be completed through any public route.'
+		);
+	}
+
+	public function test_a_draft_required_quiz_never_gates_sequential_progression() {
+		$draft_quiz = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\QuizPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Quiz' ]
+		);
+
+		Curriculum::save(
+			$this->course,
+			[ [ 'title' => 'M1', 'items' => [
+				[ 'type' => 'lesson', 'id' => $this->l1 ],
+				[ 'type' => 'quiz', 'id' => $draft_quiz ],
+				[ 'type' => 'lesson', 'id' => $this->l2 ],
+			] ] ]
+		);
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->l1 );
+
+		$this->assertTrue(
+			$this->progress->is_item_available( $this->user, $this->course, $this->l2 ),
+			'A draft required quiz must never gate sequential progression.'
+		);
+	}
+
+	public function test_a_draft_required_item_does_not_count_toward_the_completion_percentage() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Lesson' ]
+		);
+
+		Curriculum::save(
+			$this->course,
+			[ [ 'title' => 'M1', 'items' => [
+				[ 'type' => 'lesson', 'id' => $this->l1 ],
+				[ 'type' => 'lesson', 'id' => $draft ],
+			] ] ]
+		);
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->l1 );
+
+		$p = $this->progress->get_course_progress( $this->user, $this->course );
+		$this->assertSame( 1, $p->total_required, 'A draft required item must not count toward the total - a learner cannot complete it either.' );
+		$this->assertSame( 100.0, $p->percent );
+		$this->assertTrue( $p->complete );
+	}
 }

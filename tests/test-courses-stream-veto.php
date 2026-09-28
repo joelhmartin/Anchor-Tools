@@ -496,4 +496,41 @@ class Test_Courses_Stream_Veto extends Anchor_Courses_TestCase {
 		$this->assertContains( $already_gated, $ids, 'The originally gated lesson must still be reported.' );
 		$this->assertContains( $not_yet_gated, $ids, 'The save must have invalidated the memo, not just added to it.' );
 	}
+
+	/**
+	 * PR36 bot review finding e (Codex): a required DRAFT lesson placed
+	 * before a gated `live_session` lesson must never veto stream access -
+	 * a learner cannot complete a draft through any public route, so a
+	 * free-progression course could otherwise be locked at event time
+	 * permanently, with the denial notice pointing at content nobody can
+	 * reach. `ProgressService::first_incomplete_prior_item()` (which this
+	 * veto reuses directly) now skips unpublished items the same way
+	 * `CoursesController::curriculum()` already hides them from the public
+	 * listing.
+	 */
+	public function test_a_draft_prework_lesson_never_vetoes_the_stream() {
+		$event_id = 5252;
+		$draft    = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Prework' ]
+		);
+		$live = $this->make_lesson(
+			[ 'type' => 'live_session', 'event_id' => $event_id, 'session_index' => 0, 'require_prior_items' => 1 ],
+			'Gated Livestream'
+		);
+		$course = $this->make_course( [ 'progression_mode' => 'free' ], 'Draft Gate Course' );
+
+		Curriculum::save(
+			$course,
+			[ [ 'title' => 'M', 'items' => [
+				[ 'type' => 'lesson', 'id' => $draft ],
+				[ 'type' => 'lesson', 'id' => $live ],
+			] ] ]
+		);
+		Roles::grant_access( $this->user, $course );
+
+		$this->assertTrue(
+			Events::veto_stream_access( true, $event_id, 0, $this->user ),
+			'A draft required lesson must never veto - it cannot be completed through any public route.'
+		);
+	}
 }

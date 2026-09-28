@@ -49,7 +49,13 @@ final class ProgressService {
 	}
 
 	public function get_course_progress( int $user_id, int $course_id ): CourseProgress {
-		$required  = Curriculum::required_items( $course_id );
+		// An unpublished required item never counts toward the total either
+		// (PR36 finding e) - a draft/pending/private lesson or quiz cannot be
+		// completed by a learner through any public route (the curriculum
+		// REST route already hides it, CoursesController::curriculum()), so
+		// counting it against the percentage would hold a course below 100%
+		// for a reason no learner can ever act on.
+		$required  = self::published_only( Curriculum::required_items( $course_id ) );
 		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
 
 		$done = 0;
@@ -158,7 +164,13 @@ final class ProgressService {
 	 */
 	public function first_incomplete_prior_item( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): ?array {
 		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
-		foreach ( Curriculum::items_before( $course_id, $item_id, $item_type ) as $earlier ) {
+		// An unpublished item never gates progression (PR36 finding e): a
+		// draft/pending/private lesson or quiz cannot be reached or
+		// completed through any public route, so requiring it first would
+		// lock the course - and, through this exact loop, the live-session
+		// veto (Integrations\Events::prework_block()) - permanently on
+		// content nobody can act on.
+		foreach ( self::published_only( Curriculum::items_before( $course_id, $item_id, $item_type ) ) as $earlier ) {
 			if ( ! $earlier['required'] ) {
 				continue;
 			}
@@ -170,6 +182,26 @@ final class ProgressService {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * Curriculum items whose post is actually `publish` (PR36 finding e) -
+	 * the one filter both the sequential progression gate and the
+	 * completion percentage apply, so neither can be blocked or held down by
+	 * content a learner cannot reach through any public route. Mirrors
+	 * `Rest\CoursesController::curriculum()`'s own `publish` filter, which
+	 * hides the same items from the public curriculum listing.
+	 *
+	 * @param array<int,array{type:string,id:int,required:bool}> $items
+	 * @return array<int,array{type:string,id:int,required:bool}>
+	 */
+	private static function published_only( array $items ): array {
+		return \array_values(
+			\array_filter(
+				$items,
+				static fn( array $item ): bool => 'publish' === \get_post_status( (int) $item['id'] )
+			)
+		);
 	}
 
 	/**

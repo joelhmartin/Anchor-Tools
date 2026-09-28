@@ -382,3 +382,4 @@ Current modules in Anchor Tools:
 | `quick_edit` | `Anchor_Quick_Edit_Module` | Quick Edit for Yoast SEO + images |
 | `ctm_forms` | `Anchor_CTM_Forms_Module` | CallTrackingMetrics form integration |
 | `code_snippets` | `Anchor_Code_Snippets_Module` | Insert code snippets into header, body, or footer |
+| `courses` | `\Anchor\Courses\Module` | LMS: courses, lessons, quizzes, progress, CE credits, certificates |

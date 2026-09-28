@@ -44,8 +44,9 @@ class Anchor_Compliance_Script_Blocker {
 	const SRC_TAG_PATTERN_TEMPLATE = '#<%s\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is';
 
 	/**
-	 * Per-element opt-out. A <script> or <iframe> carrying this attribute is
-	 * never gated, by this rewrite or by the front-end MutationObserver guard
+	 * Per-element opt-out. A <script> (src or inline) or <iframe> carrying this
+	 * attribute is never gated - not an <img> pixel, which is never the
+	 * requested service - by this rewrite or by the front-end MutationObserver guard
 	 * (assets/frontend.js neutralizeIframe()/neutralizeScript()), whatever
 	 * its src matches. It is for resources that ARE the service the visitor
 	 * asked for - e.g. the events module's hosted stream player in the room a
@@ -597,7 +598,9 @@ class Anchor_Compliance_Script_Blocker {
 				$url    = ( '' !== $m[2] ) ? $m[3] : $m[4];
 				$after  = $this->strip_self_closing_slash( $m[5] );
 
-				if ( self::is_exempt( $before . $after ) ) {
+				// The per-element opt-out covers scripts and iframes only: an
+				// <img> pixel is never "the service the visitor asked for".
+				if ( 'img' !== $tag && self::is_exempt( $before . $after ) ) {
 					return $m[0];
 				}
 
@@ -870,6 +873,10 @@ class Anchor_Compliance_Script_Blocker {
 				$original_type = $this->type_value( $attrs );
 				if ( ! $this->is_executable_type( $original_type ) ) {
 					return $m[0]; // JSON-LD, a client-side template, etc. — not code, never gated.
+				}
+
+				if ( self::is_exempt( $attrs ) ) {
+					return $m[0]; // per-element opt-out (EXEMPT_ATTR), same as a src script
 				}
 
 				if ( false !== stripos( $attrs, 'data-anchor-consent' ) ) {

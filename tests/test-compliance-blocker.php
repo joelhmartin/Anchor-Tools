@@ -820,6 +820,12 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( ' title="x data-anchor-consent-exempt" width="1"' ) );
 		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( " alt='data-anchor-consent-exempt'" ) );
 		$this->assertTrue( Anchor_Compliance_Script_Blocker::is_exempt( ' title="a b" data-anchor-consent-exempt="1"' ) );
+		// Inline scripts honour it too; <img> pixels never do.
+		$inline = '<script data-anchor-consent-exempt>fbq("track","PageView");</script>';
+		$this->assertStringContainsString( $inline, $this->blocker()->rewrite( '<body>' . $inline . '</body>' ), 'An exempt inline script is untouched.' );
+		$pixel  = '<img data-anchor-consent-exempt src="https://www.facebook.com/tr?id=1&ev=PageView" />';
+		$this->assertStringNotContainsString( ' src="https://www.facebook.com/tr', $this->blocker()->rewrite( '<body>' . $pixel . '</body>' ), 'A pixel cannot opt out.' );
+
 		$smuggled = '<iframe title="see data-anchor-consent-exempt" src="https://www.youtube.com/embed/abc123"></iframe>';
 		$this->assertStringContainsString( 'anchor-cmp-placeholder', $this->blocker()->rewrite( '<body>' . $smuggled . '</body>' ), 'A smuggled mention still gets blocked.' );
 	}

@@ -477,8 +477,14 @@ Reopens the row, deletes progress rows, voids every counted attempt as
 `abandoned` (not counted toward `max_attempts`, no retry delay), and restarts
 the row (`enrolled`, no `started_at` / `completed_at`) - all under ONE hold of
 the completion lock (see `reopen_for_reset()` above, Round 9). `WP_Error(
-'reset_busy')` on a busy lock or `WP_Error( 'reset_failed' )` on a write
-failure, and nothing touched either way.
+'reset_busy')` on a busy lock touches nothing at all - retry shortly.
+`WP_Error( 'reset_failed' )` on the REOPEN write itself failing also touches
+nothing; but the same code also covers a `$clear()` (progress-row deletion /
+attempt-abandonment) that fails AFTER the reopen write already committed -
+that case is NOT "nothing touched": the row is left reopened with
+`reset_pending_at` still set, `complete()` refused while that marker stands,
+and the fix is simply to retry Reset (see "Progression and completion" above
+for the full recovery mechanics).
 
 ---
 
@@ -704,11 +710,15 @@ Both actions go through `admin-post.php?action=anchor_courses_add_learner` /
 
 `admin-post.php?action=anchor_courses_manage_enrollment`
 (`Admin\EnrollmentManager`) exposes `cancel`, `reset` (`reset_busy` when the
-completion lock is busy, `reset_failed` when the write fails - either way
-nothing touched, see "Progression and completion"), `complete`, `uncomplete`,
-and `repair` (re-run pending/failed/untracked completion effects; `repaired`
-only once all four read `done`/`n/a`, else `repair_incomplete`;
-`repair_not_completed` when the row isn't complete at all).
+completion lock is busy - nothing touched; `reset_failed` when the reopen
+write itself fails - also nothing touched, OR when the later `$clear()`
+fails after the reopen already committed - that leaves the row reopened with
+`reset_pending_at` set, recoverable by simply retrying Reset; see
+"Progression and completion" for the full mechanics), `complete`,
+`uncomplete`, and `repair` (re-run pending/failed/untracked completion
+effects; `repaired` only once all four read `done`/`n/a`, else
+`repair_incomplete`; `repair_not_completed` when the row isn't complete at
+all).
 
 ### Course Role panel
 
@@ -880,7 +890,7 @@ needs to know whether it may show a "buy" link reads `/me/courses`.
 | GET | `/me/courses` | - | 200, the signed-in learner's own enrolments (`course_id`, `title`, `permalink`, `status`, `percent`) |
 | GET | `/me/courses/{id}/progress` | - | 200, `ProgressService::get_course_progress()->to_array()` for the signed-in learner |
 | POST | `/lessons/{id}/start` | `course_id` (required) | 200, `Progress::to_array()`; 403 `locked` when `ProgressService::start_lesson()` refuses (not enrolled, not in the course, or sequential gating) |
-| POST | `/lessons/{id}/complete` | `course_id` (required) | 200, `Progress::to_array()`; service `WP_Error` mapped through `Routes::error_response()` (403 `not_enrolled`, `not_in_course`, `locked`; 503 `save_failed`; 400 `quiz_required`, unmapped) |
+| POST | `/lessons/{id}/complete` | `course_id` (required) | 200, `Progress::to_array()`; service `WP_Error` mapped through `Routes::error_response()` (403 `not_enrolled`, `not_in_course`, `locked`; 409 `quiz_required`; 503 `save_failed`; 400 unmapped) |
 | GET | `/me/certificates` | - | 200, the signed-in learner's certificates + `course_title` |
 | GET | `/me/credits` | - | 200 `{credits:[...], total}` for the signed-in learner |
 
@@ -972,10 +982,15 @@ status themselves.
 Only constructed when `class_exists('WooCommerce')`; `Module::$woocommerce` is
 null otherwise. A product's `_anchor_course_ids` meta names the course(s) it
 grants (`WooCommerce::set_courses_for_product()`/`courses_for_product()`); a
-variation's own mapping wins over its parent product's when set. The mapping
-accepts any `anchor_course` post regardless of status (draft/private
-included) - see "Publishing" below for what happens when a mapped course
-isn't published yet.
+variation's own mapping wins over its parent product's when set. **A
+variation may also explicitly opt out of the parent's mapping**: saving it
+with no courses selected and the override checkbox on (see below) stores the
+sentinel value `WooCommerce::NONE_OVERRIDE` (`'none'`) instead of deleting the
+meta - distinct from unmapped (meta absent, which INHERITS the parent's
+mapping). `courses_for_ids()` checks for the sentinel before ever falling
+back to the parent. The mapping accepts any `anchor_course` post regardless
+of status (draft/private included) - see "Publishing" below for what happens
+when a mapped course isn't published yet.
 
 The product screen's **Courses** tab lists every course in
 `WooCommerce::MAPPABLE_STATUSES` (publish, private, draft, pending, future),
@@ -983,10 +998,34 @@ unpublished ones labelled with their status (e.g. "Staged Course (draft)"),
 and always includes every course already mapped - so saving a product never
 drops a mapping merely because the course is unpublished.
 
-**Variation mappings are code-only today.** The tab lives on the parent
-product's data panel; there is no per-variation field. A variation's own
-mapping (which wins over the parent's) can only be set in code with
-`WooCommerce::set_courses_for_product( $variation_id, [ ... ] )`.
+**Variation mappings are otherwise code-only.** The Courses tab lives on the
+parent product's data panel; there is no per-variation multi-select. Setting
+SPECIFIC courses on a variation, distinct from its parent's, can only be done
+in code with `WooCommerce::set_courses_for_product( $variation_id, [ ... ] )`.
+The one thing the variation panel itself exposes is the minimal opt-out
+above - a single "No courses (override the parent)" checkbox
+(`render_variation_fields()`/`save_variation_courses()`, hooked on
+WooCommerce's own `woocommerce_product_after_variable_attributes` /
+`woocommerce_save_product_variation`, the same pair
+`anchor-events-manager/class-woocommerce.php` uses for its own per-variation
+event field).
+
+**The resolved courses are snapshotted onto the order line.** At checkout
+(`woocommerce_checkout_create_order_line_item`) the line's mapped courses -
+resolved from the product/variation exactly as above - are written onto the
+order item as `_anchor_courses_course_ids` (`WooCommerce::COURSE_IDS_META`),
+before the order is ever saved. `enroll_order()`, `retry_orders_for_course()`
+and both revoke paths all resolve a line's courses through this snapshot
+FIRST, falling back to the live product/variation mapping only when no
+snapshot exists (a line from before this existed, or an order created
+outside checkout - the same "outside checkout" cases the account section
+below already distinguishes). A line lacking a snapshot gets one written the
+first time `enroll_order()` resolves it, whether or not the grant that
+follows succeeds. The practical effect: remapping a product from course A to
+B while an order is still pending does not change what that order grants -
+the buyer who checked out against A still gets A; and removing a mapping
+entirely before a refund does not make the already-granted course
+un-revocable - the refund still finds A in the snapshot and takes it back.
 
 An order reaching a qualifying status (`ENROLL_STATUSES`, default
 `processing`/`completed`, filter `anchor_courses_wc_enroll_statuses`) grants
@@ -1039,16 +1078,36 @@ a manual resync (`enroll_order( $order_id )`). Each order is then checked
 for a qualifying status and re-resolved line by line before granting.
 
 A course page shows an **Enrol** button only when a product maps to the
-course, and it links to that product (`anchor_courses_access_cta`). With no
-product, the page shows the `anchor_courses_no_access_message` text instead.
+course (`WooCommerce::products_for_course()`, the reverse lookup), and it
+links to that product (`anchor_courses_access_cta`). A course mapped only on
+a `product_variation` still gets the button - the reverse lookup includes
+variations and resolves each match to its PARENT product (deduplicated
+against any product that also matches directly), since a visitor buys the
+product, never a bare variation. With no product (and no variation whose
+parent resolves), the page shows the `anchor_courses_no_access_message` text
+instead.
 
 ### Refund and cancellation
 
-An order moving to `REVOKE_STATUSES` (`refunded`/`cancelled`/`failed`) takes
-back every course access role THIS order granted (`revoke_order()`). A
-partial refund (`woocommerce_order_refunded`, which fires for every refund,
-not only a whole-order one) only revokes the course(s) whose mapped line was
-refunded IN FULL - an untouched or partially-refunded line's course survives.
+An order moving to `cancelled`/`failed` (of `REVOKE_STATUSES`) takes back
+every course access role THIS order granted (`revoke_order()`) - both carry
+no refund object at all, so the whole order is the only signal either gives.
+An order moving to **`refunded`** instead goes through the same per-line path
+a partial refund does (`revoke_refunded_lines()`, below) rather than the
+unconditional `revoke_order()`: a shop manager can set an order to `refunded`
+by hand after only a partial refund, and some gateways do this automatically
+too, so treating the status alone as "revoke everything" would take back a
+line's course that was never actually refunded. `woocommerce_order_refunded`
+(which fires for every refund, full or partial, whether or not it also moves
+the order into `refunded`) reaches the same method directly. Either way, only
+the course(s) whose mapped line was refunded IN FULL are revoked - an
+untouched or partially-refunded line's course survives. **When the order
+carries no refund records at all** (the `refunded` status was set by hand, or
+by a gateway that skips WooCommerce's own refund flow, with no
+`wc_create_refund()` behind it), there is no per-line refund quantity to
+read, so every mapped line is treated as fully refunded instead - the
+order's status is the only fact available, and it says the whole order is
+refunded.
 
 **What "this order granted" means.** Revocation is matched through
 `Roles::grant_record( $user_id, $course_id )` - what the grants map says is
@@ -1297,7 +1356,7 @@ attempts left open past their deadline. One cron hook, two closers.
 | `edit_courses` | `edit_anchor_courses` | the `anchor_course` CPT (every primitive maps to it) |
 | `edit_lessons` | `edit_anchor_lessons` | the `anchor_lesson` CPT; also the lesson preview (`edit_post`) |
 | `edit_quizzes` | `edit_anchor_quizzes` | the `anchor_quiz` CPT |
-| `reports` | `view_anchor_course_reports` | the Learners metabox, the `/admin/*` reporting REST routes, other users' profile Courses block |
+| `reports` | `view_anchor_course_reports` | the Learners metabox, other users' profile Courses block, and the roster/completions REST routes only - `/admin/courses/{id}/learners`, `/admin/users/{id}/courses`, `/admin/reports/completions` (NOT `/admin/reports/credits` - that route is `manage_anchor_credits`, see "Admin reporting" above) |
 | `enrollments` | `manage_anchor_enrollments` | Learners tab add/revoke, Manage enrolment actions |
 | `credits` | `manage_anchor_credits` | the `/admin/reports/credits` REST route; otherwise reserved (not yet checked anywhere else) |
 | `certificates` | `manage_anchor_certificates` | reserved (not yet checked anywhere) |

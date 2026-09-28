@@ -150,6 +150,27 @@ class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( (string) $draft, $body );
 	}
 
+	/**
+	 * PR36 bot review finding f: `summary()`'s `item_count` must use the
+	 * same `publish` filter `curriculum()` applies, so the catalogue count
+	 * can never disagree with - or reveal the existence of - a draft item
+	 * the curriculum route itself hides.
+	 */
+	public function test_item_count_excludes_unpublished_items() {
+		$draft   = self::factory()->post->create( [ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Secret Draft Lesson' ] );
+		$modules = \Anchor\Courses\Content\Curriculum::get( $this->course );
+		$modules[0]['items'][] = [ 'type' => 'lesson', 'id' => $draft, 'required' => true ];
+		\Anchor\Courses\Content\Curriculum::save( $this->course, $modules );
+
+		$response = $this->request( 'GET', "/courses/{$this->course}" );
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame(
+			2,
+			$response->get_data()['item_count'],
+			'The draft lesson must not inflate item_count past the two published items curriculum() itself lists.'
+		);
+	}
+
 	public function test_completing_a_lesson_while_unenrolled_is_403() {
 		wp_set_current_user( $this->make_learner() );
 		$response = $this->request( 'POST', "/lessons/{$this->lesson}/complete", [ 'course_id' => $this->course ] );

@@ -132,7 +132,16 @@ final class CoursesController {
 			'difficulty'       => (string) CourseEditor::setting( $id, 'difficulty' ),
 			'ce_credits'       => (float) CourseEditor::setting( $id, 'ce_credits' ),
 			'progression_mode' => (string) CourseEditor::setting( $id, 'progression_mode' ),
-			'item_count'       => \count( Curriculum::items( $id ) ),
+			// The same `publish` filter curriculum() applies (PR36 finding
+			// f): otherwise a draft item staged into the curriculum inflates
+			// the catalogue's count past what the curriculum route itself
+			// ever lists, and its mere existence leaks through the number.
+			'item_count'       => \count(
+				\array_filter(
+					Curriculum::items( $id ),
+					static fn( array $i ): bool => 'publish' === \get_post_status( (int) $i['id'] )
+				)
+			),
 		];
 	}
 }

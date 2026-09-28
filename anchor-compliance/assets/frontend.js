@@ -1763,6 +1763,7 @@
 		return DEFAULT_IFRAME_RULES.slice();
 	}
 
+	var EXEMPT_ATTR = 'data-anchor-consent-exempt'; // = Anchor_Compliance_Script_Blocker::EXEMPT_ATTR
 	var RULES = [];        // iframe-context rules
 	var SCRIPT_RULES = []; // script-src-context rules
 
@@ -1812,6 +1813,8 @@
 	/** Neutralize one client-built iframe into Task 6's exact blocked shape. */
 	function neutralizeIframe(frame) {
 		if (!frame || frame.getAttribute('data-anchor-consent')) { return; }
+		// Per-element opt-out shared with the PHP rewrite (Script_Blocker::EXEMPT_ATTR).
+		if (frame.hasAttribute(EXEMPT_ATTR)) { return; }
 
 		var src = frame.getAttribute('src');
 		if (!src || src === 'about:blank') { return; }
@@ -1872,6 +1875,7 @@
 	 */
 	function neutralizeScript(el) {
 		if (!el || el.getAttribute('data-anchor-consent')) { return; }
+		if (el.hasAttribute(EXEMPT_ATTR)) { return; }
 		if (!el.parentNode) { return; }
 
 		var src = el.getAttribute('src');

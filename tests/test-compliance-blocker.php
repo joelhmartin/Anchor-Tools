@@ -795,4 +795,38 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 
 		$this->assertTrue( $b->should_run(), 'Removing the filter must restore the default decision.' );
 	}
+
+	/**
+	 * 3.32.1: per-element opt-out (Anchor_Compliance_Script_Blocker::EXEMPT_ATTR).
+	 * An iframe or script carrying it is left byte-for-byte alone whatever
+	 * its src matches; its neighbours on the same page are still gated.
+	 */
+	public function test_an_exempt_element_is_never_rewritten_but_its_neighbours_are() {
+		$exempt  = '<iframe src="https://player.vimeo.com/video/1" data-anchor-consent-exempt="stream" allow="autoplay"></iframe>';
+		$gated   = '<iframe src="https://www.youtube.com/embed/abc123"></iframe>';
+		$script  = '<script data-anchor-consent-exempt src="https://connect.facebook.net/en_US/fbevents.js"></script>';
+		$out     = $this->blocker()->rewrite( '<body>' . $exempt . $gated . $script . '</body>' );
+
+		$this->assertStringContainsString( $exempt, $out, 'The exempt iframe is untouched.' );
+		$this->assertStringContainsString( $script, $out, 'A bare exempt attribute works on a script too.' );
+		$this->assertStringNotContainsString( ' src="https://www.youtube.com/embed', $out, 'The neighbour is still blocked.' );
+		$this->assertStringContainsString( 'data-anchor-src="https://www.youtube.com/embed/abc123"', $out );
+
+		$this->assertTrue( Anchor_Compliance_Script_Blocker::is_exempt( ' width="1" data-anchor-consent-exempt' ) );
+		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( ' data-anchor-consent-exemption="1"' ), 'Prefix collisions do not count.' );
+		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( ' data-anchor-consent="marketing"' ) );
+
+		// The text inside another attribute's VALUE is not an opt-out (Codex, PR #39).
+		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( ' title="x data-anchor-consent-exempt" width="1"' ) );
+		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( " alt='data-anchor-consent-exempt'" ) );
+		$this->assertTrue( Anchor_Compliance_Script_Blocker::is_exempt( ' title="a b" data-anchor-consent-exempt="1"' ) );
+		// Inline scripts honour it too; <img> pixels never do.
+		$inline = '<script data-anchor-consent-exempt>fbq("track","PageView");</script>';
+		$this->assertStringContainsString( $inline, $this->blocker()->rewrite( '<body>' . $inline . '</body>' ), 'An exempt inline script is untouched.' );
+		$pixel  = '<img data-anchor-consent-exempt src="https://www.facebook.com/tr?id=1&ev=PageView" />';
+		$this->assertStringNotContainsString( ' src="https://www.facebook.com/tr', $this->blocker()->rewrite( '<body>' . $pixel . '</body>' ), 'A pixel cannot opt out.' );
+
+		$smuggled = '<iframe title="see data-anchor-consent-exempt" src="https://www.youtube.com/embed/abc123"></iframe>';
+		$this->assertStringContainsString( 'anchor-cmp-placeholder', $this->blocker()->rewrite( '<body>' . $smuggled . '</body>' ), 'A smuggled mention still gets blocked.' );
+	}
 }

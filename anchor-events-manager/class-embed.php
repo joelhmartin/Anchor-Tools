@@ -172,7 +172,12 @@ class Embed {
                 . \esc_html( \sprintf( \__( 'Join on %s', 'anchor-schema' ), \ucfirst( (string) ( $embed['provider'] ?? 'the provider' ) ) ) )
                 . '</a></p>';
         }
+        // The player IS the service the attendee registered and signed in for:
+        // the compliance module's consent blocker must leave it alone (its
+        // per-element opt-out, Anchor_Compliance_Script_Blocker::EXEMPT_ATTR),
+        // while everything else on the room page stays gated as usual.
         return '<div class="anchor-room-player"><iframe src="' . \esc_url( $src ) . '"'
+            . ' data-anchor-consent-exempt="stream"'
             . ' allow="autoplay; fullscreen; picture-in-picture; encrypted-media"'
             . ' allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="eager"'
             . ' title="' . \esc_attr( $title ) . '"></iframe></div>';

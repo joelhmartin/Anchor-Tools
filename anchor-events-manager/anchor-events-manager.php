@@ -3312,6 +3312,11 @@ class Module {
             __( 'Events', 'anchor-schema' )     => [],
             __( 'Courses', 'anchor-schema' )    => [],
         ];
+        // get_editable_roles() lives in wp-admin/includes/user.php, which the
+        // front-end [event_manager] form never loads - calling it there was a
+        // fatal (3.31.0). This is that function's exact definition, minus the
+        // admin-only file: every role, through the same `editable_roles` filter.
+        $editable = (array) \apply_filters( 'editable_roles', \wp_roles()->roles );
         foreach ( \wp_roles()->role_names as $slug => $name ) {
             if ( $own_role !== '' && $slug === $own_role ) {
                 continue;
@@ -3321,7 +3326,7 @@ class Module {
                 $groups[ __( 'Events', 'anchor-schema' ) ][ $slug ] = $name;
             } elseif ( \strpos( $slug, 'anchor_course_' ) === 0 ) {
                 $groups[ __( 'Courses', 'anchor-schema' ) ][ $slug ] = $name;
-            } elseif ( isset( \get_editable_roles()[ $slug ] ) ) {
+            } elseif ( isset( $editable[ $slug ] ) ) {
                 $groups[ __( 'Site roles', 'anchor-schema' ) ][ $slug ] = $name;
             }
         }

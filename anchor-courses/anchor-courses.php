@@ -111,6 +111,12 @@ class Module {
 		// /certificate/{token}/ - the public verification route (Task 30).
 		new Frontend\CertificatePage( $this->certificates );
 
+		// dataLayer events for GTM/GA4 across the learner lifecycle (Task 35).
+		// Unconditional like every other frontend/* wiring above: it listens
+		// on its own action hooks and no-ops off those, so there is nothing
+		// to gate it behind.
+		new Integrations\Analytics();
+
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).
 		\add_action( Services\EnrollmentService::CRON_HOOK, [ $this->enrollments, 'sweep_expired' ] );

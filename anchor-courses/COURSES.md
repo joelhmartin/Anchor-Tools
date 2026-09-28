@@ -596,6 +596,33 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_capability_roles` | `[ 'administrator' ]` | roles granted the capabilities |
 | `anchor_courses_parent_menu` | `true` | show the Courses admin menu tree |
 | `anchor_courses_now` | `time()` | the clock (tests) |
+| `anchor_courses_analytics_enabled` | `true` | turn the whole `Integrations\Analytics` dataLayer pipeline off; when false nothing is ever queued (and a queue from before the flip is never printed) |
+| `anchor_courses_datalayer_event` | `array\|null $payload, string $event, array $args` | edit or drop (`null`) one dataLayer event before it is queued; `$args` are the firing hook's own positional arguments |
+
+## Analytics (`Integrations\Analytics`, Task 35)
+
+Browser `dataLayer` pushes for GTM/GA4 across the learner lifecycle - see the
+table above for `EVENTS` (hook name to dataLayer event name). **IDs only**:
+`event`, `course_id`, `lesson_id`, `quiz_id`, `attempt_id`, `score`,
+`credits`, `certificate_id` - never a name, email, title, or the WordPress
+user id.
+
+Server-side actions fire during a request with no page of its own
+(`admin-post.php` redirects, REST writes), so an event is queued
+(`Support\UserEventQueue`, a 5-minute transient, capped at 50 entries per
+user) against the **learner the event is about**, not necessarily whoever is
+logged in when it fires - an admin enrolling or completing a course for a
+learner from wp-admin must not have that learner's event attributed to the
+admin's own session. `wp_footer` (priority 30) flushes and prints the current
+visitor's own queue as one `<script>` tag (`wp_print_inline_script_tag()`),
+so it can land on whatever front-end page that learner's browser loads next.
+
+`Support\UserEventQueue` is deliberately generic (nothing analytics- or
+courses-specific): the plugin's other modules load as classic
+`require_once`d classes rather than PSR-4, so if `anchor-events-manager`
+ever wants the same "queue it, print it once" pattern for its own dataLayer
+events, it should depend on this class (Composer's autoloader is
+plugin-wide) rather than writing a second transient queue.
 
 ## Shortcodes
 

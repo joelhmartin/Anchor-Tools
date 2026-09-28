@@ -7,7 +7,9 @@
  * and duplicating it here would mean two places to get entitlement wrong.
  *
  * Variables: $lesson_id, $course_id, $event_id, $available (bool - the
- * events module can resolve this event), $sessions (array), $room_url
+ * events module can resolve this event), $sessions (array - each row also
+ * carries 'timezone', the zone name Events::sessions() resolved it in),
+ * $room_url
  * (string - '' unless both the event resolves AND the current learner is
  * is_enrolled() in $course_id), $state (array), $item_available (bool - the
  * same ProgressService::is_item_available() authority the plain lesson
@@ -63,9 +65,23 @@ $notice = Actions::notice();
 						<th scope="row"><?php echo esc_html( '' === $session['label'] ? $session['date'] : $session['label'] ); ?></th>
 						<td>
 							<?php
+							// The event's own zone (Events::sessions()' 'timezone', the
+							// same Module::event_timezone() the room renders with), not
+							// the site's - this is the defect the class Events.php fixes:
+							// a bare wp_date() with no third argument reads the SITE zone
+							// and can show a different clock time than the room for the
+							// same instant when timezone_mode=event.
+							$session_tz = null;
+							if ( '' !== ( $session['timezone'] ?? '' ) ) {
+								try {
+									$session_tz = new DateTimeZone( $session['timezone'] );
+								} catch ( Exception $e ) {
+									$session_tz = null; // Falls back to wp_date()'s own site-zone default below.
+								}
+							}
 							echo esc_html(
 								$session['start_ts'] > 0
-									? wp_date( (string) get_option( 'date_format' ) . ' ' . (string) get_option( 'time_format' ), $session['start_ts'] )
+									? wp_date( (string) get_option( 'date_format' ) . ' ' . (string) get_option( 'time_format' ), $session['start_ts'], $session_tz )
 									: trim( $session['date'] . ' ' . $session['start_time'] )
 							);
 							?>

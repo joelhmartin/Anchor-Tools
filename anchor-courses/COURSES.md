@@ -1252,6 +1252,14 @@ saved it), the template falls back to "Live session unavailable." rather
 than the "will appear here before the session starts" wording, which
 implies the event still exists.
 
+The schedule table renders each session's clock time in the same zone the
+room does: `Events::sessions()` attaches the zone name
+`Module::event_timezone()` resolved for the event - the event's own
+timezone when the events setting `timezone_mode` is `event`, the site
+timezone when it is `site` (the default) - and the template passes that zone
+into `wp_date()` as its third argument. Whichever mode is set, the same
+instant never reads differently here than in the room.
+
 When the stream veto (below) would refuse this learner the room, the
 template shows the veto's notice - "Finish the earlier lessons in {course}
 first." with a link to the unfinished lesson - **instead of** the Join

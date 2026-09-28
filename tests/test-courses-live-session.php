@@ -23,6 +23,7 @@ use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Integrations\Events;
 use Anchor\Courses\Support\Clock;
 use Anchor\Courses\Support\Roles;
+use Anchor\Events\Module;
 
 /** @group courses */
 class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
@@ -56,14 +57,14 @@ class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
 	}
 
 	/** A real streamed event (mirrors tests/test-room.php's stream_event() fixture). */
-	private function streamed_event(): int {
+	private function streamed_event( string $timezone = 'UTC' ): int {
 		$start    = time() + ( 2 * HOUR_IN_SECONDS );
 		$event_id = (int) self::factory()->post->create( [ 'post_type' => 'event', 'post_status' => 'publish' ] );
 
 		$meta = [
 			'registration_mode'       => 'free',
 			'access_role_enabled'     => true,
-			'timezone'                => 'UTC',
+			'timezone'                => $timezone,
 			'start_date'              => gmdate( 'Y-m-d', $start ),
 			'start_time'              => gmdate( 'H:i', $start ),
 			'start_ts'                => $start,
@@ -76,6 +77,20 @@ class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
 		}
 
 		return $event_id;
+	}
+
+	/**
+	 * `Module::OPTION_KEY`'s `timezone_mode` ('site' default, or 'event') -
+	 * same helper shape as tests/test-timezone.php's set_timezone_mode(),
+	 * since Events::event_timezone() reads the exact same option through
+	 * the events module's own Module::event_timezone_name().
+	 */
+	private function set_timezone_mode( string $mode ): void {
+		$settings                  = get_option( Module::OPTION_KEY, [] );
+		$settings                  = is_array( $settings ) ? $settings : [];
+		$settings['timezone_mode'] = $mode;
+		update_option( Module::OPTION_KEY, $settings );
+		Module::instance()->clear_caches();
 	}
 
 	/* ---------------------------------------------------------------------
@@ -340,5 +355,77 @@ class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
 		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
 		$this->assertStringContainsString( 'Join the livestream', $html, 'Pre-work done: Join comes back.' );
 		$this->assertStringNotContainsString( 'Finish the earlier lessons in', $html );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Timezone (Codex + CodeRabbit, PR #36) - a live_session lesson must
+	 * show the same clock time the room does: the EVENT's own zone, not the
+	 * site's, when timezone_mode=event.
+	 * ------------------------------------------------------------------- */
+
+	public function test_the_schedule_renders_the_event_timezone_when_timezone_mode_is_event() {
+		update_option( 'timezone_string', 'UTC' );
+		$this->set_timezone_mode( 'event' );
+
+		$event_id = $this->streamed_event( 'America/Denver' );
+		update_post_meta( $this->lesson, '_anchor_lesson_event_id', $event_id );
+
+		$start_ts    = (int) get_post_meta( $event_id, '_anchor_event_start_ts', true );
+		$date_format = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );
+		$denver_time = wp_date( $date_format, $start_ts, new DateTimeZone( 'America/Denver' ) );
+		$site_time   = wp_date( $date_format, $start_ts, new DateTimeZone( 'UTC' ) );
+
+		$this->assertNotSame(
+			$denver_time,
+			$site_time,
+			'Precondition: Denver and the site (UTC) must resolve to different clock times or this test proves nothing.'
+		);
+
+		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
+
+		$this->assertStringContainsString( $denver_time, $html, 'The schedule must show the EVENT zone (Denver), matching the room.' );
+		$this->assertStringNotContainsString( $site_time, $html, 'The schedule must not show the SITE zone once timezone_mode=event.' );
+	}
+
+	public function test_the_schedule_falls_back_to_the_site_timezone_when_timezone_mode_is_site() {
+		update_option( 'timezone_string', 'UTC' );
+		$this->set_timezone_mode( 'site' );
+
+		// The event still carries its own zone meta - timezone_mode=site must
+		// ignore it, exactly as Module::event_timezone_name() does.
+		$event_id = $this->streamed_event( 'America/Denver' );
+		update_post_meta( $this->lesson, '_anchor_lesson_event_id', $event_id );
+
+		$start_ts    = (int) get_post_meta( $event_id, '_anchor_event_start_ts', true );
+		$date_format = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );
+		$site_time   = wp_date( $date_format, $start_ts, new DateTimeZone( 'UTC' ) );
+
+		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
+
+		$this->assertStringContainsString( $site_time, $html );
+	}
+
+	public function test_events_sessions_attaches_the_resolved_timezone_name_to_each_row() {
+		$this->set_timezone_mode( 'event' );
+		$event_id = $this->streamed_event( 'America/Denver' );
+
+		$sessions = Events::sessions( $event_id );
+
+		$this->assertSame( 'America/Denver', $sessions[0]['timezone'] );
+	}
+
+	public function test_events_event_timezone_falls_back_to_the_site_zone_when_the_events_module_is_absent() {
+		update_option( 'timezone_string', 'UTC' );
+
+		$prop = new ReflectionProperty( \Anchor\Events\Module::class, 'instance' );
+		$prop->setAccessible( true );
+		$real = $prop->getValue();
+		$prop->setValue( null, null );
+
+		try {
+			$this->assertSame( 'UTC', Events::event_timezone( 1 )->getName() );
+		} finally {
+			$prop->setValue( null, $real );
+		}
 	}
 }

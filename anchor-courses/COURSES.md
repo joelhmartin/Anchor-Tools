@@ -623,6 +623,8 @@ courses-specific): the plugin's other modules load as classic
 ever wants the same "queue it, print it once" pattern for its own dataLayer
 events, it should depend on this class (Composer's autoloader is
 plugin-wide) rather than writing a second transient queue.
+| `anchor_courses_wc_enroll_statuses` | `['processing','completed']` | which order statuses grant access |
+| `anchor_courses_wc_refund_policy` | `'remove_role', $order_id, $course_id, $user_id` | remove_role\|keep - whether a refund takes the access role away |
 
 ## Shortcodes
 
@@ -723,6 +725,66 @@ param on a report) rather than leaving either query unbounded.
 Admin handlers authorise and redirect through `Admin\Notices::authorisation_error()`
 / `authorise()` and `Admin\Notices::redirect( $code, $target )`, which only sends
 codes registered with `Notices::register()` (anything else becomes `error`).
+
+## WooCommerce integration (`Integrations\WooCommerce`)
+
+Only constructed when `class_exists('WooCommerce')`; `Module::$woocommerce` is
+null otherwise. A product's `_anchor_course_ids` meta names the course(s) it
+grants (`WooCommerce::set_courses_for_product()`/`courses_for_product()`); a
+variation's own mapping wins over its parent product's when set.
+
+An order reaching a qualifying status (`ENROLL_STATUSES`, default
+`processing`/`completed`, filter `anchor_courses_wc_enroll_statuses`) grants
+the access role for every mapped course through `Roles::grant_access()`
+(never `EnrollmentService::enroll()` directly - the role IS the enrolment).
+A refusal (missing prerequisite, or the course still draft/private) is logged
+and left as an order note (`blocked_prerequisite`/`blocked_no_course`); the
+order itself is never touched - refunding is a human decision. Publishing a
+draft/private mapped course retries every already-qualifying order against it
+(`on_course_published()`, bounded by `RETRY_ORDER_LIMIT`).
+
+### Refund and cancellation (Task 40)
+
+An order moving to `REVOKE_STATUSES` (`refunded`/`cancelled`/`failed`) takes
+back every course access role THIS order granted (`revoke_order()`). A
+partial refund (`woocommerce_order_refunded`, which fires for every refund,
+not only a whole-order one) only revokes the course(s) whose mapped line was
+refunded IN FULL - an untouched or partially-refunded line's course survives.
+
+**What "this order granted" means.** Revocation is matched through
+`Roles::grant_record( $user_id, $course_id )` - what the grants map says is
+held *now* - never the enrolment row's `source`/`source_id`, which keep the
+row's FIRST source forever and never change again. This is why a manual comp
+layered on top of a purchase survives a refund of the order that originally
+paid for it (`record_grant()` upgrades the record to `manual` the moment
+`Roles::grant_access( ..., 'manual' )` runs against an already-held role),
+and why two orders granting the SAME course behave asymmetrically: the grants
+map holds only one record per course, and `record_grant()` keeps the FIRST
+non-manual reason, so the map goes on crediting whichever order granted
+first. Refunding a *later* order that also paid for an already-held course is
+therefore correctly a no-op (its `source_id` never matches); refunding the
+*first* order still revokes the course even though a second order also paid
+for it - a known limit of the single-record grants map, not something this
+task redesigns.
+
+Two policies stack: `anchor_courses_wc_refund_policy` (`WooCommerce::refund_policy()`,
+default `remove_role`, filter args `$policy, $order_id, $course_id, $user_id`)
+decides whether the refund takes the access role away at all; if it does,
+the usual `anchor_courses_role_loss_policy` (default `keep`) is consulted
+inside `Roles::revoke_access()` exactly as for any other revocation, deciding
+what the loss means for the enrolment row.
+
+**The revoked marker.** The first successful revoke on an order stamps HPOS-safe
+order meta `WooCommerce::REVOKED_META` (`_anchor_courses_wc_revoked`, via
+`$order->update_meta_data()`/`save()`, never `update_post_meta()`) and leaves
+one order note. While marked, `enroll_order()` refuses to re-grant from that
+order - a stray duplicate status fire must not silently undo a deliberate
+refund. No admin UI ships with this task; clear it from WP-CLI or PHP with
+`WooCommerce::clear_revoked_marker( $order_id )`, then re-run the order
+through `enroll_order()` (or re-fire its qualifying status) to restore access.
+A refund against an order that never granted anything (e.g. a blocked
+prerequisite) is a silent no-op: nothing is revoked, the marker is not set,
+and no note is added.
 
 ## Database
 

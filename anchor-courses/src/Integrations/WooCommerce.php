@@ -6,6 +6,7 @@ namespace Anchor\Courses\Integrations;
 use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Support\Accounts;
 use Anchor\Courses\Support\Capabilities;
+use Anchor\Courses\Support\Clock;
 use Anchor\Courses\Support\Log;
 use Anchor\Courses\Support\Roles;
 
@@ -54,6 +55,9 @@ final class WooCommerce {
 
 		// Grant access the moment a qualifying order lands (Task 39, brief 18).
 		\add_action( 'woocommerce_order_status_changed', [ $this, 'on_order_status_changed' ], 10, 4 );
+
+		// Take it back on a refund/cancellation (Task 40, brief 18).
+		\add_action( 'woocommerce_order_refunded', [ $this, 'on_order_refunded' ], 10, 2 );
 
 		// Retry-on-publish (progress.md T39 ruling 2): Task 38's mapping
 		// deliberately allows staging a draft/private course, so an order that
@@ -276,7 +280,17 @@ final class WooCommerce {
 
 	/** `woocommerce_order_status_changed`. */
 	public function on_order_status_changed( $order_id, $from, $to, $order = null ): void {
-		if ( ! \in_array( \sanitize_key( (string) $to ), self::qualifying_statuses(), true ) ) {
+		$to_status = \sanitize_key( (string) $to );
+
+		if ( \in_array( $to_status, self::REVOKE_STATUSES, true ) ) {
+			// Cancelled/failed carry no refund object at all, so this is the
+			// only signal they ever give - the whole order's grants go back,
+			// not only the lines a (nonexistent) refund would name.
+			$this->revoke_order( (int) $order_id );
+			return;
+		}
+
+		if ( ! \in_array( $to_status, self::qualifying_statuses(), true ) ) {
 			return;
 		}
 
@@ -303,6 +317,14 @@ final class WooCommerce {
 
 		$order = \wc_get_order( $order_id );
 		if ( ! $order ) {
+			return 0;
+		}
+
+		if ( self::is_marked_revoked( $order ) ) {
+			// A refund already took access back from this order (Task 40); a
+			// stray re-fire of a qualifying status - the same hazard Task 39
+			// already guards enrol against - must not silently undo that.
+			// clear_revoked_marker() is the way back in.
 			return 0;
 		}
 
@@ -504,5 +526,275 @@ final class WooCommerce {
 		}
 
 		return $granted;
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Refund and cancellation (Task 40, brief 18, design spec 4).
+	 * ------------------------------------------------------------------- */
+
+	/** Order statuses that withdraw access. */
+	public const REVOKE_STATUSES = [ 'refunded', 'cancelled', 'failed' ];
+
+	/**
+	 * Order meta: once a revoke has actually taken something back from this
+	 * order, it is marked and enroll_order() refuses to re-grant from it - a
+	 * stray duplicate status fire (the same "WooCommerce is known to fire
+	 * twice" hazard Task 39 already works around for grants) must not
+	 * silently undo a deliberate refund. A human clears it with
+	 * clear_revoked_marker() before the order can grant again (progress.md
+	 * T40 ruling 1; documented in COURSES.md).
+	 *
+	 * HPOS-safe: read and written only through WC_Order's own meta API
+	 * ($order->update_meta_data()/get_meta()/save()), never
+	 * update_post_meta()/get_post_meta() - those bypass HPOS entirely when
+	 * orders are stored in the custom order tables.
+	 */
+	public const REVOKED_META = '_anchor_courses_wc_revoked';
+
+	/**
+	 * What a refund does to the ACCESS ROLE for one order/course pair.
+	 *
+	 * Default `remove_role` (design spec 4): the learner paid, then un-paid,
+	 * so the thing the payment bought goes away. What that loss then means
+	 * for their progress row is a separate, already-answered question:
+	 * `anchor_courses_role_loss_policy` (default `keep`) is consulted inside
+	 * Roles::revoke_access() exactly as it is for any other revocation - so
+	 * the out-of-the-box behaviour is "access gone, progress preserved", and
+	 * re-granting resumes the learner where they were.
+	 *
+	 * @return string remove_role|keep
+	 */
+	public static function refund_policy( int $order_id, int $course_id ): string {
+		$user_id = 0;
+		if ( \function_exists( 'wc_get_order' ) ) {
+			$order   = \wc_get_order( $order_id );
+			$user_id = $order ? self::customer_for_order( $order ) : 0;
+		}
+
+		/**
+		 * Filter the refund policy for one order and course.
+		 *
+		 * @param string $policy    remove_role|keep. Default 'remove_role'.
+		 * @param int    $order_id
+		 * @param int    $course_id
+		 * @param int    $user_id
+		 */
+		$policy = (string) \apply_filters( 'anchor_courses_wc_refund_policy', 'remove_role', $order_id, $course_id, $user_id );
+
+		return \in_array( $policy, [ 'remove_role', 'keep' ], true ) ? $policy : 'remove_role';
+	}
+
+	/**
+	 * `woocommerce_order_refunded`: fires for EVERY refund, full or partial,
+	 * whether or not the refund also moves the order into a REVOKE_STATUSES
+	 * status.
+	 *
+	 * Only the line(s) refunded IN FULL lose their course (progress.md T40
+	 * ruling 3) - a partial refund of one item among several must not touch
+	 * the others. A full refund happens to refund every line in full, so
+	 * this one pass covers that case too; on_order_status_changed()'s revoke
+	 * branch is still what handles cancelled/failed, which carry no refund
+	 * object at all.
+	 *
+	 * @param int $order_id
+	 * @param int $refund_id
+	 */
+	public function on_order_refunded( $order_id, $refund_id = 0 ): void {
+		if ( ! \function_exists( 'wc_get_order' ) ) {
+			return;
+		}
+
+		$order = \wc_get_order( (int) $order_id );
+		if ( ! $order instanceof \WC_Order ) {
+			return;
+		}
+
+		$this->revoke_refunded_lines( (int) $order_id, $order );
+	}
+
+	/**
+	 * Take back the access THIS order granted - every mapped course, from
+	 * every line, regardless of any refund record.
+	 *
+	 * The unconditional revoke: used for a whole-order REVOKE_STATUSES
+	 * transition (cancelled/failed carry no refund object at all, so there
+	 * is nothing else to check per line). A fully-refunded order's lines are
+	 * covered the same way, redundantly and harmlessly, by
+	 * on_order_refunded()'s per-line pass.
+	 *
+	 * @return int How many access roles were removed.
+	 */
+	public function revoke_order( int $order_id ): int {
+		if ( ! \function_exists( 'wc_get_order' ) ) {
+			return 0;
+		}
+
+		$order = \wc_get_order( $order_id );
+		if ( ! $order instanceof \WC_Order ) {
+			return 0;
+		}
+
+		return $this->revoke_items( $order, $order_id, \array_values( $order->get_items() ) );
+	}
+
+	/**
+	 * The refund half of revocation: only a line refunded in full loses its
+	 * course. Reads get_qty_refunded_for_item(), which is cumulative across
+	 * every refund on the order (like the events module's own use of it), so
+	 * a second partial refund that finally reaches the full quantity is
+	 * picked up too, and a repeat pass over an already-fully-refunded line
+	 * is a harmless no-op.
+	 *
+	 * @return int How many access roles were removed.
+	 */
+	private function revoke_refunded_lines( int $order_id, \WC_Order $order ): int {
+		$fully_refunded = [];
+
+		foreach ( $order->get_items() as $item_id => $item ) {
+			if ( ! \is_object( $item ) || ! \method_exists( $item, 'get_product_id' ) || (int) $item->get_product_id() <= 0 ) {
+				continue;
+			}
+
+			// get_qty_refunded_for_item() is negative (refund line items
+			// carry a negative quantity); abs() the same way the events
+			// module does (class-woocommerce.php reconcile_line()).
+			$refunded = \abs( (int) $order->get_qty_refunded_for_item( (int) $item_id ) );
+			if ( $refunded < (int) $item->get_quantity() ) {
+				continue; // Not refunded in full (yet).
+			}
+
+			$fully_refunded[] = $item;
+		}
+
+		if ( [] === $fully_refunded ) {
+			return 0;
+		}
+
+		return $this->revoke_items( $order, $order_id, $fully_refunded );
+	}
+
+	/**
+	 * The shared core of both revoke paths: take back only what THIS order
+	 * granted (progress.md T40 ruling 2).
+	 *
+	 * Matched through Roles::grant_record() - what the grants map says is
+	 * held NOW - not the enrolment row's source, which keeps the FIRST
+	 * source forever and never changes again (EnrollmentService docblock;
+	 * Roles::GRANTS_META docblock: "Contract for revokers ... read
+	 * grant_record() before revoke_access() and leave a `manual` grant in
+	 * place"). Two consequences fall out of that, both load-bearing:
+	 *
+	 *   - A manual comp granted on top of a purchase survives the refund:
+	 *     record_grant() upgrades a non-manual record to `manual` the
+	 *     moment Roles::grant_access( ..., 'manual' ) runs against an
+	 *     already-held role, so the record this method reads no longer
+	 *     says `woocommerce`.
+	 *   - When a second order grants a course the learner already holds
+	 *     (from a first order), grant_access()'s "already in" branch still
+	 *     calls record_grant() with the second order's source/source_id,
+	 *     but record_grant() keeps the FIRST reason for anything but a
+	 *     manual upgrade - so the grants map goes on crediting the first
+	 *     order. Refunding the SECOND order is therefore correctly a no-op
+	 *     here (its source_id never matched); refunding the FIRST order
+	 *     still revokes the course even though the second order also paid
+	 *     for it - the grants map holds only one record per course, so it
+	 *     cannot know the second order would still justify access. That is
+	 *     a known limit of the single-record grants map, not something this
+	 *     task redesigns; see COURSES.md.
+	 *
+	 * @param \WC_Order $order
+	 * @param int       $order_id
+	 * @param array     $items Order items already resolved to the ones to check.
+	 * @return int How many access roles were removed.
+	 */
+	private function revoke_items( \WC_Order $order, int $order_id, array $items ): int {
+		$user_id = self::customer_for_order( $order );
+		if ( $user_id <= 0 ) {
+			return 0;
+		}
+
+		$revoked = 0;
+
+		foreach ( $items as $item ) {
+			foreach ( self::courses_for_item( $item ) as $course_id ) {
+				$record = Roles::grant_record( $user_id, $course_id );
+				if ( 'woocommerce' !== ( $record['source'] ?? '' ) || (string) $order_id !== ( $record['source_id'] ?? '' ) ) {
+					continue; // Not this order's grant to take back (or already taken).
+				}
+
+				if ( 'keep' === self::refund_policy( $order_id, $course_id ) ) {
+					continue;
+				}
+
+				if ( Roles::revoke_access( $user_id, $course_id, 'woocommerce', (string) $order_id ) ) {
+					$revoked++;
+				}
+			}
+		}
+
+		if ( $revoked > 0 ) {
+			self::mark_revoked( $order, $order_id, $revoked );
+		}
+
+		return $revoked;
+	}
+
+	/** Has a revoke already taken something back from this order? */
+	private static function is_marked_revoked( \WC_Order $order ): bool {
+		return '' !== (string) $order->get_meta( self::REVOKED_META, true );
+	}
+
+	/**
+	 * Stamp the order-level marker and leave one note per revoke (not per
+	 * course - "notes once", progress.md T40). HPOS-safe: WC_Order's own
+	 * meta API, saved once together with the note.
+	 */
+	private static function mark_revoked( \WC_Order $order, int $order_id, int $count ): void {
+		$order->update_meta_data( self::REVOKED_META, Clock::now() );
+
+		if ( \method_exists( $order, 'add_order_note' ) ) {
+			$order->add_order_note(
+				\sprintf(
+					/* translators: %d: number of courses whose access was revoked. */
+					\_n(
+						'Course access revoked: %d course this order granted was taken back.',
+						'Course access revoked: %d courses this order granted were taken back.',
+						$count,
+						'anchor-schema'
+					),
+					$count
+				)
+			);
+		}
+
+		$order->save();
+
+		Log::write( 'wc_order_revoked', [ 'order' => $order_id, 'count' => $count ] );
+	}
+
+	/**
+	 * Clear the revoked marker so the order can grant again (progress.md T40
+	 * ruling 1). No admin UI ships with this task; call it from WP-CLI or
+	 * PHP - `WooCommerce::clear_revoked_marker( $order_id )` - then re-run
+	 * the order through enroll_order() (or re-fire its qualifying status) to
+	 * restore access. Documented in COURSES.md.
+	 *
+	 * @param \WC_Order|int $order
+	 */
+	public static function clear_revoked_marker( $order ): bool {
+		if ( ! \is_object( $order ) ) {
+			if ( ! \function_exists( 'wc_get_order' ) ) {
+				return false;
+			}
+			$order = \wc_get_order( (int) $order );
+		}
+		if ( ! $order instanceof \WC_Order ) {
+			return false;
+		}
+
+		$order->delete_meta_data( self::REVOKED_META );
+		$order->save();
+
+		return true;
 	}
 }

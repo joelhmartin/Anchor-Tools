@@ -11,7 +11,9 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * Progress, credits and certificates all hang off a user id, so somebody being
  * added by name and email has to become a real WordPress user. They are being
  * ADDED by staff, though - they did not sign up - so no "here is your new
- * password" email goes out.
+ * password" email goes out from here. (The WooCommerce adapter, for an order
+ * created outside checkout, sends WordPress's own set-password notice itself,
+ * and only for an account resolve() reports as created just now.)
  *
  * This mirrors the events module's `Entitlements::create_account()`
  * (anchor-events-manager/class-entitlements.php) on purpose, from a different
@@ -28,32 +30,58 @@ final class Accounts {
 	/**
 	 * The account for this email, creating one if there is none.
 	 *
+	 * @param object|null $context What is asking - a WC_Order when the
+	 *                             WooCommerce adapter resolves a guest buyer,
+	 *                             null for staff adding a learner by hand.
+	 *                             Passed through to the filter only.
 	 * @return int User id, or 0 (bad email, site opted out, or create failed).
 	 */
-	public static function ensure_user( string $name, string $email ): int {
+	public static function ensure_user( string $name, string $email, ?object $context = null ): int {
+		return self::resolve( $name, $email, $context )['user_id'];
+	}
+
+	/**
+	 * ensure_user() with the outcome spelled out, for a caller that has to
+	 * act differently on "found", "created just now" and "declined" (the
+	 * WooCommerce adapter links + notifies only an account it created, and
+	 * notes a declined create on the order).
+	 *
+	 * @param object|null $context See ensure_user().
+	 * @return array{user_id:int,created:bool,declined:bool}
+	 */
+	public static function resolve( string $name, string $email, ?object $context = null ): array {
 		$email = \sanitize_email( $email );
 		$name  = \sanitize_text_field( $name );
+		$none  = [ 'user_id' => 0, 'created' => false, 'declined' => false ];
 
 		if ( '' === $email || ! \is_email( $email ) ) {
-			return 0;
+			return $none;
 		}
 
 		$existing = \get_user_by( 'email', $email );
 		if ( $existing instanceof \WP_User ) {
-			return (int) $existing->ID;
+			return [ 'user_id' => (int) $existing->ID, 'created' => false, 'declined' => false ];
 		}
 
 		/**
 		 * Whether this site creates accounts for learners who have none.
 		 *
-		 * Returning false means staff can only add people who already have an
-		 * account here.
+		 * This is the single account-creation point in the courses module:
+		 * both staff adding a learner (Learners tab, $context null) and the
+		 * WooCommerce adapter resolving a guest course buyer ($context the
+		 * WC_Order) come through here. Returning false means only people
+		 * who already have an account here can be enrolled.
 		 *
-		 * @param bool   $create
-		 * @param string $email
+		 * Independent of the events module's `anchor_events_create_account`:
+		 * different module, different reason - opting one out does not opt
+		 * the other out.
+		 *
+		 * @param bool        $create
+		 * @param string      $email
+		 * @param object|null $context A WC_Order, or null for a staff add.
 		 */
-		if ( ! \apply_filters( 'anchor_courses_create_account', true, $email ) ) {
-			return 0;
+		if ( ! \apply_filters( 'anchor_courses_create_account', true, $email, $context ) ) {
+			return [ 'user_id' => 0, 'created' => false, 'declined' => true ];
 		}
 
 		$username = self::unique_username( $email );
@@ -88,14 +116,14 @@ final class Accounts {
 		if ( \is_wp_error( $user_id ) || ! $user_id ) {
 			// Never log the address itself.
 			Log::write( 'account_create_failed', [ 'to' => \substr( \md5( $email ), 0, 8 ) ] );
-			return 0;
+			return $none;
 		}
 
 		if ( '' !== $name ) {
 			\wp_update_user( [ 'ID' => (int) $user_id, 'display_name' => $name ] );
 		}
 
-		return (int) $user_id;
+		return [ 'user_id' => (int) $user_id, 'created' => true, 'declined' => false ];
 	}
 
 	/** A login derived from the email, with a numeric suffix if it is taken. */

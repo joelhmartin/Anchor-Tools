@@ -65,6 +65,14 @@ final class WooCommerce {
 		// The moment the course publishes, re-run the grant for every
 		// already-qualifying order whose lines map to it.
 		\add_action( 'transition_post_status', [ $this, 'on_course_published' ], 10, 3 );
+
+		// A course buyer must end up with a login (final review I2): when the
+		// cart holds a mapped product, guest checkout is off and sign-up on.
+		// Both the classic shortcode checkout and the block/Store API
+		// checkout read these two through WC_Checkout, so one pair covers
+		// both.
+		\add_filter( 'woocommerce_checkout_registration_required', [ $this, 'require_registration_for_courses' ], 20 );
+		\add_filter( 'woocommerce_checkout_registration_enabled', [ $this, 'require_registration_for_courses' ], 20 );
 	}
 
 	public static function available(): bool {
@@ -316,7 +324,7 @@ final class WooCommerce {
 		}
 
 		$order = \wc_get_order( $order_id );
-		if ( ! $order ) {
+		if ( ! $order instanceof \WC_Order ) {
 			return 0;
 		}
 
@@ -328,25 +336,33 @@ final class WooCommerce {
 			return 0;
 		}
 
-		$user_id = self::customer_for_order( $order );
+		// Courses FIRST (final review C1): only an order that actually
+		// carries a mapped course line may go on to resolve - and possibly
+		// create - an account. A ticket-only or any other unmapped order is
+		// none of this adapter's business, at any status.
+		$lines = [];
+		foreach ( $order->get_items() as $item ) {
+			$courses = self::courses_for_item( $item );
+			if ( [] !== $courses ) {
+				$lines[] = $courses;
+			}
+		}
+		if ( [] === $lines ) {
+			return 0;
+		}
+
+		$user_id = self::account_for_order( $order, $order_id );
 		if ( $user_id <= 0 ) {
 			// A guest order with no resolvable/creatable account: progress
-			// needs an identity, and Accounts::ensure_user() already tried.
+			// needs an identity, and account_for_order() already tried.
 			Log::write( 'wc_order_no_customer', [ 'order' => $order_id ] );
 			return 0;
 		}
 
 		$granted = 0;
 
-		foreach ( $order->get_items() as $item ) {
-			if ( ! \is_object( $item ) || ! \method_exists( $item, 'get_product_id' ) ) {
-				continue;
-			}
-			if ( (int) $item->get_product_id() <= 0 ) {
-				continue;
-			}
-
-			foreach ( self::courses_for_item( $item ) as $course_id ) {
+		foreach ( $lines as $courses ) {
+			foreach ( $courses as $course_id ) {
 				if ( Roles::user_has( $user_id, Roles::access_slug( $course_id ) ) ) {
 					continue; // Already has access: nothing new (brief 26).
 				}
@@ -396,12 +412,11 @@ final class WooCommerce {
 	}
 
 	/**
-	 * The user this order enrols. A guest order (no customer_id) resolves or
-	 * creates an account from the billing details, exactly as the events
-	 * module does for a seat with no attendee data of its own
-	 * (`Entitlements::create_account()`) - `Accounts::ensure_user()` sends no
-	 * welcome email, because staff/checkout added this person, they did not
-	 * sign themselves up.
+	 * The account this order ALREADY belongs to - its customer id, else an
+	 * existing user with the billing email. Never creates one: this is what
+	 * the revoke and refund-policy paths use (final review C1), because
+	 * taking access back from somebody who has no account means there is
+	 * nothing to take.
 	 *
 	 * @param mixed $order A WC_Order.
 	 */
@@ -415,16 +430,102 @@ final class WooCommerce {
 			return $user_id;
 		}
 
-		if ( ! \method_exists( $order, 'get_billing_email' ) ) {
+		$email = \method_exists( $order, 'get_billing_email' ) ? \sanitize_email( (string) $order->get_billing_email() ) : '';
+		if ( '' === $email ) {
 			return 0;
 		}
 
-		$email = (string) $order->get_billing_email();
-		$first = \method_exists( $order, 'get_billing_first_name' ) ? (string) $order->get_billing_first_name() : '';
-		$last  = \method_exists( $order, 'get_billing_last_name' ) ? (string) $order->get_billing_last_name() : '';
-		$name  = \trim( $first . ' ' . $last );
+		$user = \get_user_by( 'email', $email );
+		return $user instanceof \WP_User ? (int) $user->ID : 0;
+	}
 
-		return Accounts::ensure_user( $name, $email );
+	/**
+	 * The user a COURSE order enrols, resolving or creating one for a guest
+	 * order. Only enroll_order() calls this, and only once it has found a
+	 * mapped course line (final review C1).
+	 *
+	 * Checkout already requires an account for a course cart
+	 * (require_registration_for_courses()), so reaching the create branch
+	 * means the order came from somewhere else - an admin-created order, the
+	 * REST API, or a guest that slipped through. That buyer still needs a
+	 * way in (final review I2), so:
+	 *   - the order is linked to the account (set_customer_id + save), so
+	 *     My Account shows it and later revokes find it directly;
+	 *   - an account created JUST NOW gets WordPress's own set-password
+	 *     notice (`wp_new_user_notification( $id, null, 'user' )`); an
+	 *     account that already existed gets nothing.
+	 *
+	 * `anchor_courses_create_account` (Accounts::resolve()) receives the
+	 * order as its context and may decline; that is logged and noted on the
+	 * order, and nothing is granted.
+	 */
+	private static function account_for_order( \WC_Order $order, int $order_id ): int {
+		$user_id = (int) $order->get_customer_id();
+		if ( $user_id > 0 ) {
+			return $user_id;
+		}
+
+		$email = (string) $order->get_billing_email();
+		$name  = \trim( (string) $order->get_billing_first_name() . ' ' . (string) $order->get_billing_last_name() );
+
+		$result = Accounts::resolve( $name, $email, $order );
+
+		if ( $result['declined'] ) {
+			Log::write( 'wc_account_declined', [ 'order' => $order_id ] );
+			$order->add_order_note(
+				\__( 'account_not_created: this order grants a course, but the anchor_courses_create_account filter declined to create an account for the buyer, so no access was granted.', 'anchor-schema' )
+			);
+			return 0;
+		}
+
+		$user_id = $result['user_id'];
+		if ( $user_id <= 0 ) {
+			return 0;
+		}
+
+		$order->set_customer_id( $user_id );
+		$order->save();
+
+		if ( $result['created'] ) {
+			\wp_new_user_notification( $user_id, null, 'user' );
+			Log::write( 'wc_account_created', [ 'order' => $order_id, 'user' => $user_id ] );
+		}
+
+		return $user_id;
+	}
+
+	/**
+	 * `woocommerce_checkout_registration_required` and
+	 * `woocommerce_checkout_registration_enabled`: true whenever the cart
+	 * holds a product that grants a course (final review I2), so the buyer
+	 * always leaves checkout with a login; otherwise the store's own setting
+	 * passes through untouched.
+	 *
+	 * @param mixed $value
+	 * @return mixed
+	 */
+	public function require_registration_for_courses( $value ) {
+		return self::cart_has_course() ? true : $value;
+	}
+
+	/** Does the current cart hold a line that grants a course? Same resolver as orders. */
+	public static function cart_has_course(): bool {
+		if ( ! \function_exists( 'WC' ) ) {
+			return false;
+		}
+		$cart = \WC()->cart;
+		if ( ! $cart instanceof \WC_Cart ) {
+			return false;
+		}
+
+		foreach ( $cart->get_cart() as $line ) {
+			$courses = self::courses_for_ids( (int) ( $line['product_id'] ?? 0 ), (int) ( $line['variation_id'] ?? 0 ) );
+			if ( [] !== $courses ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -444,6 +545,18 @@ final class WooCommerce {
 		}
 
 		$variation_id = \method_exists( $item, 'get_variation_id' ) ? (int) $item->get_variation_id() : 0;
+
+		return self::courses_for_ids( (int) $item->get_product_id(), $variation_id );
+	}
+
+	/**
+	 * The one product -> courses resolver, shared by order lines and cart
+	 * lines: the variation's own mapping wins when non-empty, else the
+	 * parent product's.
+	 *
+	 * @return int[]
+	 */
+	private static function courses_for_ids( int $product_id, int $variation_id = 0 ): array {
 		if ( $variation_id > 0 ) {
 			$courses = self::courses_for_product( $variation_id );
 			if ( [] !== $courses ) {
@@ -451,7 +564,7 @@ final class WooCommerce {
 			}
 		}
 
-		return self::courses_for_product( (int) $item->get_product_id() );
+		return $product_id > 0 ? self::courses_for_product( $product_id ) : [];
 	}
 
 	/**

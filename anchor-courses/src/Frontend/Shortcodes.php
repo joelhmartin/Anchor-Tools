@@ -4,8 +4,10 @@ declare(strict_types=1);
 namespace Anchor\Courses\Frontend;
 
 use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Admin\LessonEditor;
 use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\Curriculum;
+use Anchor\Courses\Integrations\Events;
 use Anchor\Courses\Module;
 use Anchor\Courses\Services\CertificateService;
 use Anchor\Courses\Services\CreditService;
@@ -243,6 +245,10 @@ final class Shortcodes {
 			return '';
 		}
 
+		if ( 'live_session' === (string) LessonEditor::setting( $lesson_id, 'type' ) ) {
+			return $this->render_live_session( $lesson_id, $course_id );
+		}
+
 		// Next/Prev walk LESSONS only: a quiz has no URL of its own (it
 		// renders inside the course page), so linking to one would 404.
 		$lessons  = \array_values(
@@ -272,6 +278,68 @@ final class Shortcodes {
 				'complete'  => $course_progress && \in_array( 'lesson:' . $lesson_id, $course_progress->completed_item_keys, true ),
 				'previous'  => $previous,
 				'next'      => $next,
+			]
+		);
+	}
+
+	/**
+	 * Render a live_session lesson (design spec 3.3).
+	 *
+	 * `Integrations\Events` is the only surface this touches for the events
+	 * side - never `_anchor_event_*` meta or an events-module table
+	 * directly (Events' own docblock). `$available` here means "the events
+	 * module can resolve this event" - a DIFFERENT question from
+	 * `$item_available` (ProgressService::is_item_available(), the same
+	 * progression/enrolment authority render_lesson() uses above), which
+	 * gates the "Mark attended" form exactly as render_lesson() gates
+	 * "Mark complete".
+	 *
+	 * The room link is additionally withheld from anyone not is_enrolled()
+	 * in $course_id, regardless of whether the event resolves: this is a
+	 * COURSE access decision, never an events one. The events module still
+	 * separately enforces its own entitlement on the room itself
+	 * (`Entitlements::can_access_stream()`) once a learner follows the
+	 * link - that decision is never duplicated here.
+	 */
+	public function render_live_session( int $lesson_id, int $course_id ): string {
+		$user_id  = \get_current_user_id();
+		$event_id = (int) LessonEditor::setting( $lesson_id, 'event_id' );
+		// Events::event_exists() (PR36 round 3, Codex): a deleted event, or a
+		// legacy value that never named a real event post, must show the
+		// "unavailable" branch below - not the "will appear later" branch,
+		// which implies the event still exists and just hasn't started.
+		$ready    = Events::available() && Events::event_exists( $event_id );
+
+		$item_available = $user_id > 0 && $this->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' );
+		if ( $item_available ) {
+			$this->progress->start_lesson( $user_id, $course_id, $lesson_id );
+		}
+
+		$is_enrolled     = $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id );
+		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
+
+		// The stream veto's own decision (Events::prework_block(), the same
+		// call veto_stream_access() makes), so this page never offers a Join
+		// button the room would then refuse (final review I3).
+		$block          = ( $ready && $is_enrolled ) ? Events::prework_block( $event_id, (int) LessonEditor::setting( $lesson_id, 'session_index' ), $user_id ) : null;
+		$prework_notice = null === $block ? '' : Events::prework_notice( $block );
+
+		return Templates::render(
+			'live-session',
+			[
+				'lesson_id'      => $lesson_id,
+				'course_id'      => $course_id,
+				'event_id'       => $event_id,
+				'available'      => $ready,
+				'sessions'       => $ready ? Events::sessions( $event_id ) : [],
+				// Course access, not events access (see docblock above): the
+				// room's own entitlement check still runs when this link is
+				// followed.
+				'room_url'       => ( $ready && $is_enrolled ) ? Events::room_url( $event_id ) : '',
+				'prework_notice' => $prework_notice,
+				'state'          => $ready ? Events::stream_state( $event_id ) : [ 'state' => 'unknown' ],
+				'item_available' => $item_available,
+				'complete'       => $course_progress && \in_array( 'lesson:' . $lesson_id, $course_progress->completed_item_keys, true ),
 			]
 		);
 	}

@@ -97,17 +97,20 @@ final class Routes {
 	 * (not_enrolled, locked, not_in_course, course_closed,
 	 * missing_prerequisite, no_attempts_remaining, retry_delay,
 	 * attempt_not_yours); 404 for "that id does not exist" (no_attempt,
-	 * no_course, no_user); 409 for a state conflict on an otherwise-valid
+	 * no_course, no_user, no_lesson - a draft/private lesson a REST caller
+	 * may not even know exists, PR36 round 3); 409 for a state conflict on an otherwise-valid
 	 * request (attempt_closed, no_questions, attempt_course_mismatch - audit
-	 * F05, save_conflict - audit F06, attempt_busy - audit F07); 503 for a
+	 * F05, save_conflict - audit F06, attempt_busy - audit F07, quiz_required -
+	 * a quiz-gated lesson completed by hand); 503 for a
 	 * write OR a read the server could not complete, safe to retry
 	 * (save_failed - audit F03; read_failed - CodeRabbit PR #32 re-review,
 	 * QuizService::submit()'s expire branch when the row it just
 	 * transitioned to `expired` could not be re-read even after a retry, and
 	 * its grading branch when the row it just claimed could not be re-read -
 	 * the claim is released first, Round 6);
-	 * 400 for a malformed request (unknown_question) and the fallback for
-	 * anything unlisted.
+	 * 400 for a malformed request (unknown_question, invalid_date) and the
+	 * fallback for anything unlisted. Every controller error goes through
+	 * here - none hand-builds a status.
 	 */
 	public static function error_response( \WP_Error $error, int $status = 400 ): \WP_REST_Response {
 		$map = [
@@ -123,6 +126,7 @@ final class Routes {
 			'no_attempt'              => 404,
 			'no_course'               => 404,
 			'no_user'                 => 404,
+			'no_lesson'               => 404,
 			'unknown_question'        => 400,
 			'no_questions'            => 409,
 			'save_failed'             => 503,
@@ -130,6 +134,8 @@ final class Routes {
 			'attempt_course_mismatch' => 409,
 			'save_conflict'           => 409,
 			'attempt_busy'            => 409,
+			'quiz_required'           => 409,
+			'invalid_date'            => 400,
 		];
 
 		$code = (string) $error->get_error_code();

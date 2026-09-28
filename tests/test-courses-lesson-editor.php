@@ -20,6 +20,15 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		$_POST = [];
 	}
 
+	/** A real `event` post - Task 36's validation requires event_id to name one. */
+	private function make_event( array $meta = [], string $title = 'Test Event' ): int {
+		$event_id = (int) self::factory()->post->create( [ 'post_type' => 'event', 'post_status' => 'publish', 'post_title' => $title ] );
+		foreach ( $meta as $key => $value ) {
+			update_post_meta( $event_id, '_anchor_event_' . $key, $value );
+		}
+		return $event_id;
+	}
+
 	public function test_defaults() {
 		$d = LessonEditor::defaults();
 		$this->assertSame( 'manual', $d['completion_mode'] );
@@ -78,16 +87,115 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		$this->assertSame( 'manual', get_post_meta( $lesson, '_anchor_lesson_completion_mode', true ) );
 	}
 
+	/**
+	 * `event_id` must round-trip only for a REAL event with a session index
+	 * that is actually in range for it (Task 36 validation). A plain single
+	 * event always resolves to exactly one implicit session
+	 * (`Module::resolved_sessions()`), so index 0 is the only valid choice
+	 * here.
+	 */
 	public function test_live_session_fields_persist() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
 		$lesson = $this->make_lesson();
+		$event  = $this->make_event();
 
-		$this->submit( $lesson, [ 'type' => 'live_session', 'event_id' => '42', 'session_index' => '1', 'require_prior_items' => '1' ] );
+		$this->submit( $lesson, [ 'type' => 'live_session', 'event_id' => (string) $event, 'session_index' => '0', 'require_prior_items' => '1' ] );
 
 		$this->assertSame( 'live_session', get_post_meta( $lesson, '_anchor_lesson_type', true ) );
-		$this->assertSame( 42, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
-		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
+		$this->assertSame( $event, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
+		$this->assertSame( 0, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
 		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_require_prior_items', true ) );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Task 36: the event picker and session index are active, and validated
+	 * against the real events module (progress.md - deviation D6 is FALSE
+	 * on this base; Module::resolved_sessions() etc. all exist).
+	 * ------------------------------------------------------------------- */
+
+	public function test_save_rejects_an_event_id_that_names_no_real_post() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson();
+
+		$this->submit( $lesson, [ 'event_id' => '999999', 'session_index' => '0' ] );
+
+		$this->assertSame( 0, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
+	}
+
+	public function test_save_rejects_an_event_id_that_is_not_an_event_post() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson    = $this->make_lesson();
+		$not_event = $this->make_quiz();
+
+		$this->submit( $lesson, [ 'event_id' => (string) $not_event, 'session_index' => '0' ] );
+
+		$this->assertSame( 0, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
+	}
+
+	/** A plain (non-multisession) event resolves to exactly one implicit session: index 0. */
+	public function test_save_rejects_an_out_of_range_session_index_for_a_single_event() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson();
+		$event  = $this->make_event();
+
+		$this->submit( $lesson, [ 'event_id' => (string) $event, 'session_index' => '3' ] );
+
+		$this->assertSame( $event, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
+		$this->assertSame( 0, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ), 'Out of range must reset to 0, not store the posted value.' );
+	}
+
+	public function test_save_keeps_an_in_range_session_index_for_a_multisession_event() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson();
+		$event  = $this->make_event(
+			[
+				'type'     => 'multisession',
+				'sessions' => [
+					[ 'date' => '2026-10-01', 'start_time' => '09:00', 'end_time' => '12:00', 'label' => 'Day 1' ],
+					[ 'date' => '2026-10-02', 'start_time' => '09:00', 'end_time' => '12:00', 'label' => 'Day 2' ],
+				],
+			]
+		);
+
+		$this->submit( $lesson, [ 'event_id' => (string) $event, 'session_index' => '1' ] );
+
+		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
+	}
+
+	public function test_save_discards_the_session_index_when_no_event_is_picked() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson( [ 'event_id' => 0 ] );
+
+		$this->submit( $lesson, [ 'event_id' => '0', 'session_index' => '5' ] );
+
+		$this->assertSame( 0, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
+	}
+
+	/**
+	 * When the events module cannot resolve the event's real session count
+	 * (it is inactive right now), Events::sessions() degrades to [] and the
+	 * posted session_index is kept rather than guessed at - a value
+	 * authored while the module was active must never be silently
+	 * clobbered by a request where it just happens to be off.
+	 */
+	public function test_save_keeps_the_session_index_when_the_events_module_cannot_verify_it() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson();
+		$event  = $this->make_event();
+
+		$prop = new ReflectionProperty( \Anchor\Events\Module::class, 'instance' );
+		$prop->setAccessible( true );
+		$real = $prop->getValue();
+		$prop->setValue( null, null );
+
+		try {
+			$this->submit( $lesson, [ 'event_id' => (string) $event, 'session_index' => '7' ] );
+		} finally {
+			$prop->setValue( null, $real );
+		}
+
+		$this->assertSame( $event, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ), 'event_exists() does not require the module to be booted.' );
+		$this->assertSame( 7, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
 	}
 
 	public function test_save_requires_the_lesson_capability() {
@@ -163,10 +271,11 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 	}
 
 	/* -----------------------------------------------------------------
-	 * Audit UI item: the live-session controls are not wired yet (plan
-	 * Phase 5), so the editor shows them disabled with a notice instead of
-	 * implying protection that does not exist - and still keeps whatever
-	 * is stored.
+	 * Task 36: the event picker and session index are ACTIVE - the audit's
+	 * blanket "not active" notice is gone for those two. Task 37 activates
+	 * the third: the pre-work-veto checkbox (require_prior_items) is now a
+	 * normal, enabled checkbox with no narrowing notice, because
+	 * Integrations\Events::veto_stream_access() reads it for real.
 	 * --------------------------------------------------------------- */
 
 	private function render_html( int $lesson_id ): string {
@@ -175,58 +284,131 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 		return (string) ob_get_clean();
 	}
 
-	/** @return array<string,DOMElement> name => the visible (non-hidden) input */
-	private function visible_live_inputs( string $html ): array {
+	private function dom( string $html ): DOMDocument {
 		$doc = new DOMDocument();
 		libxml_use_internal_errors( true );
 		$doc->loadHTML( '<html><body>' . $html . '</body></html>' );
 		libxml_clear_errors();
-		$out = [];
-		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
-			$name = $input->getAttribute( 'name' );
-			if ( 'hidden' !== $input->getAttribute( 'type' ) && preg_match( '/^anchor_lesson\[(event_id|session_index|require_prior_items)\]$/', $name, $m ) ) {
-				$out[ $m[1] ] = $input;
-			}
-		}
-		return $out;
+		return $doc;
 	}
 
-	public function test_live_session_controls_are_disabled_with_a_notice() {
-		$lesson = $this->make_lesson( [ 'event_id' => 42, 'session_index' => 1, 'require_prior_items' => 1 ] );
+	public function test_the_old_blanket_not_active_notice_is_gone() {
+		$lesson = $this->make_lesson();
 		$html   = $this->render_html( $lesson );
 
-		$this->assertStringContainsString( 'Not active until the live-session adapter ships (plan Phase 5)', $html );
-		$inputs = $this->visible_live_inputs( $html );
-		$this->assertSame( [ 'event_id', 'session_index', 'require_prior_items' ], array_keys( $inputs ) );
-		foreach ( $inputs as $key => $input ) {
-			$this->assertTrue( $input->hasAttribute( 'disabled' ), $key . ' must be disabled.' );
-		}
-		$this->assertStringContainsString( 'Block stream access until earlier items are complete', $html, 'The setting is still shown, not hidden.' );
+		$this->assertStringNotContainsString( 'Not active until the live-session adapter ships', $html );
 	}
 
-	/** Saving the editor as rendered (disabled inputs are never posted) keeps the stored values. */
-	public function test_saving_the_rendered_form_keeps_the_stored_live_session_settings() {
-		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
-		$lesson = $this->make_lesson( [ 'event_id' => 42, 'session_index' => 1, 'require_prior_items' => 1 ] );
+	public function test_the_event_picker_and_session_index_are_enabled() {
+		$event  = $this->make_event();
+		$lesson = $this->make_lesson( [ 'event_id' => $event, 'session_index' => 0 ] );
+		$doc    = $this->dom( $this->render_html( $lesson ) );
 
-		$doc = new DOMDocument();
-		libxml_use_internal_errors( true );
-		$doc->loadHTML( '<html><body>' . $this->render_html( $lesson ) . '</body></html>' );
-		libxml_clear_errors();
-		$posted = [];
-		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
-			if ( $input->hasAttribute( 'disabled' ) || ! preg_match( '/^anchor_lesson\[(\w+)\]$/', $input->getAttribute( 'name' ), $m ) ) {
+		$selects = $doc->getElementsByTagName( 'select' );
+		$found   = false;
+		foreach ( $selects as $select ) {
+			if ( 'anchor_lesson[event_id]' !== $select->getAttribute( 'name' ) ) {
 				continue;
+			}
+			$found = true;
+			$this->assertFalse( $select->hasAttribute( 'disabled' ), 'The event picker must not be disabled.' );
+		}
+		$this->assertTrue( $found, 'The event picker <select> must be rendered.' );
+
+		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
+			if ( 'anchor_lesson[session_index]' === $input->getAttribute( 'name' ) ) {
+				$this->assertFalse( $input->hasAttribute( 'disabled' ), 'Session index must not be disabled.' );
+			}
+		}
+	}
+
+	public function test_the_event_picker_lists_published_events_and_selects_the_stored_one() {
+		$event  = $this->make_event( [], 'The Real Event' );
+		$other  = $this->make_event( [], 'Some Other Event' );
+		$lesson = $this->make_lesson( [ 'event_id' => $event ] );
+		$doc    = $this->dom( $this->render_html( $lesson ) );
+
+		$selected = null;
+		foreach ( $doc->getElementsByTagName( 'option' ) as $option ) {
+			if ( $option->hasAttribute( 'selected' ) ) {
+				$selected = $option;
+			}
+		}
+		$this->assertNotNull( $selected );
+		$this->assertSame( (string) $event, $selected->getAttribute( 'value' ) );
+	}
+
+	public function test_the_pre_work_veto_checkbox_is_active() {
+		$lesson = $this->make_lesson( [ 'require_prior_items' => 1 ] );
+		$html   = $this->render_html( $lesson );
+
+		$this->assertStringNotContainsString( 'not active until the pre-work veto ships', $html );
+
+		$doc   = $this->dom( $html );
+		$found = false;
+		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
+			if ( 'checkbox' === $input->getAttribute( 'type' ) && 'anchor_lesson[require_prior_items]' === $input->getAttribute( 'name' ) ) {
+				$found = true;
+				$this->assertFalse( $input->hasAttribute( 'disabled' ), 'The pre-work veto checkbox must not be disabled (Task 37).' );
+				$this->assertTrue( $input->hasAttribute( 'checked' ) );
+			}
+		}
+		$this->assertTrue( $found, 'The require_prior_items checkbox must be rendered.' );
+	}
+
+	/**
+	 * Submitting the editor as rendered round-trips all three live-session
+	 * fields, including the now-active pre-work-veto checkbox (Task 37 - a
+	 * real, checked/unchecked <input type="checkbox"> is posted like any
+	 * other field, no hidden mirror needed any more).
+	 */
+	public function test_saving_the_rendered_form_round_trips_all_three_live_session_fields() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$event  = $this->make_event(
+			[
+				'type'     => 'multisession',
+				'sessions' => [
+					[ 'date' => '2026-10-01', 'start_time' => '09:00', 'end_time' => '12:00', 'label' => 'Day 1' ],
+					[ 'date' => '2026-10-02', 'start_time' => '09:00', 'end_time' => '12:00', 'label' => 'Day 2' ],
+				],
+			]
+		);
+		$lesson = $this->make_lesson( [ 'event_id' => $event, 'session_index' => 1, 'require_prior_items' => 1 ] );
+
+		$doc    = $this->dom( $this->render_html( $lesson ) );
+		$posted = [];
+
+		foreach ( $doc->getElementsByTagName( 'select' ) as $select ) {
+			if ( 'anchor_lesson[event_id]' !== $select->getAttribute( 'name' ) ) {
+				continue;
+			}
+			foreach ( $select->getElementsByTagName( 'option' ) as $option ) {
+				if ( $option->hasAttribute( 'selected' ) ) {
+					$posted['event_id'] = $option->getAttribute( 'value' );
+				}
+			}
+		}
+
+		foreach ( $doc->getElementsByTagName( 'input' ) as $input ) {
+			$name = $input->getAttribute( 'name' );
+			if ( ! preg_match( '/^anchor_lesson\[(\w+)\]$/', $name, $m ) ) {
+				continue;
+			}
+			if ( $input->hasAttribute( 'disabled' ) ) {
+				continue; // Never posted by a real browser.
 			}
 			if ( 'checkbox' === $input->getAttribute( 'type' ) && ! $input->hasAttribute( 'checked' ) ) {
 				continue;
 			}
 			$posted[ $m[1] ] = $input->getAttribute( 'value' );
 		}
+
 		$this->submit( $lesson, $posted + [ 'completion_mode' => 'manual' ] );
 
-		$this->assertSame( 42, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
+		$this->assertSame( $event, (int) get_post_meta( $lesson, '_anchor_lesson_event_id', true ) );
 		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_session_index', true ) );
+		// require_prior_items is a real, enabled checkbox now (Task 37): the
+		// rendered "checked" state is what actually posts and round-trips.
 		$this->assertSame( 1, (int) get_post_meta( $lesson, '_anchor_lesson_require_prior_items', true ) );
 	}
 }

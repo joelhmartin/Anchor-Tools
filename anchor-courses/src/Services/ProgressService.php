@@ -49,8 +49,15 @@ final class ProgressService {
 	}
 
 	public function get_course_progress( int $user_id, int $course_id ): CourseProgress {
-		$required  = Curriculum::required_items( $course_id );
-		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
+		// An unpublished required item never counts toward the total either
+		// (PR36 finding e) - a draft/pending/private lesson or quiz cannot be
+		// completed by a learner through any public route (the curriculum
+		// REST route already hides it, CoursesController::curriculum()), so
+		// counting it against the percentage would hold a course below 100%
+		// for a reason no learner can ever act on.
+		$all_required = Curriculum::required_items( $course_id );
+		$required     = self::published_only( $all_required );
+		$completed    = ProgressRepository::completed_keys( $user_id, $course_id );
 
 		$done = 0;
 		foreach ( $required as $item ) {
@@ -68,7 +75,17 @@ final class ProgressService {
 		if ( 'all_required_items' === $mode ) {
 			$complete = $total > 0 && $done >= $total;
 		} elseif ( 'minimum_percentage' === $mode ) {
-			$complete = $percent >= (float) CourseEditor::setting( $course_id, 'completion_percentage' );
+			// PR36 round 2, CodeRabbit (Major): percent()'s own zero-total
+			// short-circuit returns 100.0 for ANY $total <= 0, which is
+			// correct for a genuinely EMPTY required curriculum (nothing
+			// left to do) but wrong for a curriculum that is non-empty
+			// before the publish filter above and only empty AFTER it - a
+			// required curriculum made entirely of drafts. That case must
+			// stay incomplete, distinct from the empty one, or a course
+			// could complete for a reason no learner can act on (the exact
+			// hazard the publish filter itself exists to avoid).
+			$complete = [] === $all_required
+				|| ( $total > 0 && $percent >= (float) CourseEditor::setting( $course_id, 'completion_percentage' ) );
 		}
 		// 'manual' never derives completion from items - an admin marks it.
 
@@ -102,28 +119,28 @@ final class ProgressService {
 	 * then its quiz" order. Every other earlier required item still gates,
 	 * which includes everything before the parent lesson - so the quiz opens
 	 * exactly when its lesson does.
+	 *
+	 * The TARGET item's own post must be `publish` (PR36 round 3, Codex):
+	 * unlike the "unpublished item never gates progression" rule for items
+	 * BEFORE $item_id (published_only(), above), an unpublished item never
+	 * counts as available for ITSELF either - draft/pending/private content
+	 * has no public route to open or complete it. This is defense-in-depth
+	 * for every caller of this method (Access, Shortcodes, QuizService);
+	 * start_lesson()/complete_lesson() additionally check this FIRST, on
+	 * their own, so they can surface the distinct `no_lesson` WP_Error the
+	 * REST routes map to 404, rather than this method's generic `false`.
 	 */
 	public function is_item_available( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
 		$allowed = true;
 
 		if ( ! $this->enrollments->is_enrolled( $user_id, $course_id ) ) {
 			$allowed = false;
+		} elseif ( 'publish' !== \get_post_status( $item_id ) ) {
+			$allowed = false;
 		} elseif ( ! Curriculum::contains( $course_id, $item_id, $item_type ) ) {
 			$allowed = false;
 		} elseif ( 'sequential' === (string) CourseEditor::setting( $course_id, 'progression_mode' ) ) {
-			$completed = ProgressRepository::completed_keys( $user_id, $course_id );
-			foreach ( Curriculum::items_before( $course_id, $item_id, $item_type ) as $earlier ) {
-				if ( ! $earlier['required'] ) {
-					continue;
-				}
-				if ( 'quiz' === $item_type && 'lesson' === $earlier['type'] && self::lesson_completes_by_quiz( (int) $earlier['id'], $item_id ) ) {
-					continue; // The quiz's own parent lesson (see docblock).
-				}
-				if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
-					$allowed = false;
-					break;
-				}
-			}
+			$allowed = $this->prior_required_items_complete( $user_id, $course_id, $item_id, $item_type );
 		}
 
 		/**
@@ -139,10 +156,112 @@ final class ProgressService {
 	}
 
 	/**
+	 * Are every REQUIRED item ordered before $item_id, in this course,
+	 * already complete for this learner?
+	 *
+	 * This is the one prior-items loop `is_item_available()`'s sequential
+	 * branch runs. It is exposed on its own (Task 37) so a gate that must
+	 * apply regardless of the course's own `progression_mode` - the
+	 * `live_session` lesson's "block stream access until earlier items are
+	 * complete" checkbox, `Integrations\Events::veto_stream_access()` - can
+	 * reuse the exact same rule the lesson UI applies, rather than
+	 * re-implementing prior-item progression a second time. Unlike
+	 * `is_item_available()` this does not check enrolment or curriculum
+	 * membership itself, and it does not fire `anchor_courses_can_access_lesson`
+	 * - callers that need those run `is_item_available()` instead, or check
+	 * them themselves (as `veto_stream_access()` does for enrolment, since it
+	 * must weigh it per-course rather than refuse outright).
+	 */
+	public function prior_required_items_complete( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
+		return null === $this->first_incomplete_prior_item( $user_id, $course_id, $item_id, $item_type );
+	}
+
+	/**
+	 * The first required item before $item_id that this learner has not
+	 * completed, or null when there is none - the same loop
+	 * prior_required_items_complete() answers yes/no from, exposed so a
+	 * caller that has to say WHICH item is blocking (the stream veto's
+	 * notice) does not re-walk the curriculum itself.
+	 *
+	 * @return array{type:string,id:int}|null
+	 */
+	public function first_incomplete_prior_item( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): ?array {
+		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
+		// An unpublished item never gates progression (PR36 finding e): a
+		// draft/pending/private lesson or quiz cannot be reached or
+		// completed through any public route, so requiring it first would
+		// lock the course - and, through this exact loop, the live-session
+		// veto (Integrations\Events::prework_block()) - permanently on
+		// content nobody can act on.
+		foreach ( self::published_only( Curriculum::items_before( $course_id, $item_id, $item_type ) ) as $earlier ) {
+			if ( ! $earlier['required'] ) {
+				continue;
+			}
+			if ( 'quiz' === $item_type && 'lesson' === $earlier['type'] && self::lesson_completes_by_quiz( (int) $earlier['id'], $item_id ) ) {
+				continue; // The quiz's own parent lesson (see docblock above).
+			}
+			if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
+				return [ 'type' => (string) $earlier['type'], 'id' => (int) $earlier['id'] ];
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Curriculum items whose post is actually `publish` (PR36 finding e) -
+	 * the one filter both the sequential progression gate and the
+	 * completion percentage apply, so neither can be blocked or held down by
+	 * content a learner cannot reach through any public route. Mirrors
+	 * `Rest\CoursesController::curriculum()`'s own `publish` filter, which
+	 * hides the same items from the public curriculum listing.
+	 *
+	 * @param array<int,array{type:string,id:int,required:bool}> $items
+	 * @return array<int,array{type:string,id:int,required:bool}>
+	 */
+	private static function published_only( array $items ): array {
+		return \array_values(
+			\array_filter(
+				$items,
+				static fn( array $item ): bool => 'publish' === \get_post_status( (int) $item['id'] )
+			)
+		);
+	}
+
+	/**
+	 * Shared by start_lesson() and complete_lesson() (PR36 round 3, Codex,
+	 * MeController ~99): a lesson whose post is not published can never be
+	 * started or completed through either REST write route, whatever
+	 * enrolment/curriculum/progression would otherwise say - an enrolled
+	 * learner who knows or guesses a draft/private lesson's id must not be
+	 * able to create progress against it, and a `view`-completion lesson
+	 * must not complete itself the instant it is opened before publish.
+	 * `is_item_available()` also refuses an unpublished target item (the
+	 * same rule, defense-in-depth for every OTHER caller), but only this
+	 * guard's distinct `no_lesson` code lets `Routes::error_response()` map
+	 * the refusal to 404 rather than the generic 403 `locked`.
+	 */
+	private function unpublished_lesson_error( int $lesson_id ): ?\WP_Error {
+		if ( 'publish' === \get_post_status( $lesson_id ) ) {
+			return null;
+		}
+		return new \WP_Error( 'no_lesson', \__( 'That lesson is not available.', 'anchor-schema' ) );
+	}
+
+	/**
 	 * Record a view. Starts the enrolment on first contact, and completes the
 	 * lesson immediately when its completion mode is `view`.
+	 *
+	 * @return Progress|\WP_Error|null WP_Error('no_lesson') when the lesson
+	 *         itself is not published; null when it is published but not yet
+	 *         available (not enrolled, not in the curriculum, or sequential
+	 *         gating) - MeController maps null to 403 `locked`.
 	 */
-	public function start_lesson( int $user_id, int $course_id, int $lesson_id ): ?Progress {
+	public function start_lesson( int $user_id, int $course_id, int $lesson_id ) {
+		$error = $this->unpublished_lesson_error( $lesson_id );
+		if ( null !== $error ) {
+			return $error;
+		}
+
 		if ( ! $this->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' ) ) {
 			return null;
 		}
@@ -196,6 +315,11 @@ final class ProgressService {
 	 * @return Progress|\WP_Error
 	 */
 	public function complete_lesson( int $user_id, int $course_id, int $lesson_id ) {
+		$error = $this->unpublished_lesson_error( $lesson_id );
+		if ( null !== $error ) {
+			return $error;
+		}
+
 		if ( ! $this->enrollments->is_enrolled( $user_id, $course_id ) ) {
 			return new \WP_Error( 'not_enrolled', \__( 'You are not enrolled in this course.', 'anchor-schema' ) );
 		}

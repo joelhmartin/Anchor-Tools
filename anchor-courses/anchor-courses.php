@@ -30,6 +30,7 @@ class Module {
 	public Services\CreditService $credits;
 	public Services\CompletionService $completion;
 	public Frontend\Shortcodes $shortcodes;
+	public ?Integrations\WooCommerce $woocommerce = null;
 
 	public function __construct() {
 		self::$instance = $this;
@@ -86,9 +87,15 @@ class Module {
 		);
 		$this->progress->set_completion_service( $this->completion );
 
-		// The quiz REST surface (Task 26). Routes::__construct() only hooks
-		// rest_api_init; nothing else needs this instance, so it is not kept.
-		new Rest\Routes( new Rest\QuizController( $this->quizzes ) );
+		// The quiz, course-catalogue and learner REST surfaces (Tasks 26, 33).
+		// Routes::__construct() only hooks rest_api_init; nothing else needs
+		// this instance, so it is not kept.
+		new Rest\Routes(
+			new Rest\QuizController( $this->quizzes ),
+			new Rest\CoursesController(),
+			new Rest\MeController( $this->enrollments, $this->progress, $this->credits, $this->certificates ),
+			new Rest\AdminController()
+		);
 
 		// admin-post.php, not wp-admin, so it must be constructed unconditionally
 		// (not inside the is_admin() block above) - the handler runs on requests
@@ -99,11 +106,34 @@ class Module {
 		// The lesson-body gate on the_content/the_excerpt (and the sitemap
 		// exclusion) - on every request, front end or not.
 		Frontend\ContentGuard::register();
+
+		// The read-only view of the (optional) events module a live_session
+		// lesson renders against (design spec 3.3), and - Task 37 - the
+		// pre-work veto on stream access. Guarded from the inside, so a site
+		// with the events module disabled simply gets
+		// Integrations\Events::available() === false; constructed
+		// unconditionally like ContentGuard/Templates above. Shares this
+		// Module's own $progress/$enrollments instances rather than minting
+		// its own, so there is one progress/enrolment source of truth.
+		new Integrations\Events( $this->progress, $this->enrollments );
 		new Frontend\Assets();
 		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments, $this->credits, $this->certificates );
 
 		// /certificate/{token}/ - the public verification route (Task 30).
 		new Frontend\CertificatePage( $this->certificates );
+
+		// dataLayer events for GTM/GA4 across the learner lifecycle (Task 35).
+		// Unconditional like every other frontend/* wiring above: it listens
+		// on its own action hooks and no-ops off those, so there is nothing
+		// to gate it behind.
+		new Integrations\Analytics();
+		// The WooCommerce adapter (Task 38) - product/course mapping and,
+		// through it, the course page's "Enrol" link. Core LMS stays usable
+		// without WooCommerce: nothing outside this file mentions it, and the
+		// adapter is only constructed when WooCommerce is active.
+		if ( \class_exists( 'WooCommerce' ) ) {
+			$this->woocommerce = new Integrations\WooCommerce();
+		}
 
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).

@@ -156,6 +156,75 @@ final class CreditRepository {
 		return $out;
 	}
 
+	/**
+	 * Every credit row, across every course or scoped to one, optionally
+	 * bounded by `awarded_at` date - the query behind `GET
+	 * /admin/reports/credits` (Task 34). Mirrors
+	 * EnrollmentRepository::completions()'s shape: same reason (this class
+	 * owns this table's SQL), same `$limit` used as the report's only bound
+	 * since there is no page param.
+	 *
+	 * @return Credit[]
+	 */
+	public static function report( int $course_id = 0, string $from = '', string $to = '', int $limit = 1000 ): array {
+		global $wpdb;
+
+		[ $where, $params ] = self::report_where( $course_id, $from, $to );
+
+		$sql      = 'SELECT * FROM ' . self::table() . $where . ' ORDER BY awarded_at DESC LIMIT %d';
+		$params[] = \max( 1, $limit );
+
+		$rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+		return \array_map( [ Credit::class, 'from_row' ], (array) $rows );
+	}
+
+	/**
+	 * Count and credit sum over EVERY row report() would match with no limit
+	 * - same filters, one query - so a truncated report still states true
+	 * totals.
+	 *
+	 * @return array{count:int,credits:float}
+	 */
+	public static function report_totals( int $course_id = 0, string $from = '', string $to = '' ): array {
+		global $wpdb;
+
+		[ $where, $params ] = self::report_where( $course_id, $from, $to );
+		$sql = 'SELECT COUNT(*) AS n, COALESCE(SUM(credits), 0) AS total FROM ' . self::table() . $where;
+
+		$row = [] === $params ? $wpdb->get_row( $sql, ARRAY_A ) : $wpdb->get_row( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+		return [
+			'count'   => (int) ( $row['n'] ?? 0 ),
+			'credits' => (float) ( $row['total'] ?? 0 ),
+		];
+	}
+
+	/**
+	 * The one WHERE clause report() and report_totals() share.
+	 *
+	 * @return array{0:string,1:array<int,int|string>}
+	 */
+	private static function report_where( int $course_id, string $from, string $to ): array {
+		$conditions = [];
+		$params     = [];
+
+		if ( $course_id > 0 ) {
+			$conditions[] = 'course_id = %d';
+			$params[]     = $course_id;
+		}
+		if ( '' !== $from ) {
+			$conditions[] = 'awarded_at >= %s';
+			$params[]     = $from . ' 00:00:00';
+		}
+		if ( '' !== $to ) {
+			$conditions[] = 'awarded_at <= %s';
+			$params[]     = $to . ' 23:59:59';
+		}
+
+		return [ [] === $conditions ? '' : ' WHERE ' . \implode( ' AND ', $conditions ), $params ];
+	}
+
 	public static function total_for_user( int $user_id ): float {
 		global $wpdb;
 		return (float) $wpdb->get_var(

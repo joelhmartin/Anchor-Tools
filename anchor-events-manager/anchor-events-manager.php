@@ -7838,7 +7838,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $state = Stream_State::for_event( $event_id );
         if ( ! $this->entitlements || ! $this->entitlements->can_access_stream( $event_id, (int) $state['session_index'], 0 ) ) {
-            return new \WP_Error( 'anchor_events_room_denied', \__( 'This account is not registered for this event.', 'anchor-schema' ), [ 'status' => 403 ] );
+            // The same wording filter the room's denied branch uses, so a
+            // listener that knows the real reason (e.g. the courses module's
+            // pre-work veto) says it here too. Tags stripped: a REST error
+            // message is plain text, while the room renders the filter's
+            // result through wp_kses_post().
+            $message = \wp_strip_all_tags( (string) \apply_filters( 'anchor_events_room_denied_message', \__( 'This account is not registered for this event.', 'anchor-schema' ), $event_id ) );
+            return new \WP_Error( 'anchor_events_room_denied', $message, [ 'status' => 403 ] );
         }
         $response = new \WP_REST_Response( [
             'state'         => (string) $state['state'],

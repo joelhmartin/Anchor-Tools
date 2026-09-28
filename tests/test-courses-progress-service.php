@@ -211,4 +211,170 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 
 		$this->assertFalse( $this->progress->get_course_progress( $this->user, $this->course )->complete );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * PR36 bot review finding e - an unpublished curriculum item never gates
+	 * progression, and never counts toward the completion percentage.
+	 * ------------------------------------------------------------------- */
+
+	public function test_a_draft_required_lesson_never_gates_sequential_progression() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Lesson' ]
+		);
+
+		Curriculum::save(
+			$this->course,
+			[ [ 'title' => 'M1', 'items' => [
+				[ 'type' => 'lesson', 'id' => $this->l1 ],
+				[ 'type' => 'lesson', 'id' => $draft ],
+				[ 'type' => 'lesson', 'id' => $this->l2 ],
+			] ] ]
+		);
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->l1 );
+
+		$this->assertTrue(
+			$this->progress->is_item_available( $this->user, $this->course, $this->l2 ),
+			'A draft required lesson must never gate sequential progression - it cannot be completed through any public route.'
+		);
+	}
+
+	public function test_a_draft_required_quiz_never_gates_sequential_progression() {
+		$draft_quiz = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\QuizPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Quiz' ]
+		);
+
+		Curriculum::save(
+			$this->course,
+			[ [ 'title' => 'M1', 'items' => [
+				[ 'type' => 'lesson', 'id' => $this->l1 ],
+				[ 'type' => 'quiz', 'id' => $draft_quiz ],
+				[ 'type' => 'lesson', 'id' => $this->l2 ],
+			] ] ]
+		);
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->l1 );
+
+		$this->assertTrue(
+			$this->progress->is_item_available( $this->user, $this->course, $this->l2 ),
+			'A draft required quiz must never gate sequential progression.'
+		);
+	}
+
+	public function test_a_draft_required_item_does_not_count_toward_the_completion_percentage() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Lesson' ]
+		);
+
+		Curriculum::save(
+			$this->course,
+			[ [ 'title' => 'M1', 'items' => [
+				[ 'type' => 'lesson', 'id' => $this->l1 ],
+				[ 'type' => 'lesson', 'id' => $draft ],
+			] ] ]
+		);
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->l1 );
+
+		$p = $this->progress->get_course_progress( $this->user, $this->course );
+		$this->assertSame( 1, $p->total_required, 'A draft required item must not count toward the total - a learner cannot complete it either.' );
+		$this->assertSame( 100.0, $p->percent );
+		$this->assertTrue( $p->complete );
+	}
+
+	/**
+	 * PR36 round 2, CodeRabbit (Major): a required curriculum that is
+	 * NON-EMPTY but made ENTIRELY of drafts must not complete the course
+	 * under `minimum_percentage` - published_only() leaves $total at 0,
+	 * and percent()'s own zero-total short-circuit returns 100.0, which is
+	 * correct for a genuinely empty curriculum (nothing to do) but wrong
+	 * here: this course has real required work, it is simply all
+	 * unpublished right now.
+	 */
+	public function test_a_draft_only_required_curriculum_does_not_complete_under_minimum_percentage() {
+		update_post_meta( $this->course, '_anchor_course_completion_mode', 'minimum_percentage' );
+		update_post_meta( $this->course, '_anchor_course_completion_percentage', 50 );
+
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Only Draft' ]
+		);
+
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $draft ] ] ] ] );
+
+		$p = $this->progress->get_course_progress( $this->user, $this->course );
+
+		$this->assertSame( 0, $p->total_required, 'The only required item is a draft - it must not count toward the total.' );
+		$this->assertFalse(
+			$p->complete,
+			'A non-empty required curriculum with zero published items must not complete the course, unlike a genuinely EMPTY curriculum.'
+		);
+	}
+
+	/** The genuinely empty case (no required items at all) is unaffected: still 100% and complete. */
+	public function test_a_genuinely_empty_required_curriculum_still_completes_under_minimum_percentage() {
+		update_post_meta( $this->course, '_anchor_course_completion_mode', 'minimum_percentage' );
+		update_post_meta( $this->course, '_anchor_course_completion_percentage', 50 );
+
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [] ] ] );
+
+		$p = $this->progress->get_course_progress( $this->user, $this->course );
+
+		$this->assertSame( 0, $p->total_required );
+		$this->assertSame( 100.0, $p->percent );
+		$this->assertTrue( $p->complete, 'A genuinely empty curriculum has nothing left to do.' );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * PR36 round 3 (Codex, MeController ~99) - a curriculum item whose OWN
+	 * post is not published is never available, whatever else is true:
+	 * enrolment, curriculum membership and progression can all be
+	 * satisfied and the item must still refuse, because no public route
+	 * renders unpublished content. start_lesson()/complete_lesson() both
+	 * return the same WP_Error('no_lesson') the REST layer maps to 404 -
+	 * distinct from the generic 403 `locked` progression refusal.
+	 * ------------------------------------------------------------------- */
+
+	public function test_is_item_available_refuses_a_draft_target_lesson_even_when_otherwise_unlocked() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Target' ]
+		);
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $draft ] ] ] ] );
+
+		$this->assertFalse(
+			$this->progress->is_item_available( $this->user, $this->course, $draft ),
+			'A draft target item is never available, even with nothing ahead of it to gate progression.'
+		);
+	}
+
+	public function test_start_lesson_returns_a_no_lesson_error_for_a_draft_target_lesson() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Target' ]
+		);
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $draft ] ] ] ] );
+
+		$result = $this->progress->start_lesson( $this->user, $this->course, $draft );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 'no_lesson', $result->get_error_code() );
+		$this->assertNull(
+			ProgressRepository::find( $this->user, $this->course, $draft, 'lesson' ),
+			'start_lesson() must never write a progress row for unpublished content.'
+		);
+	}
+
+	public function test_complete_lesson_returns_a_no_lesson_error_for_a_private_target_lesson() {
+		$private = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'private', 'post_title' => 'Private Target' ]
+		);
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $private ] ] ] ] );
+
+		$result = $this->progress->complete_lesson( $this->user, $this->course, $private );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 'no_lesson', $result->get_error_code() );
+		$this->assertNull(
+			ProgressRepository::find( $this->user, $this->course, $private, 'lesson' ),
+			'complete_lesson() must never write a progress row for unpublished content.'
+		);
+	}
 }

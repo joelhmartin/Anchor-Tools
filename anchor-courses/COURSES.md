@@ -691,7 +691,8 @@ with `manage_anchor_enrollments`:
 - **add a learner** by name and email - the account is created if it does not
   exist, with no WordPress or WooCommerce new-account email
   (`Support\Accounts::ensure_user()`, gated by the `anchor_courses_create_account`
-  filter), then granted the access role with `source = manual`;
+  filter with a `null` context), then granted the access role with
+  `source = manual`;
 - **revoke access** per row, which removes the role and lets the loss policy
   decide what happens to their progress.
 
@@ -788,14 +789,15 @@ with `quiz_passed`/`quiz_failed`) chosen by a ternary.
 | `anchor_courses_access_cta` | `array{url,label,message}, $course_id, $user_id` | turn the "how to get access" line into a link |
 | `anchor_courses_no_access_message` | `string, $course_id` | the default access line |
 | `anchor_courses_prerequisite_role_choices` | `array $choices, $exclude_course_id` | roles offered (and accepted) as prerequisites |
-| `anchor_courses_create_account` | `true, $email` | may the Learners tab create an account |
+| `anchor_courses_create_account` | `true, $email, $context` | may an account be created for someone who has none - the module's single creation point (`Support\Accounts::resolve()`). `$context` is `null` for the Learners tab, the `WC_Order` when the WooCommerce adapter resolves a guest course buyer. Independent of the events module's `anchor_events_create_account` (different module, different reason): opting one out does not opt out the other |
 | `anchor_courses_capability_roles` | `[ 'administrator' ]` | roles granted the capabilities |
 | `anchor_courses_parent_menu` | `true` | show the Courses admin menu tree |
 | `anchor_courses_now` | `time()` | the clock (tests) |
 | `anchor_courses_analytics_enabled` | `true` | turn the whole `Integrations\Analytics` dataLayer pipeline off; when false nothing is ever queued (and a queue from before the flip is never printed) |
-| `anchor_courses_datalayer_event` | `array\|null $payload, string $event, array $args` | edit or drop (`null`) one dataLayer event before it is queued; `$args` are the firing hook's own positional arguments |
+| `anchor_courses_datalayer_event` | `array\|null $payload, string $event, array $args` | edit or drop (`null`) one dataLayer event before it is queued; `$args` are the firing hook's own positional arguments. The IDs-only allow-list is re-applied to what it returns, so it can remove or change allowed keys but never add others |
 | `anchor_courses_wc_enroll_statuses` | `['processing','completed']` | which order statuses grant access |
 | `anchor_courses_wc_refund_policy` | `'remove_role', $order_id, $course_id, $user_id` | remove_role\|keep - whether a refund takes the access role away |
+| `anchor_courses_wc_retry_order_limit` | `500, $course_id` | how many of the newest orders with a line item mapped to a just-published course retry-on-publish re-runs |
 
 There is also `anchor_events_can_access_stream` - NOT one of this module's own
 hooks; courses only *listens* to it (unconditionally, from
@@ -914,17 +916,24 @@ without the capability is 403.
 |---|---|---|---|
 | GET | `/admin/courses/{id}/learners` | `per_page` (50, max 200), `page` (1) | 200, `Admin\LearnerReports::rows()` - the same batch-loaded roster the Learners metabox renders; 404 `no_course` |
 | GET | `/admin/users/{id}/courses` | - | 200, `Admin\LearnerReports::user_rows()` - the same rows the user-profile Courses block renders; 404 `no_user` |
-| GET | `/admin/reports/completions` | `course_id` (optional), `from`, `to` (`Y-m-d`, inclusive) | 200 `{total, rows}` of `EnrollmentRepository::completions()` (status `completed`), each row `user_id`, `display_name`, `course_id`, `course_title`, `completed_at` |
-| GET | `/admin/reports/credits` | `course_id` (optional), `from`, `to` (`Y-m-d`, inclusive) | 200 `{total_credits, rows}` of `CreditRepository::report()`, each row a `Credit::to_array()` plus `display_name`, `user_email`, `course_title` |
+| GET | `/admin/reports/completions` | `course_id` (optional), `from`, `to` (`Y-m-d`, inclusive) | 200 `{total, truncated, rows}` of `EnrollmentRepository::completions()` (status `completed`), each row `user_id`, `display_name`, `course_id`, `course_title`, `completed_at`; 400 `invalid_date` |
+| GET | `/admin/reports/credits` | `course_id` (optional), `from`, `to` (`Y-m-d`, inclusive) | 200 `{total, total_credits, truncated, rows}` of `CreditRepository::report()`, each row a `Credit::to_array()` plus `display_name`, `user_email`, `course_title`; 400 `invalid_date` |
 
 There is no REST route for enrol/revoke/cancel/reset/complete/uncomplete:
 those already have a door (`admin-post.php?action=anchor_courses_add_learner`
 / `anchor_courses_revoke_access` / `anchor_courses_manage_enrollment` - see
 "Admin surfaces and notices" above) and this controller is read-only, so it
-does not open a second one. `completions()`/`credits()` cap the result at
-1000 rows (no page param on a report) rather than leaving either query
-unbounded; `learners()` bounds `per_page` to `[1,200]`. No route in this
-controller leaks lesson body or quiz-answer data.
+does not open a second one. `completions()`/`credits()` cap `rows` at 1000
+(no page param on a report) rather than leaving either query unbounded, but
+never hide that: `total` is a `COUNT(*)` over every match
+(`EnrollmentRepository::count_completions()`,
+`CreditRepository::report_totals()` - each shares its WHERE builder with the
+row query, so the two cannot disagree), `total_credits` is summed over every
+match too, and `truncated` is `true` exactly when `total` exceeds the rows
+returned - narrow the range (`course_id`, `from`, `to`) to see the rest.
+`from`/`to` must be real `Y-m-d` dates (`2026-02-30` is refused); anything
+else is a 400 `invalid_date`. `learners()` bounds `per_page` to `[1,200]`.
+No route in this controller leaks lesson body or quiz-answer data.
 
 ### Error -> HTTP status map (`Routes::error_response()`)
 
@@ -933,16 +942,17 @@ service) is mapped to a status code:
 
 | Status | Codes |
 |---|---|
-| 400 | `unknown_question`, and anything not listed below |
+| 400 | `unknown_question`, `invalid_date`, and anything not listed below |
 | 403 | `not_enrolled`, `locked`, `not_in_course`, `course_closed`, `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`, `attempt_not_yours` |
 | 404 | `no_attempt`, `no_course`, `no_user` |
-| 409 | `attempt_closed`, `no_questions`, `attempt_course_mismatch` (audit F05), `save_conflict` (audit F06), `attempt_busy` (audit F07) |
+| 409 | `attempt_closed`, `no_questions`, `attempt_course_mismatch` (audit F05), `save_conflict` (audit F06), `attempt_busy` (audit F07), `quiz_required` (completing a `quiz_pass` lesson by hand) |
 | 503 | `save_failed` (audit F03), `read_failed` (safe to retry either way) |
 
-`no_course`/`no_user` 404s from `CoursesController`/`AdminController` are
-built as a plain `WP_REST_Response` directly in the callback rather than
-through this map, since those are simple existence checks with no
-service-layer `WP_Error` to translate.
+Every controller error goes through this map - including the simple
+existence checks (`no_course`, `no_user`, `no_attempt`) and the controllers'
+own refusals (`locked`, `attempt_not_yours`, `invalid_date`), which build a
+`WP_Error` and hand it to `Routes::error_response()` rather than choosing a
+status themselves.
 
 ## Other (non-REST) endpoints
 
@@ -967,6 +977,17 @@ accepts any `anchor_course` post regardless of status (draft/private
 included) - see "Publishing" below for what happens when a mapped course
 isn't published yet.
 
+The product screen's **Courses** tab lists every course in
+`WooCommerce::MAPPABLE_STATUSES` (publish, private, draft, pending, future),
+unpublished ones labelled with their status (e.g. "Staged Course (draft)"),
+and always includes every course already mapped - so saving a product never
+drops a mapping merely because the course is unpublished.
+
+**Variation mappings are code-only today.** The tab lives on the parent
+product's data panel; there is no per-variation field. A variation's own
+mapping (which wins over the parent's) can only be set in code with
+`WooCommerce::set_courses_for_product( $variation_id, [ ... ] )`.
+
 An order reaching a qualifying status (`ENROLL_STATUSES`, default
 `processing`/`completed`, filter `anchor_courses_wc_enroll_statuses`) grants
 the access role for every mapped course through `Roles::grant_access()`
@@ -975,10 +996,45 @@ A refusal (missing prerequisite, or the course still draft/private) is logged
 and left as an order note (`blocked_prerequisite`/`blocked_no_course`); the
 order itself is never touched - refunding is a human decision.
 
+**Accounts.** Only an order that carries a mapped course line ever resolves
+or creates an account: `enroll_order()` reads the lines first and returns 0
+for anything else (a ticket-only or any other unmapped order, at any status,
+creates nobody). The revoke and refund-policy paths never create accounts at
+all - they look up the order's customer id, then an existing user with the
+billing email, and with neither there is nothing to revoke. A course buyer
+always ends up with a login, by one of two paths:
+
+- **At checkout** (classic and block/Store API alike): while the cart holds
+  a product that grants a course, `woocommerce_checkout_registration_required`
+  and `woocommerce_checkout_registration_enabled` both return `true`, so
+  guest checkout is off for that cart and WooCommerce creates the account
+  itself. Carts with no course product keep the store's own settings.
+- **Outside checkout** (an admin-created order, the REST API, or a guest
+  that slipped through): `enroll_order()` resolves the buyer from the
+  billing email through `Support\Accounts::resolve()`, which consults
+  `anchor_courses_create_account` with the order as `$context`. The order is
+  then linked to that account (`set_customer_id()` + `save()`), and an
+  account created just now - never one that already existed - gets
+  WordPress's own set-password notice
+  (`wp_new_user_notification( $user_id, null, 'user' )`). If the filter
+  declines, nothing is granted, and the decline is logged and left as an
+  `account_not_created` order note.
+
 **Publishing.** Publishing a draft/private mapped course retries every
-already-qualifying order against it (`on_course_published()`, bounded by
-`RETRY_ORDER_LIMIT`), so an order blocked by `blocked_no_course` self-heals
-once the course goes live without anyone having to touch the order.
+already-qualifying order against it (`on_course_published()` ->
+`retry_orders_for_course()`), so an order blocked by `blocked_no_course`
+self-heals once the course goes live without anyone having to touch the
+order. Orders are found **by line item**: every product/variation (any
+status) mapped to the course, then the orders whose items name one of them,
+read from WooCommerce's order-item tables (`woocommerce_order_items` +
+`_product_id`/`_variation_id` item meta - used by both the posts and the
+HPOS order stores; not `wc_order_product_lookup`, which is filled by an
+asynchronous Action Scheduler import). The bound is the newest
+`anchor_courses_wc_retry_order_limit` (default `RETRY_ORDER_LIMIT`, 500)
+matching orders - it counts course orders only, not the whole store - and
+hitting it is logged (`wc_retry_capped`); older orders past the bound need
+a manual resync (`enroll_order( $order_id )`). Each order is then checked
+for a qualifying status and re-resolved line by line before granting.
 
 A course page shows an **Enrol** button only when a product maps to the
 course, and it links to that product (`anchor_courses_access_cta`). With no
@@ -1065,6 +1121,19 @@ stream itself; the event room is the only player. When the event does not
 resolve (module inactive, or the lesson's `event_id` no longer names a real
 `event` post), the template falls back to "Live session unavailable."
 
+When the stream veto (below) would refuse this learner the room, the
+template shows the veto's notice - "Finish the earlier lessons in {course}
+first." with a link to the unfinished lesson - **instead of** the Join
+button. It asks `Events::prework_block()`, the same decision
+`veto_stream_access()` makes, for the lesson's own `session_index`, so the
+lesson page and the room can never disagree.
+
+The events module's own event page has a separate "Join here" link
+(`Module::can_view_virtual_link()`); that is events-side behaviour and it
+consults `can_access_stream()` for **session 0 only**, so on a multisession
+event a veto on a later session is not reflected there - the room itself
+still enforces it.
+
 ### The stream veto (`Integrations\Events::veto_stream_access()`, Task 37)
 
 Registered unconditionally on the events module's own single "may this
@@ -1103,6 +1172,19 @@ repeat on every stream-state poll) and invalidated by
 (whose own `event_id`/`session_index`/`require_prior_items` writes never fire
 that action themselves).
 
+**Why, not just no.** `veto_stream_access()` records its last denial per
+request as `[event_id][user_id] => {course, unfinished item}`
+(`Events::prework_block()`), and courses filters the events module's
+`anchor_events_room_denied_message` (`Events::denied_message()`): a vetoed
+learner - who IS registered - sees "Finish the earlier lessons in {course}
+first." with an escaped link to the unfinished lesson in its course context
+(`Access::lesson_url()`; a quiz links the course page), not "This account
+isn't registered". The room's REST poll (`GET
+/anchor-events/v1/events/{id}/room`) runs its 403 message through the same
+filter, tags stripped. A denial the events module made on its own (no seat,
+no role) keeps the default wording; the record is cleared whenever the
+veto is consulted with an incoming `false` or finds nothing blocking.
+
 ---
 
 ## Analytics (`Integrations\Analytics`)
@@ -1128,8 +1210,12 @@ never printed) and editable/droppable per event via
 | `anchor_courses_certificate_issued` | `certificate_generated` | `course_id`, `certificate_id` |
 
 Every payload also carries `event`. **IDs only** - no name, email, title, or
-even the WordPress user id ever appears in a payload
-(`array_intersect_key()` against a fixed allow-list on every branch). Not
+even the WordPress user id ever appears in a payload: the fixed allow-list
+(`event`, `course_id`, `lesson_id`, `quiz_id`, `attempt_id`, `score`,
+`credits`, `certificate_id`) is applied where every payload enters the
+queue - after `anchor_courses_datalayer_event` has run, and for
+`Analytics::queue()`'s own callers too - so neither a filter nor a custom
+event can add another key. Not
 wired: `anchor_courses_quiz_expired`, `anchor_courses_course_recompleted`,
 `anchor_courses_access_granted`/`_revoked` - a product call, not an
 oversight.

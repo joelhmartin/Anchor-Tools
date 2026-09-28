@@ -122,6 +122,8 @@ final class AdminController {
 			self::REPORT_LIMIT
 		);
 
+		self::prime_caches( \array_map( static fn( $e ) => (int) $e->user_id, $enrollments ), \array_map( static fn( $e ) => (int) $e->course_id, $enrollments ) );
+
 		$rows = [];
 		foreach ( $enrollments as $enrollment ) {
 			$user   = \get_userdata( $enrollment->user_id );
@@ -146,6 +148,8 @@ final class AdminController {
 			self::REPORT_LIMIT
 		);
 
+		self::prime_caches( \array_map( static fn( $c ) => (int) $c->user_id, $credits ), \array_map( static fn( $c ) => (int) $c->course_id, $credits ) );
+
 		$rows  = [];
 		$total = 0.0;
 
@@ -163,5 +167,24 @@ final class AdminController {
 		}
 
 		return new \WP_REST_Response( [ 'total_credits' => \round( $total, 2 ), 'rows' => $rows ], 200 );
+	}
+
+	/**
+	 * One query for the users and one for the courses a report row set names,
+	 * so the per-row get_userdata()/get_the_title() calls are cache hits
+	 * (Task 34 review: the module's house rule is no N+1 in reports).
+	 *
+	 * @param int[] $user_ids
+	 * @param int[] $course_ids
+	 */
+	private static function prime_caches( array $user_ids, array $course_ids ): void {
+		$user_ids   = \array_values( \array_unique( \array_filter( $user_ids ) ) );
+		$course_ids = \array_values( \array_unique( \array_filter( $course_ids ) ) );
+		if ( [] !== $user_ids ) {
+			\cache_users( $user_ids );
+		}
+		if ( [] !== $course_ids ) {
+			\_prime_post_caches( $course_ids, false, false );
+		}
 	}
 }

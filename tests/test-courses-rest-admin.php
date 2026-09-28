@@ -265,4 +265,41 @@ class Test_Courses_Rest_Admin extends Anchor_Courses_TestCase {
 			$this->assertStringNotContainsString( '"correct"', $json );
 		}
 	}
+
+	/**
+	 * Task 34 review: the completions and credits reports batch-load users and
+	 * course titles - the query count must not grow with the number of rows.
+	 */
+	public function test_completion_and_credit_reports_do_not_query_per_row() {
+		global $wpdb;
+		$count_queries = function ( string $route, int $expected_rows ) use ( $wpdb ): int {
+			wp_cache_flush();
+			$before   = $wpdb->num_queries;
+			$response = $this->request( 'GET', $route );
+			$this->assertSame( 200, $response->get_status(), $route );
+			$this->assertCount( $expected_rows, $response->get_data()['rows'], $route . ' rows' );
+			return $wpdb->num_queries - $before;
+		};
+
+		wp_set_current_user( $this->admin );
+		$this->complete_the_course();
+		$one_completions = $count_queries( '/admin/reports/completions', 1 );
+		$one_credits     = $count_queries( '/admin/reports/credits', 1 );
+
+		// Three more learners on three more courses.
+		for ( $i = 0; $i < 3; $i++ ) {
+			$learner = $this->make_learner();
+			$course  = $this->make_course( [ 'progression_mode' => 'free', 'ce_credits' => '1' ], "Extra {$i}" );
+			$lesson  = $this->make_lesson();
+			\Anchor\Courses\Content\Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+			\Anchor\Courses\Support\Roles::grant_access( $learner, $course, 'manual' );
+			\Anchor\Courses\Module::instance()->progress->complete_lesson( $learner, $course, $lesson );
+		}
+		wp_set_current_user( $this->admin );
+		$many_completions = $count_queries( '/admin/reports/completions', 4 );
+		$many_credits     = $count_queries( '/admin/reports/credits', 4 );
+
+		$this->assertSame( $one_completions, $many_completions, 'completions: query count must not scale with rows' );
+		$this->assertSame( $one_credits, $many_credits, 'credits: query count must not scale with rows' );
+	}
 }

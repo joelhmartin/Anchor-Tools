@@ -323,4 +323,58 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 		$this->assertSame( 100.0, $p->percent );
 		$this->assertTrue( $p->complete, 'A genuinely empty curriculum has nothing left to do.' );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * PR36 round 3 (Codex, MeController ~99) - a curriculum item whose OWN
+	 * post is not published is never available, whatever else is true:
+	 * enrolment, curriculum membership and progression can all be
+	 * satisfied and the item must still refuse, because no public route
+	 * renders unpublished content. start_lesson()/complete_lesson() both
+	 * return the same WP_Error('no_lesson') the REST layer maps to 404 -
+	 * distinct from the generic 403 `locked` progression refusal.
+	 * ------------------------------------------------------------------- */
+
+	public function test_is_item_available_refuses_a_draft_target_lesson_even_when_otherwise_unlocked() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Target' ]
+		);
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $draft ] ] ] ] );
+
+		$this->assertFalse(
+			$this->progress->is_item_available( $this->user, $this->course, $draft ),
+			'A draft target item is never available, even with nothing ahead of it to gate progression.'
+		);
+	}
+
+	public function test_start_lesson_returns_a_no_lesson_error_for_a_draft_target_lesson() {
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Target' ]
+		);
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $draft ] ] ] ] );
+
+		$result = $this->progress->start_lesson( $this->user, $this->course, $draft );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 'no_lesson', $result->get_error_code() );
+		$this->assertNull(
+			ProgressRepository::find( $this->user, $this->course, $draft, 'lesson' ),
+			'start_lesson() must never write a progress row for unpublished content.'
+		);
+	}
+
+	public function test_complete_lesson_returns_a_no_lesson_error_for_a_private_target_lesson() {
+		$private = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'private', 'post_title' => 'Private Target' ]
+		);
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $private ] ] ] ] );
+
+		$result = $this->progress->complete_lesson( $this->user, $this->course, $private );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 'no_lesson', $result->get_error_code() );
+		$this->assertNull(
+			ProgressRepository::find( $this->user, $this->course, $private, 'lesson' ),
+			'complete_lesson() must never write a progress row for unpublished content.'
+		);
+	}
 }

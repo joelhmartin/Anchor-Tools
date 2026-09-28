@@ -498,6 +498,58 @@ class Test_Courses_Stream_Veto extends Anchor_Courses_TestCase {
 	}
 
 	/**
+	 * PR36 round 3 (CodeRabbit, Events.php:300): a lesson's status can
+	 * change WITHOUT ever reaching `LessonEditor::save()` - Quick Edit, a
+	 * bulk status change, or a direct `wp_update_post()` post no metabox
+	 * nonce, so `authorized_to_save()` refuses and `save()` returns before
+	 * its own `Events::flush()` call ever runs. The memo must still be
+	 * invalidated when a lesson crosses the `publish` boundary through any
+	 * of those paths, in the SAME request that then re-checks stream
+	 * access.
+	 */
+	public function test_a_status_transition_that_bypasses_the_editor_save_still_invalidates_the_memo() {
+		$this->require_events();
+
+		[ $event_id ] = $this->real_stream_event();
+
+		$course  = $this->make_course( [ 'progression_mode' => 'free' ], 'Transition Course' );
+		$prework = $this->make_lesson( [], 'Transition Pre-work' );
+		$staged  = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Staged Livestream' ]
+		);
+		update_post_meta( $staged, '_anchor_lesson_type', 'live_session' );
+		update_post_meta( $staged, '_anchor_lesson_event_id', $event_id );
+		update_post_meta( $staged, '_anchor_lesson_session_index', 0 );
+		update_post_meta( $staged, '_anchor_lesson_require_prior_items', 1 );
+
+		Curriculum::save(
+			$course,
+			[ [ 'title' => 'M', 'items' => [
+				[ 'type' => 'lesson', 'id' => $prework ],
+				[ 'type' => 'lesson', 'id' => $staged ],
+			] ] ]
+		);
+
+		// Prime the memo: a draft live_session lesson never qualifies.
+		$this->assertNotContains(
+			$staged,
+			array_column( Events::live_lessons_for_event( $event_id ), 'lesson_id' )
+		);
+
+		// A status-only transition with no $_POST/nonce at all - exactly
+		// what Quick Edit, a bulk action, or a programmatic status change
+		// looks like, and precisely what LessonEditor::save() refuses.
+		wp_update_post( [ 'ID' => $staged, 'post_status' => 'publish' ] );
+
+		$ids = array_column( Events::live_lessons_for_event( $event_id ), 'lesson_id' );
+		$this->assertContains(
+			$staged,
+			$ids,
+			'A status transition that bypasses LessonEditor::save() must still invalidate the memo.'
+		);
+	}
+
+	/**
 	 * PR36 bot review finding e (Codex): a required DRAFT lesson placed
 	 * before a gated `live_session` lesson must never veto stream access -
 	 * a learner cannot complete a draft through any public route, so a

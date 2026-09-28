@@ -304,7 +304,11 @@ final class Shortcodes {
 	public function render_live_session( int $lesson_id, int $course_id ): string {
 		$user_id  = \get_current_user_id();
 		$event_id = (int) LessonEditor::setting( $lesson_id, 'event_id' );
-		$ready    = Events::available() && $event_id > 0;
+		// Events::event_exists() (PR36 round 3, Codex): a deleted event, or a
+		// legacy value that never named a real event post, must show the
+		// "unavailable" branch below - not the "will appear later" branch,
+		// which implies the event still exists and just hasn't started.
+		$ready    = Events::available() && Events::event_exists( $event_id );
 
 		$item_available = $user_id > 0 && $this->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' );
 		if ( $item_available ) {

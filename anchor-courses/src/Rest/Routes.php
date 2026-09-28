@@ -97,7 +97,8 @@ final class Routes {
 	 * (not_enrolled, locked, not_in_course, course_closed,
 	 * missing_prerequisite, no_attempts_remaining, retry_delay,
 	 * attempt_not_yours); 404 for "that id does not exist" (no_attempt,
-	 * no_course, no_user); 409 for a state conflict on an otherwise-valid
+	 * no_course, no_user, no_lesson - a draft/private lesson a REST caller
+	 * may not even know exists, PR36 round 3); 409 for a state conflict on an otherwise-valid
 	 * request (attempt_closed, no_questions, attempt_course_mismatch - audit
 	 * F05, save_conflict - audit F06, attempt_busy - audit F07, quiz_required -
 	 * a quiz-gated lesson completed by hand); 503 for a
@@ -125,6 +126,7 @@ final class Routes {
 			'no_attempt'              => 404,
 			'no_course'               => 404,
 			'no_user'                 => 404,
+			'no_lesson'               => 404,
 			'unknown_question'        => 400,
 			'no_questions'            => 409,
 			'save_failed'             => 503,

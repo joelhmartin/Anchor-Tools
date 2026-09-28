@@ -191,12 +191,36 @@ class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
 		$this->assertStringContainsString( 'unavailable', strtolower( $html ) );
 	}
 
+	/**
+	 * PR36 round 3 (Codex): a deleted/non-event id must show the
+	 * "unavailable" branch, never the "will appear later" branch - that
+	 * wording implies the event still exists and just hasn't started, which
+	 * is false for an id `Events::event_exists()` cannot confirm.
+	 */
 	public function test_the_lesson_renders_gracefully_when_the_picked_event_no_longer_exists() {
 		update_post_meta( $this->lesson, '_anchor_lesson_event_id', 999999 );
 
 		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
 
-		$this->assertStringContainsString( 'The livestream link will appear here', $html );
+		$this->assertStringContainsString( 'Live session unavailable.', $html );
+		$this->assertStringNotContainsString( 'Join the livestream', $html );
+		$this->assertStringNotContainsString(
+			'The livestream link will appear here',
+			$html,
+			'A non-existent event id must never show "will appear later" - that implies the event still exists.'
+		);
+	}
+
+	/** Same guard, but the event was real and got deleted AFTER the lesson saved it (PR36 round 3, Codex). */
+	public function test_the_lesson_shows_unavailable_after_the_saved_event_is_deleted() {
+		$event_id = $this->streamed_event();
+		update_post_meta( $this->lesson, '_anchor_lesson_event_id', $event_id );
+
+		wp_delete_post( $event_id, true );
+
+		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
+
+		$this->assertStringContainsString( 'Live session unavailable.', $html );
 		$this->assertStringNotContainsString( 'Join the livestream', $html );
 	}
 

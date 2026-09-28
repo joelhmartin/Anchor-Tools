@@ -119,11 +119,23 @@ final class ProgressService {
 	 * then its quiz" order. Every other earlier required item still gates,
 	 * which includes everything before the parent lesson - so the quiz opens
 	 * exactly when its lesson does.
+	 *
+	 * The TARGET item's own post must be `publish` (PR36 round 3, Codex):
+	 * unlike the "unpublished item never gates progression" rule for items
+	 * BEFORE $item_id (published_only(), above), an unpublished item never
+	 * counts as available for ITSELF either - draft/pending/private content
+	 * has no public route to open or complete it. This is defense-in-depth
+	 * for every caller of this method (Access, Shortcodes, QuizService);
+	 * start_lesson()/complete_lesson() additionally check this FIRST, on
+	 * their own, so they can surface the distinct `no_lesson` WP_Error the
+	 * REST routes map to 404, rather than this method's generic `false`.
 	 */
 	public function is_item_available( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
 		$allowed = true;
 
 		if ( ! $this->enrollments->is_enrolled( $user_id, $course_id ) ) {
+			$allowed = false;
+		} elseif ( 'publish' !== \get_post_status( $item_id ) ) {
 			$allowed = false;
 		} elseif ( ! Curriculum::contains( $course_id, $item_id, $item_type ) ) {
 			$allowed = false;
@@ -216,10 +228,40 @@ final class ProgressService {
 	}
 
 	/**
+	 * Shared by start_lesson() and complete_lesson() (PR36 round 3, Codex,
+	 * MeController ~99): a lesson whose post is not published can never be
+	 * started or completed through either REST write route, whatever
+	 * enrolment/curriculum/progression would otherwise say - an enrolled
+	 * learner who knows or guesses a draft/private lesson's id must not be
+	 * able to create progress against it, and a `view`-completion lesson
+	 * must not complete itself the instant it is opened before publish.
+	 * `is_item_available()` also refuses an unpublished target item (the
+	 * same rule, defense-in-depth for every OTHER caller), but only this
+	 * guard's distinct `no_lesson` code lets `Routes::error_response()` map
+	 * the refusal to 404 rather than the generic 403 `locked`.
+	 */
+	private function unpublished_lesson_error( int $lesson_id ): ?\WP_Error {
+		if ( 'publish' === \get_post_status( $lesson_id ) ) {
+			return null;
+		}
+		return new \WP_Error( 'no_lesson', \__( 'That lesson is not available.', 'anchor-schema' ) );
+	}
+
+	/**
 	 * Record a view. Starts the enrolment on first contact, and completes the
 	 * lesson immediately when its completion mode is `view`.
+	 *
+	 * @return Progress|\WP_Error|null WP_Error('no_lesson') when the lesson
+	 *         itself is not published; null when it is published but not yet
+	 *         available (not enrolled, not in the curriculum, or sequential
+	 *         gating) - MeController maps null to 403 `locked`.
 	 */
-	public function start_lesson( int $user_id, int $course_id, int $lesson_id ): ?Progress {
+	public function start_lesson( int $user_id, int $course_id, int $lesson_id ) {
+		$error = $this->unpublished_lesson_error( $lesson_id );
+		if ( null !== $error ) {
+			return $error;
+		}
+
 		if ( ! $this->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' ) ) {
 			return null;
 		}
@@ -273,6 +315,11 @@ final class ProgressService {
 	 * @return Progress|\WP_Error
 	 */
 	public function complete_lesson( int $user_id, int $course_id, int $lesson_id ) {
+		$error = $this->unpublished_lesson_error( $lesson_id );
+		if ( null !== $error ) {
+			return $error;
+		}
+
 		if ( ! $this->enrollments->is_enrolled( $user_id, $course_id ) ) {
 			return new \WP_Error( 'not_enrolled', \__( 'You are not enrolled in this course.', 'anchor-schema' ) );
 		}

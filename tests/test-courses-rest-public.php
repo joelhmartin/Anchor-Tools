@@ -179,6 +179,61 @@ class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
 		$this->assertSame( 'not_enrolled', $response->get_data()['code'] );
 	}
 
+	/**
+	 * PR36 round 3 (Codex): an enrolled learner who knows or guesses a
+	 * draft lesson's id in their own course must not be able to create
+	 * progress against it through either write route - `ProgressService`'s
+	 * shared publish guard refuses before enrolment/curriculum are even
+	 * consulted, so both routes 404 with `no_lesson` rather than the
+	 * generic 403 `locked`.
+	 */
+	public function test_start_and_complete_404_for_a_draft_lesson_in_the_learners_own_course() {
+		$draft   = self::factory()->post->create( [ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Draft Lesson' ] );
+		$modules = Curriculum::get( $this->course );
+		$modules[0]['items'][] = [ 'type' => 'lesson', 'id' => $draft, 'required' => false ];
+		Curriculum::save( $this->course, $modules );
+
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		wp_set_current_user( $this->user );
+
+		$start = $this->request( 'POST', "/lessons/{$draft}/start", [ 'course_id' => $this->course ] );
+		$this->assertSame( 404, $start->get_status() );
+		$this->assertSame( 'no_lesson', $start->get_data()['code'] );
+
+		$complete = $this->request( 'POST', "/lessons/{$draft}/complete", [ 'course_id' => $this->course ] );
+		$this->assertSame( 404, $complete->get_status() );
+		$this->assertSame( 'no_lesson', $complete->get_data()['code'] );
+
+		$this->assertNull(
+			\Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $draft, 'lesson' ),
+			'Neither write route may create a progress row for unpublished content.'
+		);
+	}
+
+	/** Same guard, a `private` lesson rather than `draft` (PR36 round 3, Codex). */
+	public function test_start_and_complete_404_for_a_private_lesson_in_the_learners_own_course() {
+		$private = self::factory()->post->create( [ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'private', 'post_title' => 'Private Lesson' ] );
+		$modules = Curriculum::get( $this->course );
+		$modules[0]['items'][] = [ 'type' => 'lesson', 'id' => $private, 'required' => false ];
+		Curriculum::save( $this->course, $modules );
+
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		wp_set_current_user( $this->user );
+
+		$start = $this->request( 'POST', "/lessons/{$private}/start", [ 'course_id' => $this->course ] );
+		$this->assertSame( 404, $start->get_status() );
+		$this->assertSame( 'no_lesson', $start->get_data()['code'] );
+
+		$complete = $this->request( 'POST', "/lessons/{$private}/complete", [ 'course_id' => $this->course ] );
+		$this->assertSame( 404, $complete->get_status() );
+		$this->assertSame( 'no_lesson', $complete->get_data()['code'] );
+
+		$this->assertNull(
+			\Anchor\Courses\Database\ProgressRepository::find( $this->user, $this->course, $private, 'lesson' ),
+			'Neither write route may create a progress row for unpublished content.'
+		);
+	}
+
 	public function test_me_credits_and_certificates_are_scoped_to_the_learner() {
 		( new CreditService() )->award( $this->user, $this->course );
 

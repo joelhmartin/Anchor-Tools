@@ -131,6 +131,18 @@ final class Events {
 		// each caller.
 		\add_action( 'anchor_courses_curriculum_saved', [ self::class, 'flush' ] );
 
+		// A lesson's status can cross the `publish` boundary WITHOUT ever
+		// reaching `LessonEditor::save()`'s own `Events::flush()` call
+		// (PR36 round 3, CodeRabbit): Quick Edit, a bulk status change, and
+		// any other programmatic `wp_update_post()` all post none of the
+		// metabox nonce `save()` requires, so `authorized_to_save()`
+		// refuses and `save()` returns before ever flushing. Registered
+		// HERE rather than on `LessonEditor` (which the Module bootstrap
+		// only constructs `if ( is_admin() )`) so it fires for every
+		// transition regardless of request context - this class, like its
+		// other listeners above, is constructed unconditionally.
+		\add_action( 'transition_post_status', [ self::class, 'flush_on_status_transition' ], 10, 3 );
+
 		// Say why a vetoed learner is out (final review I3). The events
 		// module fires this only on its denied branch, right after the
 		// can_access_stream() call veto_stream_access() recorded against.
@@ -346,6 +358,24 @@ final class Events {
 	public static function flush(): void {
 		self::$live_lessons_cache = [];
 		self::$denials            = [];
+	}
+
+	/**
+	 * `transition_post_status` (PR36 round 3, CodeRabbit): flushes the memo
+	 * whenever a LESSON crosses the `publish` boundary either way, however
+	 * the transition happened - the constructor docblock above explains
+	 * why this lives here rather than on `LessonEditor`. Ignores a
+	 * same-status resave and any post that is not this CPT.
+	 *
+	 * @param mixed $post A WP_Post.
+	 */
+	public static function flush_on_status_transition( string $new_status, string $old_status, $post ): void {
+		if ( $new_status === $old_status || ! $post instanceof \WP_Post || LessonPostType::CPT !== $post->post_type ) {
+			return;
+		}
+		if ( 'publish' === $new_status || 'publish' === $old_status ) {
+			self::flush();
+		}
 	}
 
 	/**

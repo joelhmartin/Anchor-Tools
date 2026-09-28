@@ -491,6 +491,53 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 		$this->assertSame( [], $item->get_meta( WooCommerce::COURSE_IDS_META, true ) );
 	}
 
+	/**
+	 * PR36 round 3 (Codex): an order created OUTSIDE checkout - admin "Add
+	 * new order", or the REST API - never fires
+	 * `woocommerce_checkout_create_order_line_item`, so its line has no
+	 * snapshot at all until `enroll_order()`'s own `resolve_item_courses(
+	 * $item, true )` fallback resolves and freezes one on the first
+	 * qualifying status. That fallback used to skip persisting an EMPTY
+	 * result (`[] !== $live`), so an unmapped line left no snapshot behind -
+	 * indistinguishable from a legacy line that predates snapshotting - and
+	 * a later remap of the product could grant a course this line never
+	 * sold.
+	 */
+	public function test_an_admin_created_order_with_an_unmapped_product_snapshots_an_empty_array_and_a_later_remap_grants_nothing() {
+		$unmapped = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+
+		// wc_create_order() + add_product(), never snapshot_courses_for_line_item()
+		// - this line goes through checkout only in the sense that a human
+		// never touched a cart; the courses side sees exactly what an
+		// admin-created or API-created order looks like.
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_product( wc_get_product( $unmapped ), 1 );
+		$order->set_status( 'pending' );
+		$order->save();
+
+		$order->set_status( 'processing' );
+		$order->save();
+
+		$fresh = wc_get_order( $order->get_id() );
+		$item  = current( $fresh->get_items() );
+		$this->assertSame(
+			[],
+			$item->get_meta( WooCommerce::COURSE_IDS_META, true ),
+			'The first qualifying grant must freeze an empty snapshot even for a non-checkout order.'
+		);
+
+		// Mapped AFTER the snapshot should already be frozen.
+		WooCommerce::set_courses_for_product( $unmapped, [ $this->course ] );
+
+		$order->set_status( 'completed' );
+		$order->save();
+
+		$this->assertFalse(
+			Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ),
+			'The frozen empty snapshot must win over a later remap, even for a non-checkout order.'
+		);
+	}
+
 	/* ---------------------------------------------------------------------
 	 * Phase 5 final review I6 - retry-on-publish selects orders by line item.
 	 * ------------------------------------------------------------------- */

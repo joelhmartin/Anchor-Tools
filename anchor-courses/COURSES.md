@@ -271,6 +271,19 @@ Progression is governed by the course's `progression_mode`: `sequential`
 the single authority both the lesson gate (`ContentGuard`) and the curriculum
 template consult.
 
+**An item is never available for ITSELF unless its own post is `publish`**
+(PR36 round 3, Codex) - independent of the "unpublished item never gates
+progression" rule above for items ordered BEFORE it. Enrolment, curriculum
+membership and sequential progression can all be satisfied and a
+draft/pending/private lesson or quiz still refuses, because no public route
+can open or complete unreleased content yet. `start_lesson()` and
+`complete_lesson()` check this first and on their own, returning
+`WP_Error('no_lesson')` - the REST routes (`POST /lessons/{id}/start`,
+`/complete`) map it to 404, distinct from the generic 403 `locked`
+progression refusal `is_item_available()`'s `false` produces everywhere
+else. An enrolled learner who knows or guesses a staged lesson's id
+therefore gets a 404, not a way to create progress against it.
+
 **Unpublished required items never count toward completion.**
 `ProgressService::get_course_progress()` filters `Curriculum::required_items()`
 to `publish` posts before computing `total_required`/`percent()` - a
@@ -904,8 +917,8 @@ needs to know whether it may show a "buy" link reads `/me/courses`.
 |---|---|---|---|
 | GET | `/me/courses` | - | 200, the signed-in learner's own enrolments (`course_id`, `title`, `permalink`, `status`, `percent`) |
 | GET | `/me/courses/{id}/progress` | - | 200, `ProgressService::get_course_progress()->to_array()` for the signed-in learner |
-| POST | `/lessons/{id}/start` | `course_id` (required) | 200, `Progress::to_array()`; 403 `locked` when `ProgressService::start_lesson()` refuses (not enrolled, not in the course, or sequential gating) |
-| POST | `/lessons/{id}/complete` | `course_id` (required) | 200, `Progress::to_array()`; service `WP_Error` mapped through `Routes::error_response()` (403 `not_enrolled`, `not_in_course`, `locked`; 409 `quiz_required`; 503 `save_failed`; 400 unmapped) |
+| POST | `/lessons/{id}/start` | `course_id` (required) | 200, `Progress::to_array()`; 404 `no_lesson` when the lesson itself is not `publish` (PR36 round 3); 403 `locked` when `ProgressService::start_lesson()` otherwise refuses (not enrolled, not in the course, or sequential gating) |
+| POST | `/lessons/{id}/complete` | `course_id` (required) | 200, `Progress::to_array()`; service `WP_Error` mapped through `Routes::error_response()` (404 `no_lesson` when the lesson itself is not `publish`, PR36 round 3; 403 `not_enrolled`, `not_in_course`, `locked`; 409 `quiz_required`; 503 `save_failed`; 400 unmapped) |
 | GET | `/me/certificates` | - | 200, the signed-in learner's certificates + `course_title` |
 | GET | `/me/credits` | - | 200 `{credits:[...], total}` for the signed-in learner |
 
@@ -1230,9 +1243,14 @@ events module resolves the event AND the current user
 that is separate from and in addition to the events module's own room
 entitlement check (`Entitlements::can_access_stream()`), which still runs
 independently once a learner follows the link. Courses never embeds the
-stream itself; the event room is the only player. When the event does not
-resolve (module inactive, or the lesson's `event_id` no longer names a real
-`event` post), the template falls back to "Live session unavailable."
+stream itself; the event room is the only player. The template's own
+`$ready` (renders as `$available`) is `Events::available() &&
+Events::event_exists( $event_id )` (PR36 round 3, Codex) - so when the
+event does not resolve (module inactive, or the lesson's `event_id` no
+longer names a real `event` post, including one deleted AFTER the lesson
+saved it), the template falls back to "Live session unavailable." rather
+than the "will appear here before the session starts" wording, which
+implies the event still exists.
 
 When the stream veto (below) would refuse this learner the room, the
 template shows the veto's notice - "Finish the earlier lessons in {course}
@@ -1289,9 +1307,17 @@ Two exemptions, evaluated per (lesson, course) row, not globally:
 `live_lessons_for_event()` is memoised per request (one `get_posts()` plus a
 `Curriculum::courses_for_item()` scan per lesson found is too expensive to
 repeat on every stream-state poll) and invalidated by
-`anchor_courses_curriculum_saved` and directly from `LessonEditor::save()`
+`anchor_courses_curriculum_saved`, directly from `LessonEditor::save()`
 (whose own `event_id`/`session_index`/`require_prior_items` writes never fire
-that action themselves).
+that action themselves), and by `Events::flush_on_status_transition()`
+(hooked to WordPress's own `transition_post_status`, PR36 round 3,
+CodeRabbit) - a lesson's status can cross the `publish` boundary through
+Quick Edit, a bulk action, or any other programmatic `wp_update_post()`,
+none of which post the metabox nonce `LessonEditor::save()` requires, so its
+own flush never ran for them. Registered on `Integrations\Events` itself
+(constructed unconditionally by the Module bootstrap) rather than on
+`LessonEditor` (constructed only `if ( is_admin() )`), so it fires for a
+status change made through any request context, not only wp-admin.
 
 **Why, not just no.** `veto_stream_access()` records its last denial per
 request as `[event_id][user_id] => {course, unfinished item}`

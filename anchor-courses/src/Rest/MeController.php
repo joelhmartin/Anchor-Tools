@@ -98,6 +98,13 @@ final class MeController {
 			(int) $request['id']
 		);
 
+		if ( \is_wp_error( $progress ) ) {
+			// ProgressService::start_lesson()'s own publish guard - a
+			// draft/private lesson is 404 `no_lesson`, never 403 `locked`
+			// (PR36 round 3, Codex).
+			return Routes::error_response( $progress );
+		}
+
 		if ( null === $progress ) {
 			return Routes::error_response( new \WP_Error( 'locked', \__( 'That lesson is not available yet.', 'anchor-schema' ) ) );
 		}

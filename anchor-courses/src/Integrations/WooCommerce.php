@@ -798,7 +798,15 @@ final class WooCommerce {
 
 		$live = self::courses_for_item( $item );
 
-		if ( $persist && [] !== $live && \method_exists( $item, 'update_meta_data' ) && \method_exists( $item, 'save' ) ) {
+		// Persist UNCONDITIONALLY, even when $live is `[]` (PR36 round 3,
+		// Codex): an unmapped or opted-out line resolving to nothing is a
+		// real decision, exactly like the checkout snapshot hook's own
+		// unconditional write above - skipping the empty case here left a
+		// non-checkout order's line with NO snapshot at all until its NEXT
+		// qualifying status, by which point a remap could hand it a course
+		// it never sold. The `[] !== $live` guard this used to carry is
+		// gone on purpose.
+		if ( $persist && \method_exists( $item, 'update_meta_data' ) && \method_exists( $item, 'save' ) ) {
 			$item->update_meta_data( self::COURSE_IDS_META, $live );
 			$item->save();
 		}

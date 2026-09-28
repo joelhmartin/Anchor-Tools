@@ -508,6 +508,161 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
 	}
 
+	/* ---------------------------------------------------------------------
+	 * PR36 closing pass - revocation is per LINE (or per course-within-
+	 * order), not per order: the order-level-only marker used to (a) block
+	 * an entire order's retry-on-publish just because a DIFFERENT line was
+	 * refunded, and (b) let refunding either of two lines that both grant
+	 * the same course strip a role the other line still paid for.
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * Defect a: course A (published) and course B (still draft) are on two
+	 * different lines of the same order. B is blocked at purchase (no_course)
+	 * and stays ungranted. Refunding A's line in full must not stop B's own,
+	 * untouched line from being retried once B publishes - the old
+	 * order-level-only marker refused the WHOLE order, so B never arrived.
+	 */
+	public function test_refunding_one_line_does_not_block_retry_on_publish_for_a_different_lines_draft_course() {
+		$draft_course  = $this->factory->post->create(
+			[ 'post_type' => CoursePostType::CPT, 'post_status' => 'draft', 'post_title' => 'Still Draft' ]
+		);
+		$draft_product = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+		WooCommerce::set_courses_for_product( $draft_product, [ $draft_course ] );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_product( wc_get_product( $this->product ), 1 );
+		$order->add_product( wc_get_product( $draft_product ), 1 );
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->adapter->enroll_order( $order->get_id() );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $draft_course ) ), 'B is still draft: blocked, not granted.' );
+
+		$refunded_item_id = 0;
+		foreach ( $order->get_items() as $item_id => $item ) {
+			if ( (int) $item->get_product_id() === $this->product ) {
+				$refunded_item_id = $item_id;
+				break;
+			}
+		}
+		$this->assertGreaterThan( 0, $refunded_item_id );
+
+		$line_total = (float) $order->get_item_total( $order->get_item( $refunded_item_id ), false );
+		$refund     = wc_create_refund(
+			[
+				'order_id'   => $order->get_id(),
+				'amount'     => $line_total,
+				'line_items' => [ $refunded_item_id => [ 'qty' => 1, 'refund_total' => $line_total ] ],
+			]
+		);
+		$this->assertNotWPError( $refund );
+
+		$this->adapter->on_order_refunded( $order->get_id(), $refund->get_id() );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ), 'A is revoked.' );
+
+		// Publishing B must retry-grant it through THIS SAME order - the
+		// line that was never refunded - even though a different line on
+		// the same order was just revoked.
+		wp_publish_post( $draft_course );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $draft_course ) ), 'B is retried and granted once published.' );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ), 'A stays revoked.' );
+
+		remove_role( Roles::access_slug( $draft_course ) );
+	}
+
+	/**
+	 * Defect b: two lines on the same order both grant the SAME course.
+	 * Fully refunding one line must not strip the role while the other
+	 * line still pays for it; only once BOTH lines are fully refunded does
+	 * the course actually go.
+	 */
+	public function test_two_lines_granting_the_same_course_only_revoke_once_both_are_fully_refunded() {
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_product( wc_get_product( $this->product ), 1 );
+		$order->add_product( wc_get_product( $this->product ), 1 );
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->adapter->enroll_order( $order->get_id() );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+
+		$item_ids = array_keys( $order->get_items() );
+		$this->assertCount( 2, $item_ids, 'Two separate lines for the same product.' );
+		[ $first_item_id, $second_item_id ] = $item_ids;
+
+		$first_total = (float) $order->get_item_total( $order->get_item( $first_item_id ), false );
+		$refund_one  = wc_create_refund(
+			[
+				'order_id'   => $order->get_id(),
+				'amount'     => $first_total,
+				'line_items' => [ $first_item_id => [ 'qty' => 1, 'refund_total' => $first_total ] ],
+			]
+		);
+		$this->assertNotWPError( $refund_one );
+		$this->adapter->on_order_refunded( $order->get_id(), $refund_one->get_id() );
+
+		$this->assertTrue(
+			Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ),
+			'The second, un-refunded line still grants the course - the role must stay.'
+		);
+
+		$second_total = (float) $order->get_item_total( $order->get_item( $second_item_id ), false );
+		$refund_two   = wc_create_refund(
+			[
+				'order_id'   => $order->get_id(),
+				'amount'     => $second_total,
+				'line_items' => [ $second_item_id => [ 'qty' => 1, 'refund_total' => $second_total ] ],
+			]
+		);
+		$this->assertNotWPError( $refund_two );
+		$this->adapter->on_order_refunded( $order->get_id(), $refund_two->get_id() );
+
+		$this->assertFalse(
+			Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ),
+			'Once BOTH lines are fully refunded, the course is finally revoked.'
+		);
+	}
+
+	/**
+	 * clear_revoked_marker() must clear the PER-LINE state on every line,
+	 * not only the (legacy) order-level marker - otherwise a cleared order
+	 * still refuses every line, one at a time, forever.
+	 */
+	public function test_clearing_the_revoked_marker_clears_the_per_line_state_too() {
+		$second_course  = $this->make_course( [], 'Second Paid Course' );
+		$second_product = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+		WooCommerce::set_courses_for_product( $second_product, [ $second_course ] );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_product( wc_get_product( $this->product ), 1 );
+		$order->add_product( wc_get_product( $second_product ), 1 );
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->adapter->enroll_order( $order->get_id() );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ) );
+
+		// Cancelled revokes every line at once, marking each one.
+		$this->adapter->on_order_status_changed( $order->get_id(), 'processing', 'cancelled', $order );
+
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ) );
+
+		$this->assertSame( 0, $this->adapter->enroll_order( $order->get_id() ), 'Still marked on every line: enroll_order() must refuse.' );
+
+		$this->assertTrue( WooCommerce::clear_revoked_marker( $order->get_id() ) );
+
+		$this->assertSame( 2, $this->adapter->enroll_order( $order->get_id() ), 'Both lines regrant once every marker - order AND per-line - is cleared.' );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ) );
+
+		remove_role( Roles::access_slug( $second_course ) );
+	}
+
 	/** Wiring: the refund listener runs on the real module singleton, not only an ad hoc `new WooCommerce()`. */
 	public function test_wiring_the_refund_listener() {
 		$module = $this->courses();

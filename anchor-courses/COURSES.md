@@ -1197,20 +1197,51 @@ the usual `anchor_courses_role_loss_policy` (default `keep`) is consulted
 inside `Roles::revoke_access()` exactly as for any other revocation, deciding
 what the loss means for the enrolment row.
 
-**The revoked marker.** The first successful revoke on an order stamps
-HPOS-safe order meta `WooCommerce::REVOKED_META` (`_anchor_courses_wc_revoked`,
-via `$order->update_meta_data()`/`save()`, never `update_post_meta()`) and
-leaves one order note. While marked, `enroll_order()` refuses to re-grant
-from that order - a stray duplicate status fire must not silently undo a
-deliberate refund. **This marker is order-level, not course-level**: while it
-stands, the WHOLE order is refused re-grants, including any of that order's
-OTHER mapped courses that were never touched by the partial refund that set
-the marker. No admin UI ships with this task; clear it from WP-CLI or PHP
-with `WooCommerce::clear_revoked_marker( $order_id )`, then re-run the order
-through `enroll_order()` (or re-fire its qualifying status) to restore
+**The revoked marker is PER LINE (PR36 closing pass), not per order.** Every
+line passed through `revoke_items()` - whether or not the ROLE it names
+actually left (see "two lines, one course" below) - gets its own HPOS-safe
+order-ITEM meta `WooCommerce::LINE_REVOKED_META` (`_anchor_courses_revoked`,
+via `$item->update_meta_data()`/`save()`). `enroll_order()` reads this PER
+LINE: a line marked revoked is skipped, but a SIBLING line on the same order
+that was never refunded is not - so refunding course A's line does not block
+a later retry-on-publish (or a stray re-fire) for course B's own, untouched
+line on the same order. This is what fixed the old bug: an order-level-only
+marker refused the WHOLE order, so a course still staged as a draft when a
+*different* line was refunded could never be retried once it published.
+
+The (legacy) order-level `WooCommerce::REVOKED_META`
+(`_anchor_courses_wc_revoked`) still exists alongside the per-line marker,
+for two reasons: an order revoked by OLDER code carries only this marker
+(no per-line meta at all), so `enroll_order()` also checks it directly and,
+when present, treats every line as revoked - the migration guarantee that
+nothing already taken back silently comes back. And once a revoke pass
+leaves EVERY course-granting line on an order marked (`all_course_lines_revoked()`
+- a whole-order revoke via cancelled/failed, or a refund that reaches every
+line), the order-level marker is stamped too, alongside one order note - a
+simple, order-wide signal for anyone reading order meta by hand. It is never
+stamped merely because ONE line's refund fired while another line on the
+same order still grants something; that was the bug.
+
+**Two lines, one course.** When two different lines on the SAME order both
+grant the same course, fully refunding only one of them keeps the role: before
+actually revoking, `revoke_items()` checks whether any OTHER line on the same
+order that is NOT among the lines being revoked this pass still resolves to
+that course, and if so, skips the role removal (the line itself is still
+marked revoked - it no longer contributes - but the shared role stays because
+the sibling line still paid for it). The course is only actually revoked once
+every line that grants it has been fully refunded. A full-order refund (the
+amount-only case that maps every line to "fully refunded" at once) still
+revokes everything, because no sibling survives that pass.
+
+No admin UI ships with this task; clear a revoke from WP-CLI or PHP with
+`WooCommerce::clear_revoked_marker( $order_id )` - it clears BOTH the
+order-level marker AND every line's own per-line marker - then re-run the
+order through `enroll_order()` (or re-fire its qualifying status) to restore
 access. A refund against an order that never granted anything (e.g. a
-blocked prerequisite) is a silent no-op: nothing is revoked, the marker is
-not set, and no note is added.
+blocked prerequisite) still marks the refunded line(s) (nothing to revoke
+means nothing to skip when the course is genuinely staged elsewhere later),
+but leaves no note and never stamps the order-level marker, since no note is
+added and the order-level marker is written strictly alongside the note.
 
 ---
 
@@ -1476,13 +1507,16 @@ capabilities, every `anchor_course_{id}[_completed]` role and the
 **WooCommerce grants map and revoked marker (see "WooCommerce integration"
 for the full mechanics):**
 
-- The revoked marker (`_anchor_courses_wc_revoked`) is stamped at the ORDER
-  level, not per course. A partial refund that revokes only ONE of an
-  order's several mapped courses still marks the WHOLE order revoked, which
-  blocks `enroll_order()` from re-granting any of that order's OTHER
-  courses later (e.g. on a retry, or if a future status change would
-  otherwise re-qualify it) until an operator clears the marker with
-  `WooCommerce::clear_revoked_marker( $order_id )`.
+- ~~The revoked marker was stamped at the ORDER level, not per line~~ - fixed
+  (PR36 closing pass): revocation is now tracked per LINE
+  (`WooCommerce::LINE_REVOKED_META`, `_anchor_courses_revoked`, order-item
+  meta), and a course held by TWO lines on the same order is only actually
+  revoked once every line granting it has been fully refunded. The
+  order-level marker (`_anchor_courses_wc_revoked`) still exists for legacy
+  orders revoked by older code (read as "every line revoked" for migration
+  safety) and is still stamped once a revoke leaves every course-granting
+  line on an order marked. See "Refund and cancellation" for the mechanics.
+  `WooCommerce::clear_revoked_marker( $order_id )` clears both.
 - The grants map (`_anchor_course_grants` user meta) holds exactly one
   record per course. When two different orders both grant the SAME course
   to the same learner, refunding the order that granted it FIRST revokes

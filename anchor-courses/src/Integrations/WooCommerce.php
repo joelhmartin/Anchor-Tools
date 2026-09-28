@@ -477,13 +477,11 @@ final class WooCommerce {
 			return 0;
 		}
 
-		if ( self::is_marked_revoked( $order ) ) {
-			// A refund already took access back from this order (Task 40); a
-			// stray re-fire of a qualifying status - the same hazard Task 39
-			// already guards enrol against - must not silently undo that.
-			// clear_revoked_marker() is the way back in.
-			return 0;
-		}
+		// A legacy order carries only the order-level marker (pre-per-line
+		// revocation, PR36 closing pass defect a); treat it as "every line
+		// already revoked" so nothing already taken back silently comes
+		// back (migration guarantee - COURSES.md).
+		$order_fully_revoked = self::is_marked_revoked( $order );
 
 		// Courses FIRST (final review C1): only an order that actually
 		// carries a mapped course line may go on to resolve - and possibly
@@ -496,6 +494,19 @@ final class WooCommerce {
 		// once a grant has been attempted against it.
 		$lines = [];
 		foreach ( $order->get_items() as $item ) {
+			if ( $order_fully_revoked || self::is_line_revoked( $item ) ) {
+				// A refund already took access back from THIS LINE (Task 40);
+				// a stray re-fire of a qualifying status, or a retry-on-
+				// publish pass for a course this line never kept, must not
+				// silently undo that - the same hazard Task 39 already
+				// guards enrol against. clear_revoked_marker() is the way
+				// back in. Checked PER LINE, not order-wide (PR36 closing
+				// pass, defect a): a sibling line on the same order that was
+				// never refunded is still eligible below, even after this
+				// one is skipped.
+				continue;
+			}
+
 			$courses = self::resolve_item_courses( $item, true );
 			if ( [] !== $courses ) {
 				$lines[] = $courses;
@@ -1225,8 +1236,31 @@ final class WooCommerce {
 	 */
 	private function revoke_items( \WC_Order $order, int $order_id, array $items ): int {
 		$user_id = self::customer_for_order( $order );
-		if ( $user_id <= 0 ) {
+		if ( $user_id <= 0 || [] === $items ) {
 			return 0;
+		}
+
+		$revoking_ids = [];
+		foreach ( $items as $item ) {
+			if ( \is_object( $item ) && \method_exists( $item, 'get_id' ) ) {
+				$revoking_ids[ (int) $item->get_id() ] = true;
+			}
+		}
+
+		// Courses a SIBLING line on this same order - one NOT among the
+		// lines being revoked in this pass - still grants (PR36 closing
+		// pass, defect b): two lines granting the same course, only one of
+		// them refunded, must not strip a role the other line still pays
+		// for. Read through resolve_item_courses() (PR36 finding b), the
+		// same snapshot-first resolver the revoke loop below uses.
+		$covered_by_survivor = [];
+		foreach ( $order->get_items() as $item_id => $sibling ) {
+			if ( isset( $revoking_ids[ (int) $item_id ] ) ) {
+				continue;
+			}
+			foreach ( self::resolve_item_courses( $sibling ) as $course_id ) {
+				$covered_by_survivor[ $course_id ] = true;
+			}
 		}
 
 		$revoked = 0;
@@ -1236,7 +1270,16 @@ final class WooCommerce {
 			// line's snapshot says it granted, not whatever the product
 			// maps to now - removing the mapping entirely before a refund
 			// must not leave the already-granted course un-revocable.
-			foreach ( self::resolve_item_courses( $item ) as $course_id ) {
+			$line_courses = self::resolve_item_courses( $item );
+
+			foreach ( $line_courses as $course_id ) {
+				if ( isset( $covered_by_survivor[ $course_id ] ) ) {
+					// A sibling line on this order that was NOT fully
+					// refunded still grants this course - it is still paid
+					// for, so the role stays (PR36 closing pass, defect b).
+					continue;
+				}
+
 				$record = Roles::grant_record( $user_id, $course_id );
 				if ( 'woocommerce' !== ( $record['source'] ?? '' ) || (string) $order_id !== ( $record['source_id'] ?? '' ) ) {
 					continue; // Not this order's grant to take back (or already taken).
@@ -1250,28 +1293,101 @@ final class WooCommerce {
 					$revoked++;
 				}
 			}
+
+			if ( [] !== $line_courses ) {
+				// This LINE is done - refunded/processed - whether or not
+				// the ROLE actually left (a surviving sibling can keep it
+				// held, or a manual grant can have taken the record over).
+				// retry-on-publish and a stray re-fire must not re-grant
+				// from this line either way (PR36 closing pass, defect a) -
+				// the per-line counterpart to the order-level marker below.
+				self::mark_line_revoked( $item );
+			}
 		}
 
 		if ( $revoked > 0 ) {
 			self::mark_revoked( $order, $order_id, $revoked );
+
+			if ( self::all_course_lines_revoked( $order ) ) {
+				// Every course-granting line on this order has now been
+				// revoked - keep stamping the order-level marker too
+				// (legacy compatibility, and a simple order-wide signal),
+				// but only once the per-line state actually earns it, never
+				// merely because ONE line's refund fired (that was defect a).
+				$order->update_meta_data( self::REVOKED_META, Clock::now() );
+				$order->save();
+			}
 		}
 
 		return $revoked;
 	}
 
-	/** Has a revoke already taken something back from this order? */
+	/** Has a revoke already taken something back from this order (legacy, order-wide)? */
 	private static function is_marked_revoked( \WC_Order $order ): bool {
 		return '' !== (string) $order->get_meta( self::REVOKED_META, true );
 	}
 
 	/**
-	 * Stamp the order-level marker and leave one note per revoke (not per
-	 * course - "notes once", progress.md T40). HPOS-safe: WC_Order's own
-	 * meta API, saved once together with the note.
+	 * Order-item meta: THIS LINE's course(s) have been revoked (PR36 closing
+	 * pass, defect a) - the per-line counterpart to REVOKED_META. Read by
+	 * enroll_order()'s per-line guard, so a sibling line on the same order
+	 * that was never refunded is not blocked by another line's revoke - the
+	 * bug the order-level-only marker used to cause when retry-on-publish
+	 * tried to grant a still-good line after a DIFFERENT line was refunded.
+	 */
+	public const LINE_REVOKED_META = '_anchor_courses_revoked';
+
+	/** @param mixed $item A WC_Order_Item_Product. */
+	private static function is_line_revoked( $item ): bool {
+		if ( ! \is_object( $item ) || ! \method_exists( $item, 'get_meta' ) ) {
+			return false;
+		}
+		return '' !== (string) $item->get_meta( self::LINE_REVOKED_META, true );
+	}
+
+	/** @param mixed $item A WC_Order_Item_Product. */
+	private static function mark_line_revoked( $item ): void {
+		if ( ! \is_object( $item ) || ! \method_exists( $item, 'update_meta_data' ) ) {
+			return;
+		}
+		$item->update_meta_data( self::LINE_REVOKED_META, Clock::now() );
+		if ( \method_exists( $item, 'save' ) ) {
+			$item->save();
+		}
+	}
+
+	/**
+	 * True once every line on this order that grants a course has its
+	 * per-line marker set - the order-wide fact the (legacy) order-level
+	 * marker records. A line with no course of its own (an unmapped or
+	 * opted-out line, or a non-product line) is irrelevant and never blocks
+	 * this from becoming true.
+	 */
+	private static function all_course_lines_revoked( \WC_Order $order ): bool {
+		if ( self::is_marked_revoked( $order ) ) {
+			return true; // Already stamped (legacy order, or an earlier pass).
+		}
+
+		$any_course_line = false;
+		foreach ( $order->get_items() as $item ) {
+			if ( [] === self::resolve_item_courses( $item ) ) {
+				continue;
+			}
+			$any_course_line = true;
+			if ( ! self::is_line_revoked( $item ) ) {
+				return false;
+			}
+		}
+
+		return $any_course_line;
+	}
+
+	/**
+	 * Stamp the note for this revoke pass (not per course - "notes once",
+	 * progress.md T40). HPOS-safe: WC_Order's own meta API/save, same as
+	 * the order-level marker the caller may also stamp.
 	 */
 	private static function mark_revoked( \WC_Order $order, int $order_id, int $count ): void {
-		$order->update_meta_data( self::REVOKED_META, Clock::now() );
-
 		if ( \method_exists( $order, 'add_order_note' ) ) {
 			$order->add_order_note(
 				\sprintf(
@@ -1285,19 +1401,21 @@ final class WooCommerce {
 					$count
 				)
 			);
+			$order->save();
 		}
-
-		$order->save();
 
 		Log::write( 'wc_order_revoked', [ 'order' => $order_id, 'count' => $count ] );
 	}
 
 	/**
 	 * Clear the revoked marker so the order can grant again (progress.md T40
-	 * ruling 1). No admin UI ships with this task; call it from WP-CLI or
-	 * PHP - `WooCommerce::clear_revoked_marker( $order_id )` - then re-run
-	 * the order through enroll_order() (or re-fire its qualifying status) to
-	 * restore access. Documented in COURSES.md.
+	 * ruling 1) - both the legacy order-level marker AND every line's own
+	 * per-line marker (PR36 closing pass), so a cleared order is fully
+	 * eligible again, not just nominally unmarked at the order level while
+	 * every line still refuses. No admin UI ships with this task; call it
+	 * from WP-CLI or PHP - `WooCommerce::clear_revoked_marker( $order_id )`
+	 * - then re-run the order through enroll_order() (or re-fire its
+	 * qualifying status) to restore access. Documented in COURSES.md.
 	 *
 	 * @param \WC_Order|int $order
 	 */
@@ -1313,6 +1431,16 @@ final class WooCommerce {
 		}
 
 		$order->delete_meta_data( self::REVOKED_META );
+
+		foreach ( $order->get_items() as $item ) {
+			if ( \is_object( $item ) && \method_exists( $item, 'delete_meta_data' ) ) {
+				$item->delete_meta_data( self::LINE_REVOKED_META );
+				if ( \method_exists( $item, 'save' ) ) {
+					$item->save();
+				}
+			}
+		}
+
 		$order->save();
 
 		return true;

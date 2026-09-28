@@ -94,7 +94,7 @@ final class AdminController {
 	public function learners( \WP_REST_Request $request ): \WP_REST_Response {
 		$course_id = (int) $request['id'];
 		if ( CoursePostType::CPT !== \get_post_type( $course_id ) ) {
-			return new \WP_REST_Response( [ 'code' => 'no_course', 'message' => \__( 'Not found.', 'anchor-schema' ) ], 404 );
+			return Routes::error_response( new \WP_Error( 'no_course', \__( 'Not found.', 'anchor-schema' ) ) );
 		}
 
 		$per_page = \max( 1, \min( 200, (int) $request['per_page'] ) );
@@ -107,20 +107,27 @@ final class AdminController {
 	public function user_courses( \WP_REST_Request $request ): \WP_REST_Response {
 		$user_id = (int) $request['id'];
 		if ( ! \get_userdata( $user_id ) ) {
-			return new \WP_REST_Response( [ 'code' => 'no_user', 'message' => \__( 'Not found.', 'anchor-schema' ) ], 404 );
+			return Routes::error_response( new \WP_Error( 'no_user', \__( 'Not found.', 'anchor-schema' ) ) );
 		}
 
 		return new \WP_REST_Response( LearnerReports::user_rows( $user_id ), 200 );
 	}
 
-	/** Completed enrolments, optionally scoped to a course and/or date range. */
+	/**
+	 * Completed enrolments, optionally scoped to a course and/or date range.
+	 *
+	 * `total` is a COUNT over every match; `rows` stops at REPORT_LIMIT and
+	 * `truncated` says when it did (final review I5).
+	 */
 	public function completions( \WP_REST_Request $request ): \WP_REST_Response {
-		$enrollments = EnrollmentRepository::completions(
-			(int) $request['course_id'],
-			(string) $request['from'],
-			(string) $request['to'],
-			self::REPORT_LIMIT
-		);
+		$range = self::range( $request );
+		if ( $range instanceof \WP_Error ) {
+			return Routes::error_response( $range );
+		}
+		[ $course_id, $from, $to ] = $range;
+
+		$enrollments = EnrollmentRepository::completions( $course_id, $from, $to, self::REPORT_LIMIT );
+		$total       = EnrollmentRepository::count_completions( $course_id, $from, $to );
 
 		self::prime_caches( \array_map( static fn( $e ) => (int) $e->user_id, $enrollments ), \array_map( static fn( $e ) => (int) $e->course_id, $enrollments ) );
 
@@ -136,26 +143,32 @@ final class AdminController {
 			];
 		}
 
-		return new \WP_REST_Response( [ 'total' => \count( $rows ), 'rows' => $rows ], 200 );
+		return new \WP_REST_Response(
+			[ 'total' => $total, 'truncated' => $total > \count( $rows ), 'rows' => $rows ],
+			200
+		);
 	}
 
-	/** Awarded CE credits, optionally scoped to a course and/or date range. */
+	/**
+	 * Awarded CE credits, optionally scoped to a course and/or date range.
+	 * `total` and `total_credits` cover every match, not just the returned
+	 * rows; `truncated` says when REPORT_LIMIT cut the rows short.
+	 */
 	public function credits( \WP_REST_Request $request ): \WP_REST_Response {
-		$credits = CreditRepository::report(
-			(int) $request['course_id'],
-			(string) $request['from'],
-			(string) $request['to'],
-			self::REPORT_LIMIT
-		);
+		$range = self::range( $request );
+		if ( $range instanceof \WP_Error ) {
+			return Routes::error_response( $range );
+		}
+		[ $course_id, $from, $to ] = $range;
+
+		$credits = CreditRepository::report( $course_id, $from, $to, self::REPORT_LIMIT );
+		$totals  = CreditRepository::report_totals( $course_id, $from, $to );
 
 		self::prime_caches( \array_map( static fn( $c ) => (int) $c->user_id, $credits ), \array_map( static fn( $c ) => (int) $c->course_id, $credits ) );
 
-		$rows  = [];
-		$total = 0.0;
-
+		$rows = [];
 		foreach ( $credits as $credit ) {
 			$user   = \get_userdata( $credit->user_id );
-			$total += $credit->credits;
 			$rows[] = \array_merge(
 				$credit->to_array(),
 				[
@@ -166,7 +179,41 @@ final class AdminController {
 			);
 		}
 
-		return new \WP_REST_Response( [ 'total_credits' => \round( $total, 2 ), 'rows' => $rows ], 200 );
+		return new \WP_REST_Response(
+			[
+				'total'         => $totals['count'],
+				'total_credits' => \round( $totals['credits'], 2 ),
+				'truncated'     => $totals['count'] > \count( $rows ),
+				'rows'          => $rows,
+			],
+			200
+		);
+	}
+
+	/**
+	 * The report routes' shared filters, with `from`/`to` validated as real
+	 * `Y-m-d` dates ('' = unbounded).
+	 *
+	 * @return array{0:int,1:string,2:string}|\WP_Error
+	 */
+	private static function range( \WP_REST_Request $request ) {
+		$dates = [];
+		foreach ( [ 'from', 'to' ] as $key ) {
+			$value = \trim( (string) $request[ $key ] );
+			if ( '' !== $value ) {
+				$parsed = \DateTimeImmutable::createFromFormat( '!Y-m-d', $value );
+				if ( ! $parsed || $parsed->format( 'Y-m-d' ) !== $value ) {
+					return new \WP_Error(
+						'invalid_date',
+						/* translators: %s: the parameter name, from or to. */
+						\sprintf( \__( '%s must be a date in YYYY-MM-DD form.', 'anchor-schema' ), $key )
+					);
+				}
+			}
+			$dates[] = $value;
+		}
+
+		return [ (int) $request['course_id'], $dates[0], $dates[1] ];
 	}
 
 	/**

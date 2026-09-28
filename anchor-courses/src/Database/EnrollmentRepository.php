@@ -217,6 +217,33 @@ final class EnrollmentRepository {
 	public static function completions( int $course_id = 0, string $from = '', string $to = '', int $limit = 1000 ): array {
 		global $wpdb;
 
+		[ $where, $params ] = self::completions_where( $course_id, $from, $to );
+
+		$sql      = 'SELECT * FROM ' . self::table() . $where . ' ORDER BY completed_at DESC LIMIT %d';
+		$params[] = \max( 1, $limit );
+
+		$rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+		return \array_map( [ Enrollment::class, 'from_row' ], (array) $rows );
+	}
+
+	/** How many rows completions() would return with no limit - same filters, one COUNT. */
+	public static function count_completions( int $course_id = 0, string $from = '', string $to = '' ): int {
+		global $wpdb;
+
+		[ $where, $params ] = self::completions_where( $course_id, $from, $to );
+		$sql = 'SELECT COUNT(*) FROM ' . self::table() . $where;
+
+		return (int) ( [] === $params ? $wpdb->get_var( $sql ) : $wpdb->get_var( $wpdb->prepare( $sql, $params ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+	}
+
+	/**
+	 * The one WHERE clause completions() and count_completions() share, so
+	 * the count can never disagree with the rows.
+	 *
+	 * @return array{0:string,1:array<int,int|string>}
+	 */
+	private static function completions_where( int $course_id, string $from, string $to ): array {
 		$conditions = [ "status = 'completed'" ];
 		$params     = [];
 
@@ -233,13 +260,7 @@ final class EnrollmentRepository {
 			$params[]     = $to . ' 23:59:59';
 		}
 
-		$sql      = 'SELECT * FROM ' . self::table() . ' WHERE ' . \implode( ' AND ', $conditions )
-			. ' ORDER BY completed_at DESC LIMIT %d';
-		$params[] = \max( 1, $limit );
-
-		$rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
-
-		return \array_map( [ Enrollment::class, 'from_row' ], (array) $rows );
+		return [ ' WHERE ' . \implode( ' AND ', $conditions ), $params ];
 	}
 
 	/**

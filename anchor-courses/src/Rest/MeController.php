@@ -99,10 +99,7 @@ final class MeController {
 		);
 
 		if ( null === $progress ) {
-			return new \WP_REST_Response(
-				[ 'code' => 'locked', 'message' => \__( 'That lesson is not available yet.', 'anchor-schema' ) ],
-				403
-			);
+			return Routes::error_response( new \WP_Error( 'locked', \__( 'That lesson is not available yet.', 'anchor-schema' ) ) );
 		}
 
 		return new \WP_REST_Response( $progress->to_array(), 200 );

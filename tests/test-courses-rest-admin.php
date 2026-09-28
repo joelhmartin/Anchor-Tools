@@ -302,4 +302,105 @@ class Test_Courses_Rest_Admin extends Anchor_Courses_TestCase {
 		$this->assertSame( $one_completions, $many_completions, 'completions: query count must not scale with rows' );
 		$this->assertSame( $one_credits, $many_credits, 'credits: query count must not scale with rows' );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Phase 5 final review I5 - honest totals, truncation, validated dates.
+	 * ------------------------------------------------------------------- */
+
+	/** One multi-row INSERT of $n rows into a courses table (fixture volume without 1000 round trips). */
+	private function bulk_rows( string $table, int $n, callable $row ): void {
+		global $wpdb;
+		$values = [];
+		for ( $i = 0; $i < $n; $i++ ) {
+			$values[] = $row( $i );
+		}
+		$wpdb->query( "INSERT INTO {$table} VALUES " . implode( ',', $values ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+	}
+
+	public function test_the_completions_report_counts_every_match_and_flags_truncation() {
+		$table = \Anchor\Courses\Database\Migrations::table( 'enrollments' );
+		$this->bulk_rows(
+			$table,
+			1001,
+			fn( int $i ) => sprintf( "(NULL, %d, %d, 'completed', '2026-06-01 00:00:00', NULL, '2026-06-02 00:00:00', NULL, 'manual', NULL, NULL, '2026-06-01 00:00:00', '2026-06-01 00:00:00')", 900000 + $i, $this->course )
+		);
+		wp_set_current_user( $this->admin );
+
+		$data = $this->request( 'GET', '/admin/reports/completions', [ 'course_id' => $this->course ] )->get_data();
+
+		$this->assertSame( 1001, $data['total'], 'total is the COUNT of every match, not the rows returned.' );
+		$this->assertCount( 1000, $data['rows'] );
+		$this->assertTrue( $data['truncated'] );
+	}
+
+	public function test_an_untruncated_report_says_so() {
+		$this->complete_the_course();
+		wp_set_current_user( $this->admin );
+
+		$completions = $this->request( 'GET', '/admin/reports/completions', [ 'course_id' => $this->course ] )->get_data();
+		$credits     = $this->request( 'GET', '/admin/reports/credits', [ 'course_id' => $this->course ] )->get_data();
+
+		$this->assertFalse( $completions['truncated'] );
+		$this->assertFalse( $credits['truncated'] );
+		$this->assertSame( 1, $credits['total'] );
+	}
+
+	public function test_the_credits_report_counts_and_totals_every_match_and_flags_truncation() {
+		$table = \Anchor\Courses\Database\Migrations::table( 'ce_credits' );
+		$this->bulk_rows(
+			$table,
+			1001,
+			fn( int $i ) => sprintf( "(NULL, %d, %d, 1.50, NULL, '2026-06-02 00:00:00', NULL, NULL, NULL, '2026-06-02 00:00:00')", 900000 + $i, $this->course )
+		);
+		wp_set_current_user( $this->admin );
+
+		$data = $this->request( 'GET', '/admin/reports/credits', [ 'course_id' => $this->course ] )->get_data();
+
+		$this->assertSame( 1001, $data['total'] );
+		$this->assertCount( 1000, $data['rows'] );
+		$this->assertTrue( $data['truncated'] );
+		$this->assertSame( 1501.5, $data['total_credits'], 'total_credits sums every match, not only the rows returned.' );
+	}
+
+	/** @return array<string,array{0:string,1:string}> */
+	public function bad_dates(): array {
+		return [
+			'month 13'      => [ 'from', '2026-13-01' ],
+			'not a date'    => [ 'from', 'June 1' ],
+			'trailing junk' => [ 'to', '2026-06-01 OR 1=1' ],
+			'feb 30'        => [ 'to', '2026-02-30' ],
+		];
+	}
+
+	/** @dataProvider bad_dates */
+	public function test_report_dates_must_be_y_m_d( string $key, string $value ) {
+		wp_set_current_user( $this->admin );
+
+		foreach ( [ '/admin/reports/completions', '/admin/reports/credits' ] as $route ) {
+			$response = $this->request( 'GET', $route, [ $key => $value ] );
+			$this->assertSame( 400, $response->get_status(), "$route must refuse $key=$value" );
+			$this->assertSame( 'invalid_date', $response->get_data()['code'] );
+		}
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Phase 5 final review M2 - one error map.
+	 * ------------------------------------------------------------------- */
+
+	public function test_quiz_required_maps_to_409() {
+		$this->assertSame( 409, Routes::error_response( new WP_Error( 'quiz_required', 'x' ) )->get_status() );
+	}
+
+	public function test_completing_a_quiz_gated_lesson_over_rest_is_a_409() {
+		$quiz   = self::factory()->post->create( [ 'post_type' => 'anchor_quiz', 'post_status' => 'publish' ] );
+		$lesson = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $quiz ] );
+		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+		Roles::grant_access( $this->learner, $this->course );
+		wp_set_current_user( $this->learner );
+
+		$response = $this->request( 'POST', '/lessons/' . $lesson . '/complete', [ 'course_id' => $this->course ] );
+
+		$this->assertSame( 409, $response->get_status() );
+		$this->assertSame( 'quiz_required', $response->get_data()['code'] );
+	}
 }

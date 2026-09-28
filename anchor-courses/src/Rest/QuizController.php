@@ -229,16 +229,10 @@ final class QuizController {
 	private function owned_attempt( int $attempt_id, int $course_id = 0 ) {
 		$attempt = $this->quizzes->get_attempt( $attempt_id );
 		if ( ! $attempt instanceof QuizAttempt ) {
-			return new \WP_REST_Response(
-				[ 'code' => 'no_attempt', 'message' => \__( 'That attempt does not exist.', 'anchor-schema' ) ],
-				404
-			);
+			return Routes::error_response( new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) ) );
 		}
 		if ( ! $this->quizzes->owns_attempt( \get_current_user_id(), $attempt_id ) ) {
-			return new \WP_REST_Response(
-				[ 'code' => 'attempt_not_yours', 'message' => \__( 'That attempt belongs to someone else.', 'anchor-schema' ) ],
-				403
-			);
+			return Routes::error_response( new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) ) );
 		}
 		if ( $course_id > 0 && $course_id !== $attempt->course_id ) {
 			return Routes::error_response(

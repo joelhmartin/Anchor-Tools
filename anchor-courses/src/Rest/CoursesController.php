@@ -79,7 +79,7 @@ final class CoursesController {
 	public function read( \WP_REST_Request $request ): \WP_REST_Response {
 		$course = \get_post( (int) $request['id'] );
 		if ( ! $course instanceof \WP_Post || CoursePostType::CPT !== $course->post_type || 'publish' !== $course->post_status ) {
-			return new \WP_REST_Response( [ 'code' => 'no_course', 'message' => \__( 'Not found.', 'anchor-schema' ) ], 404 );
+			return Routes::error_response( new \WP_Error( 'no_course', \__( 'Not found.', 'anchor-schema' ) ) );
 		}
 
 		return new \WP_REST_Response( $this->summary( $course ), 200 );
@@ -88,7 +88,7 @@ final class CoursesController {
 	public function curriculum( \WP_REST_Request $request ): \WP_REST_Response {
 		$course_id = (int) $request['id'];
 		if ( CoursePostType::CPT !== \get_post_type( $course_id ) || 'publish' !== \get_post_status( $course_id ) ) {
-			return new \WP_REST_Response( [ 'code' => 'no_course', 'message' => \__( 'Not found.', 'anchor-schema' ) ], 404 );
+			return Routes::error_response( new \WP_Error( 'no_course', \__( 'Not found.', 'anchor-schema' ) ) );
 		}
 
 		$modules = [];

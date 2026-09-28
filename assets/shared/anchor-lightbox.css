@@ -1,0 +1,187 @@
+/* ==========================================================================
+   Shared lightbox (assets/shared/anchor-lightbox.js). Moved here unchanged
+   from anchor-gallery/assets/anchor-video-slider.css so other modules can
+   enqueue the same `.avg-modal*` markup/styles by depending on the
+   `anchor-lightbox` handle instead of shipping their own copy.
+   ========================================================================== */
+
+.avg-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.avg-modal[hidden] {
+  display: none;
+}
+
+.avg-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  animation: avgFadeIn 0.2s ease;
+}
+
+@keyframes avgFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.avg-modal-dialog {
+  position: relative;
+  width: min(960px, 92vw);
+  max-height: 90vh;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5);
+  animation: avgSlideUp 0.3s ease;
+  /* Swipe gutters. Touch events inside a cross-origin iframe never reach the
+     parent page, so a swipe that starts on the video picture is undetectable.
+     These margins give the dialog swipe-active edges, and the arrows stay
+     visible on touch devices rather than being hover-only. */
+  padding-left: 56px;
+  padding-right: 56px;
+}
+
+.avg-modal-dialog.avg-modal-image {
+  width: auto;
+  max-width: min(1200px, 92vw);
+  background: transparent;
+}
+
+.avg-modal-dialog.avg-modal-image .avg-modal-frame img {
+  border-radius: 8px;
+}
+
+@keyframes avgSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.avg-modal-frame {
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+
+.avg-modal-dialog.avg-modal-image .avg-modal-frame {
+  aspect-ratio: auto;
+  background: transparent;
+}
+
+.avg-modal-frame iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+.avg-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  transition: background 0.15s;
+}
+
+.avg-modal-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* --- Lightbox navigation (prev/next, counter) ----------------------------- */
+
+.avg-modal-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease;
+}
+
+.avg-modal-nav:hover,
+.avg-modal-nav:focus-visible {
+  background: rgba(0, 0, 0, 0.8);
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.avg-modal-nav[hidden] { display: none; }
+
+.avg-modal-prev { left: 8px; }
+.avg-modal-next { right: 8px; }
+
+.avg-modal-counter {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: 2px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.avg-modal-counter[hidden] { display: none; }
+
+@media (max-width: 640px) {
+  .avg-modal-dialog {
+    padding-left: 40px;
+    padding-right: 40px;
+  }
+  .avg-modal-nav {
+    width: 36px;
+    height: 36px;
+    font-size: 22px;
+  }
+  .avg-modal-prev { left: 2px; }
+  .avg-modal-next { right: 2px; }
+}
+
+.avg-modal-frame img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.avg-modal-html .avg-modal-frame {
+  background: #fff;
+  padding: 24px;
+  overflow: auto;
+  max-height: 80vh;
+}

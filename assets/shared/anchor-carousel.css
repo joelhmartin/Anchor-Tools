@@ -1,0 +1,70 @@
+/*
+ * Shared carousel primitives (assets/shared/anchor-carousel.js).
+ *
+ * Two kinds of rules live here:
+ *
+ * - .anchor-carousel__viewport / .anchor-carousel__track / the --anchor-
+ *   carousel-* custom properties: layout rules for non-gallery consumers
+ *   only (the gallery module keeps its own .avg-track / .avg-tile styling
+ *   untouched and does not use these classes).
+ * - .anchor-carousel-drag / .anchor-carousel-is-dragging: drag-cursor and
+ *   text-selection rules driven by two classes assets/shared/anchor-
+ *   carousel.js itself adds to any carousel-mode track/root, regardless of
+ *   which layout classes that consumer uses - these DO apply to the
+ *   gallery too, which is why anchor-gallery.php now enqueues this
+ *   stylesheet as a dependency of anchor-video-slider.css, not just of its
+ *   own script. Both classes are namespaced (anchor-carousel- prefixed),
+ *   not a bare state class like .is-dragging: the gallery module's own
+ *   admin builder already has an unrelated .anchor-builder__item-card
+ *   .is-dragging on the same gallery edit screen, and a bare class here
+ *   would have collided with it.
+ */
+
+.anchor-carousel__viewport {
+  overflow: hidden;
+}
+
+.anchor-carousel__track {
+  display: flex;
+  gap: var(--anchor-carousel-gap, 16px);
+  transition: transform 0.45s ease;
+}
+
+.anchor-carousel__track > * {
+  flex: 0 0 calc((100% - (var(--anchor-carousel-cols, 3) - 1) * var(--anchor-carousel-gap, 16px)) / var(--anchor-carousel-cols, 3));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anchor-carousel__track {
+    transition: none;
+  }
+}
+
+/*
+ * Drag affordance (owner feedback): a grab cursor at rest, grabbing while
+ * the pointer is held down (assets/shared/anchor-carousel.js toggles
+ * .anchor-carousel-is-dragging on the carousel root for exactly that
+ * duration), and no accidental text selection while dragging across slide
+ * content. Links and buttons inside a slide keep their own pointer cursor
+ * rather than inheriting grab/grabbing from the track.
+ *
+ * Not exposed as themable custom properties: a grab/grabbing cursor is a
+ * standard, semantic affordance, not a brand color or spacing value a site
+ * would have a reason to override.
+ */
+.anchor-carousel-drag {
+  cursor: grab;
+}
+
+.anchor-carousel-drag a,
+.anchor-carousel-drag button {
+  cursor: pointer;
+}
+
+.anchor-carousel-is-dragging .anchor-carousel-drag {
+  cursor: grabbing;
+}
+
+.anchor-carousel-is-dragging {
+  user-select: none;
+}

@@ -191,3 +191,53 @@
     grid-template-columns:repeat(2, minmax(0, 1fr));
   }
 }
+
+/*
+ * Compact card ([anchor_store_locator card="compact"]): title, owner,
+ * "View location" only. No image, distance, address or contact fields.
+ * Themable via custom properties, each with a neutral (non-brand) fallback:
+ *   --asl-compact-padding    card padding (default 12px 14px)
+ *   --asl-compact-gap        gap between title/owner/link (default 4px)
+ *   --asl-compact-radius     card corner radius (default 8px)
+ *   --asl-compact-bg         card background (default #fff)
+ *   --asl-compact-border     card border color (default #e2e8f0)
+ *   --asl-compact-title-size    title font size (default 15px)
+ *   --asl-compact-title-color   title color (default #111827)
+ *   --asl-compact-owner-size    owner line font size (default 13px)
+ *   --asl-compact-owner-color   owner line color, muted (default #6b7280)
+ *   --asl-compact-link-size     "View location" font size (default 13px)
+ *   --asl-compact-link-color    "View location" color (default #2563eb)
+ *   --asl-compact-min-width     min card width in the results grid (default 220px)
+ *   --asl-compact-results-gap   gap between cards in the results grid (default 12px)
+ */
+
+.anchor-store-results--compact{
+  grid-template-columns:repeat(auto-fill, minmax(var(--asl-compact-min-width, 220px), 1fr));
+  gap:var(--asl-compact-results-gap, 12px);
+}
+
+.anchor-store-card--compact{
+  padding:var(--asl-compact-padding, 12px 14px);
+  gap:var(--asl-compact-gap, 4px);
+  border-radius:var(--asl-compact-radius, 8px);
+  background:var(--asl-compact-bg, #fff);
+  border-color:var(--asl-compact-border, #e2e8f0);
+}
+
+.anchor-store-card--compact .anchor-store-card-title{
+  margin:0;
+  font-size:var(--asl-compact-title-size, 15px);
+  font-weight:600;
+  line-height:1.3;
+  color:var(--asl-compact-title-color, #111827);
+}
+
+.anchor-store-card--compact .anchor-store-card-owner{
+  font-size:var(--asl-compact-owner-size, 13px);
+  color:var(--asl-compact-owner-color, #6b7280);
+}
+
+.anchor-store-card--compact .anchor-store-link{
+  font-size:var(--asl-compact-link-size, 13px);
+  color:var(--asl-compact-link-color, #2563eb);
+}

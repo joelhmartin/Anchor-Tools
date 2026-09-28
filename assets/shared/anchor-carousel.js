@@ -1,0 +1,438 @@
+(function() {
+  'use strict';
+
+  // ============================================================================
+  // Shared Carousel / Slider
+  // ============================================================================
+  //
+  // Generic transform-carousel + scroll-slider engine, driven entirely by the
+  // `cfg` object passed to init(root, cfg) (elements, mode, columns, autoplay,
+  // etc). Consumers own their own markup and CSS classes; this module reads
+  // nothing from the DOM beyond what `cfg` hands it.
+
+  function prefersReducedMotion() {
+    return typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  function init(root, cfg) {
+    cfg = cfg || {};
+
+    var track = cfg.track;
+    var items = cfg.items ? Array.prototype.slice.call(cfg.items) : [];
+    var prevBtn = cfg.prev || null;
+    var nextBtn = cfg.next || null;
+    var dotsContainer = cfg.dotsContainer || null;
+    var dotClass = cfg.dotClass || 'avg-dot';
+    var mode = cfg.mode === 'slider' ? 'slider' : 'carousel';
+    var loopEnabled = !!cfg.loop;
+    var centerMode = !!cfg.center;
+    var cols = cfg.cols || {};
+    var gapVar = cfg.gapVar || '--avg-gap';
+
+    var noop = function() {};
+    if (!track || items.length === 0) {
+      return { go: noop, next: noop, prev: noop, destroy: noop };
+    }
+
+    var currentIndex = 0;
+    var dots = [];
+    var boundListeners = [];
+    var pendingTimers = [];
+    var resizeObserver = null;
+    var resizeTimer = null;
+    var autoplayInterval = null;
+
+    function on(el, evt, handler, opts) {
+      if (!el) return;
+      el.addEventListener(evt, handler, opts);
+      boundListeners.push({ el: el, evt: evt, handler: handler, opts: opts });
+    }
+
+    /* -- Responsive visible count ------------------------------------ */
+
+    function getVisibleCount() {
+      var desktop = parseInt(cols.desktop, 10) || 3;
+      var tablet = parseInt(cols.tablet, 10) || Math.min(desktop, 2);
+      var mobile = parseInt(cols.mobile, 10) || 1;
+      // Measure the root element, not the window, so a device-toolbar preview
+      // (which resizes the preview frame, not the window) stays accurate.
+      // Breakpoints match the frontend CSS: mobile <=767, tablet <=1023.
+      var width = root.offsetWidth || root.getBoundingClientRect().width || window.innerWidth;
+      if (width <= 767) return mobile;
+      if (width <= 1023) return tablet;
+      return desktop;
+    }
+
+    /* -- Carousel transform update ----------------------------------- */
+
+    function updateCarousel() {
+      if (mode !== 'carousel') return;
+
+      var visibleCount = getVisibleCount();
+      var itemWidth = items[0].offsetWidth;
+      var gap = parseInt(getComputedStyle(root).getPropertyValue(gapVar), 10) || 16;
+      var step = itemWidth + gap;
+      var offset = currentIndex * step;
+
+      // Center mode: shift so the active slide(s) sit in the middle.
+      if (centerMode && items.length > visibleCount) {
+        var containerWidth = root.offsetWidth;
+        var groupWidth = visibleCount * itemWidth + (visibleCount - 1) * gap;
+        var centerShift = (containerWidth - groupWidth) / 2;
+        offset = currentIndex * step - centerShift;
+        if (offset < 0) offset = 0;
+      }
+
+      track.style.transform = 'translateX(-' + offset + 'px)';
+
+      items.forEach(function(item, i) {
+        item.classList.toggle('active', i >= currentIndex && i < currentIndex + visibleCount);
+      });
+
+      if (loopEnabled) {
+        if (prevBtn) prevBtn.disabled = false;
+        if (nextBtn) nextBtn.disabled = false;
+      } else {
+        if (prevBtn) prevBtn.disabled = currentIndex === 0;
+        if (nextBtn) nextBtn.disabled = currentIndex >= items.length - visibleCount;
+      }
+
+      updateDots();
+    }
+
+    /* -- Slide navigation ---------------------------------------------- */
+
+    function goToSlide(index) {
+      var visibleCount = getVisibleCount();
+      // When there are fewer items than the responsive visible count (e.g.
+      // 1-2 items with 3 desktop columns), items.length - visibleCount is
+      // negative; clamp to 0 so a negative currentIndex never happens (it
+      // would otherwise produce an invalid transform string and break the
+      // active item/dot state).
+      var maxIndex = Math.max(0, items.length - visibleCount);
+
+      if (loopEnabled) {
+        if (index > maxIndex) index = 0;
+        else if (index < 0) index = maxIndex;
+      } else {
+        index = Math.max(0, Math.min(maxIndex, index));
+      }
+
+      currentIndex = index;
+      updateCarousel();
+    }
+
+    var slidesToScroll = parseInt(cfg.slidesToScroll, 10) || 1;
+    if (slidesToScroll < 1) slidesToScroll = 1;
+
+    function scrollSlider(direction) {
+      if (mode === 'slider') {
+        var itemWidth = items[0].offsetWidth;
+        var gap = parseInt(getComputedStyle(root).getPropertyValue(gapVar), 10) || 16;
+        var scrollAmount = (itemWidth + gap) * direction * slidesToScroll;
+        track.scrollBy({ left: scrollAmount, behavior: 'smooth' });
+      } else {
+        goToSlide(currentIndex + direction * slidesToScroll);
+      }
+    }
+
+    on(prevBtn, 'click', function() { scrollSlider(-1); });
+    on(nextBtn, 'click', function() { scrollSlider(1); });
+
+    /* -- Dots navigation (one dot per item) ---------------------------- */
+
+    function buildDots() {
+      if (!dotsContainer || mode !== 'carousel') return;
+      dotsContainer.innerHTML = '';
+      dots = [];
+
+      for (var i = 0; i < items.length; i++) {
+        var dot = document.createElement('button');
+        dot.className = dotClass + (i === currentIndex ? ' active' : '');
+        dot.setAttribute('aria-label', 'Go to slide ' + (i + 1));
+        dot.setAttribute('data-index', i);
+        dots.push(dot);
+        dotsContainer.appendChild(dot);
+      }
+
+      on(dotsContainer, 'click', function(e) {
+        var d = e.target.closest('.' + dotClass);
+        if (!d) return;
+        goToSlide(parseInt(d.getAttribute('data-index'), 10));
+      });
+    }
+
+    function updateDots() {
+      for (var i = 0; i < dots.length; i++) {
+        dots[i].classList.toggle('active', i === currentIndex);
+      }
+    }
+
+    /* -- Drag / swipe support (Pointer Events, carousel mode only) ------- */
+    //
+    // A single Pointer Events implementation drives both mouse drag
+    // (desktop) and touch swipe, replacing the previous touch-only handler
+    // so there is one code path instead of two. It only applies in
+    // mode === 'carousel' (a JS-driven transform track): mode === 'slider'
+    // is the gallery's native-scroll, scroll-snap layout, which already
+    // handles horizontal touch panning itself via the browser's own
+    // overflow-x scrolling - setting touch-action here or attaching pointer
+    // listeners would only get in that native behavior's way (touch-action:
+    // pan-y previously did exactly that, breaking horizontal touch scroll
+    // on every slider-layout gallery).
+    //
+    // touch-action: pan-y on the track lets the browser keep handling
+    // vertical scrolling natively (a swipe that turns out to be a vertical
+    // scroll is abandoned rather than fought), and a drag that crosses the
+    // threshold suppresses the click event the browser fires on release, so
+    // a link or video button inside the dragged slide doesn't also
+    // activate.
+    //
+    // A drag only STARTS on the track (pointerdown listener below), but
+    // pointermove/pointerup/pointercancel listen on `document`, gated by the
+    // `dragging` flag, rather than using track.setPointerCapture(): capture
+    // would keep the drag tracking reliably once the pointer leaves the
+    // track's bounds, but it also retargets the browser's compatibility
+    // "click" event on release to the capturing element for EVERY click, not
+    // only a drag past the threshold - breaking every consumer's click
+    // delegation (e.g. `e.target.closest('.anchor-testimonial__media')` in
+    // testimonials.js, `.avg-tile` in the gallery), since the click's target
+    // becomes the track itself instead of the tapped/clicked descendant.
+    //
+    // Owner feedback: dragging should look and feel like the standard
+    // "grab this and drag it" affordance - a grab cursor at rest, a
+    // grabbing cursor while the button is held down, and no accidental text
+    // selection or native image/link drag-out along the way. All of that is
+    // driven from here: .anchor-carousel-drag (a permanent class this module
+    // adds to the track, not a consumer-specific one) carries the default
+    // grab cursor and the links/buttons-keep-pointer-cursor override in
+    // anchor-carousel.css, .anchor-carousel-is-dragging (toggled on `root`
+    // for the duration the button is held down, see setDragging() below -
+    // namespaced, not the bare .is-dragging a site's own admin/theme CSS
+    // may already use for something unrelated) carries the grabbing cursor
+    // and user-select: none, and img/a inside the track get draggable =
+    // false up front.
+
+    if (mode === 'carousel') {
+      track.style.touchAction = 'pan-y';
+
+      // A module-owned marker class (not a consumer-specific one like
+      // .anchor-carousel__track or .avg-track, which not every consumer
+      // adds to its track) that anchor-carousel.css hooks the default
+      // grab cursor, the grabbing-while-dragging cursor and the
+      // links/buttons-keep-their-own-cursor override onto, so this works
+      // identically for every consumer regardless of its own class names.
+      track.classList.add('anchor-carousel-drag');
+
+      // Prevent the browser's native "drag this image/link out of the
+      // page" gesture from starting at all (belt-and-suspenders alongside
+      // the dragstart preventDefault below, which stops it after the fact) -
+      // either way it would otherwise fight our own pointer-based drag and
+      // show the OS's own drag cursor/ghost instead of grab/grabbing.
+      Array.prototype.forEach.call(track.querySelectorAll('img, a'), function(el) {
+        el.draggable = false;
+      });
+    }
+
+    (function initDrag() {
+      if (mode !== 'carousel') return;
+
+      // `dragging` and `pointerActive` are deliberately separate:
+      // `dragging` answers "should pointermove still treat this as a
+      // horizontal slide-drag" (false the moment a vertical scroll wins,
+      // see the pointermove handler below), while `pointerActive` answers
+      // "is the pointer/mouse button still physically held down" and stays
+      // true across that same abandonment - the owner asked for the
+      // standard "grabbing while click-holding" cursor, which tracks the
+      // button state, not whether a slide change will actually happen.
+      var startX = 0, startY = 0, deltaX = 0, dragging = false, pointerActive = false, activePointerId = null;
+      var threshold = 40;
+      var dragEndedAt = 0;
+
+      // Both the grabbing cursor and the text-selection guard are keyed off
+      // one .anchor-carousel-is-dragging class added to `root` (not
+      // `track`) - the CSS scopes the grabbing cursor and user-select:
+      // none from there.
+      function setDragging(active) {
+        root.classList.toggle('anchor-carousel-is-dragging', active);
+      }
+
+      // How long after a drag ends its trailing click stays suppressed.
+      // Because pointerup listens on `document` (not `track`, see above), a
+      // drag that ends outside the track's bounds never fires a `click` on
+      // `track` at all, so a once:true listener registered per-drag would
+      // stay armed indefinitely and swallow the NEXT, unrelated click on the
+      // track instead. A permanently-attached listener gated by a short time
+      // window fixes that: it only suppresses a click that follows a real
+      // drag closely enough to be that drag's own trailing click.
+      var SUPPRESS_WINDOW_MS = 300;
+
+      on(track, 'click', function(e) {
+        if (Date.now() - dragEndedAt < SUPPRESS_WINDOW_MS) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }, { capture: true });
+
+      on(track, 'pointerdown', function(e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        startX = e.clientX;
+        startY = e.clientY;
+        deltaX = 0;
+        dragging = true;
+        pointerActive = true;
+        activePointerId = e.pointerId;
+        setDragging(true);
+      });
+
+      on(document, 'pointermove', function(e) {
+        if (!dragging || e.pointerId !== activePointerId) return;
+        deltaX = e.clientX - startX;
+        var deltaY = e.clientY - startY;
+        // If vertical scroll is dominant, release the drag back to native
+        // scrolling instead of fighting it. pointerActive (and so the
+        // grabbing cursor/text-selection guard) deliberately stays on until
+        // the button is actually released - only the slide-drag logic
+        // itself is abandoned here.
+        if (Math.abs(deltaY) > Math.abs(deltaX)) { dragging = false; return; }
+        e.preventDefault();
+      }, { passive: false });
+
+      // The shared cleanup: stop tracking the pointer and drop the
+      // grabbing cursor/text-selection guard. Never advances the slide on
+      // its own - only endDrag() below does that, and only for a real
+      // release that was still an active horizontal drag.
+      function cancelDrag() {
+        if (!pointerActive) return;
+        dragging = false;
+        pointerActive = false;
+        setDragging(false);
+      }
+
+      function endDrag(e) {
+        if (!pointerActive || e.pointerId !== activePointerId) return;
+        var wasDragging = dragging;
+        cancelDrag();
+        if (wasDragging && Math.abs(deltaX) > threshold) {
+          dragEndedAt = Date.now();
+          scrollSlider(deltaX < 0 ? 1 : -1);
+        }
+      }
+
+      on(document, 'pointerup', endDrag);
+      on(document, 'pointercancel', function(e) {
+        if (e.pointerId !== activePointerId) return;
+        cancelDrag();
+      });
+
+      // A drag interrupted by switching away entirely (alt-tab, a browser
+      // shortcut that steals focus, switching tabs) never fires pointerup
+      // or pointercancel at all - the OS/browser just takes focus away
+      // mid-gesture, with the mouse button's up-event delivered to
+      // whatever the user clicks next, somewhere else entirely. Without
+      // these, pointerActive and the grabbing cursor/text-selection guard
+      // would stay stuck on until the user comes back AND completes
+      // another full drag cycle. `blur` covers the window losing focus
+      // (alt-tab, clicking another app); `visibilitychange` additionally
+      // covers switching browser tabs, which doesn't always blur the
+      // window itself.
+      on(window, 'blur', cancelDrag);
+      on(document, 'visibilitychange', function() {
+        if (document.hidden) cancelDrag();
+      });
+
+      // Prevent the browser's native "drag an image out of the page"
+      // gesture from hijacking a mouse drag that starts over a slide image.
+      on(track, 'dragstart', function(e) { e.preventDefault(); });
+    })();
+
+    /* -- Keyboard navigation --------------------------------------------- */
+
+    root.setAttribute('tabindex', '0');
+    on(root, 'keydown', function(e) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); scrollSlider(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); scrollSlider(1); }
+    });
+
+    /* -- Initialize carousel ---------------------------------------------- */
+
+    if (mode === 'carousel') {
+      buildDots();
+      updateCarousel();
+
+      var scheduleUpdate = function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(updateCarousel, 100);
+      };
+      on(window, 'resize', scheduleUpdate);
+
+      // Observe the root so a device-toolbar preview (which only resizes the
+      // preview frame, not the window) triggers a re-measure.
+      if (typeof ResizeObserver !== 'undefined') {
+        resizeObserver = new ResizeObserver(scheduleUpdate);
+        resizeObserver.observe(root);
+      }
+    }
+
+    /* -- Autoplay with pause/resume ---------------------------------------- */
+
+    // Reduced-motion visitors never get autoplay, regardless of cfg.
+    var autoplayEnabled = !!cfg.autoplay && mode === 'carousel' && !prefersReducedMotion();
+    var autoplaySpeed = parseInt(cfg.autoplaySpeed, 10) || 5000;
+
+    function startAutoplay() {
+      stopAutoplay();
+      autoplayInterval = setInterval(function() {
+        goToSlide(currentIndex + slidesToScroll);
+      }, autoplaySpeed);
+    }
+
+    function stopAutoplay() {
+      if (autoplayInterval) { clearInterval(autoplayInterval); autoplayInterval = null; }
+    }
+
+    if (autoplayEnabled) {
+      // pauseOnHover defaults to true when not explicitly set to false.
+      var pauseOnHover = cfg.pauseOnHover !== false;
+
+      startAutoplay();
+
+      if (pauseOnHover) {
+        on(root, 'mouseenter', stopAutoplay);
+        on(root, 'mouseleave', startAutoplay);
+      }
+      on(root, 'pointerdown', stopAutoplay);
+      on(root, 'pointerup', function() {
+        pendingTimers.push(setTimeout(startAutoplay, 3000));
+      });
+    }
+
+    /* -- Teardown ------------------------------------------------------------ */
+
+    function destroy() {
+      stopAutoplay();
+      clearTimeout(resizeTimer);
+      pendingTimers.forEach(clearTimeout);
+      pendingTimers = [];
+      if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
+      boundListeners.forEach(function(l) {
+        l.el.removeEventListener(l.evt, l.handler, l.opts);
+      });
+      boundListeners = [];
+      // In case destroy() is called mid-drag (e.g. a re-render), don't leave
+      // the grabbing cursor/text-selection guard stuck on.
+      root.classList.remove('anchor-carousel-is-dragging');
+    }
+
+    return {
+      go: goToSlide,
+      next: function() { scrollSlider(1); },
+      prev: function() { scrollSlider(-1); },
+      destroy: destroy
+    };
+  }
+
+  window.AnchorCarousel = { init: init };
+
+})();

@@ -1396,9 +1396,18 @@ class Anchor_Gallery_Module {
             $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/assets/';
             $ver = filemtime($base_dir . 'admin.js');
 
-            // Frontend styles/script for preview
-            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
-            wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
+            // Frontend styles/script for preview. Depends on the shared
+            // lightbox/carousel handles (registered by Anchor_Shared_Assets
+            // on admin_enqueue_scripts priority 5, ahead of this priority-10
+            // hook) exactly like the front-end registration in
+            // enqueue_assets() below, so window.AnchorLightbox and
+            // window.AnchorCarousel are defined before this script runs.
+            // anchor-carousel is now also a style dependency (not just a
+            // script one): anchor-carousel.css carries the shared
+            // grab/grabbing cursor and drag text-selection guard, which
+            // apply to any carousel-mode track, gallery included.
+            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.css'));
+            wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.js'), true);
 
             // Admin
             wp_enqueue_style('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.css'), [], $ver);
@@ -1431,8 +1440,8 @@ class Anchor_Gallery_Module {
             wp_register_style('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.css'), [], filemtime($up_css_path));
         }
 
-        wp_register_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
-        wp_register_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
+        wp_register_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.css'));
+        wp_register_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.js'), true);
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -2864,12 +2873,15 @@ class Anchor_Gallery_Module {
     }
 
     private function normalize_video_url($url) {
-        if (preg_match('~(?:youtu\.be/|youtube\.com/(?:watch\\?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{6,})~', $url, $matches)) {
+        $parsed = Anchor_Video_URL::parse($url);
+        if (!$parsed) return null;
+
+        if ($parsed['provider'] === 'youtube') {
             return [
                 'provider'       => 'youtube',
-                'id'             => $matches[1],
+                'id'             => $parsed['id'],
                 'thumb'          => '',
-                'fallback_thumb' => 'https://img.youtube.com/vi/' . $matches[1] . '/hqdefault.jpg',
+                'fallback_thumb' => 'https://img.youtube.com/vi/' . $parsed['id'] . '/hqdefault.jpg',
                 'label'          => 'YouTube Video',
                 'raw_url'        => $url,
                 'duration'       => '',
@@ -2877,20 +2889,16 @@ class Anchor_Gallery_Module {
             ];
         }
 
-        if (preg_match('~vimeo\.com/(?:video/)?([0-9]+)~', $url, $matches)) {
-            return [
-                'provider'       => 'vimeo',
-                'id'             => $matches[1],
-                'thumb'          => '',
-                'fallback_thumb' => '',
-                'label'          => 'Vimeo Video',
-                'raw_url'        => $url,
-                'duration'       => '',
-                'channel'        => '',
-            ];
-        }
-
-        return null;
+        return [
+            'provider'       => 'vimeo',
+            'id'             => $parsed['id'],
+            'thumb'          => '',
+            'fallback_thumb' => '',
+            'label'          => 'Vimeo Video',
+            'raw_url'        => $url,
+            'duration'       => '',
+            'channel'        => '',
+        ];
     }
 
     private function hydrate_video_metadata($videos, $thumb_size = 'maxres') {

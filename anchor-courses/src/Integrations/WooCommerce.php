@@ -41,8 +41,12 @@ final class WooCommerce {
 	 */
 	public const ENROLL_STATUSES = [ 'processing', 'completed' ];
 
-	/** Bound on the retry-on-publish order scan (progress.md T39 ruling 2). */
-	public const RETRY_ORDER_LIMIT = 200;
+	/**
+	 * Default bound on retry-on-publish: how many of the newest orders whose
+	 * LINE ITEMS name a product mapped to the course are re-run (final review
+	 * I6). Filterable via `anchor_courses_wc_retry_order_limit`.
+	 */
+	public const RETRY_ORDER_LIMIT = 500;
 
 	public function __construct() {
 		\add_filter( 'woocommerce_product_data_tabs', [ $this, 'add_product_tab' ] );
@@ -128,7 +132,16 @@ final class WooCommerce {
 		return $tabs;
 	}
 
-	/** `woocommerce_product_data_panels`: the tab's panel, a multi-select of published/private courses. */
+	/** Course statuses a mapping may be staged against (Task 38: a mapping may exist before the course publishes). */
+	public const MAPPABLE_STATUSES = [ 'publish', 'private', 'draft', 'pending', 'future' ];
+
+	/**
+	 * `woocommerce_product_data_panels`: the tab's panel, a multi-select of
+	 * every mappable course. Unpublished ones are labelled with their status
+	 * ("(draft)"), and every course already mapped is always offered - even
+	 * past the list bound - so saving the product never drops a mapping
+	 * merely because the course is not published (final review I4).
+	 */
 	public function render_product_panel(): void {
 		global $post;
 
@@ -141,28 +154,39 @@ final class WooCommerce {
 		echo '<p class="form-field"><label for="anchor_course_ids">' . \esc_html__( 'Grant these courses', 'anchor-schema' ) . '</label>';
 		echo '<select id="anchor_course_ids" name="anchor_course_ids[]" multiple size="8" style="width:100%;max-width:26em;">';
 
-		$courses = \get_posts(
-			[
-				'post_type'      => CoursePostType::CPT,
-				'post_status'    => [ 'publish', 'private' ],
-				'posts_per_page' => 200,
-				'orderby'        => 'title',
-				'order'          => 'ASC',
-				'no_found_rows'  => true,
-			]
-		);
+		$query = [
+			'post_type'      => CoursePostType::CPT,
+			'post_status'    => self::MAPPABLE_STATUSES,
+			'posts_per_page' => 200,
+			'orderby'        => 'title',
+			'order'          => 'ASC',
+			'no_found_rows'  => true,
+		];
+		$courses = \get_posts( $query );
+
+		$listed  = \array_map( static fn( $c ) => (int) $c->ID, $courses );
+		$missing = \array_values( \array_diff( $selected, $listed ) );
+		if ( [] !== $missing ) {
+			$courses = \array_merge( $courses, \get_posts( [ 'post__in' => $missing, 'posts_per_page' => \count( $missing ) ] + $query ) );
+		}
 
 		foreach ( $courses as $course ) {
+			$label = (string) $course->post_title;
+			if ( 'publish' !== $course->post_status ) {
+				$status = \get_post_status_object( $course->post_status );
+				$label .= ' (' . \strtolower( $status ? (string) $status->label : (string) $course->post_status ) . ')';
+			}
+
 			\printf(
 				'<option value="%d"%s>%s</option>',
 				(int) $course->ID,
 				\in_array( (int) $course->ID, $selected, true ) ? ' selected="selected"' : '',
-				\esc_html( (string) $course->post_title )
+				\esc_html( $label )
 			);
 		}
 
 		echo '</select>';
-		echo '<span class="description">' . \esc_html__( 'Buyers are enrolled automatically when the order reaches a qualifying status.', 'anchor-schema' ) . '</span>';
+		echo '<span class="description">' . \esc_html__( 'Buyers are enrolled automatically when the order reaches a qualifying status. An unpublished course is granted once it is published.', 'anchor-schema' ) . '</span>';
 		echo '</p></div></div>';
 	}
 
@@ -588,39 +612,38 @@ final class WooCommerce {
 	 * this course. Idempotent (grant_access() no-ops for a role already held),
 	 * which is what makes it safe to run on every publish, not only the first.
 	 *
-	 * Bounded to the most recent RETRY_ORDER_LIMIT qualifying orders: this is a
-	 * retry for orders that paid while a mapped course was still draft/private,
-	 * not an unbounded historical backfill.
+	 * Orders are selected BY LINE ITEM (final review I6), not by scanning the
+	 * store's newest orders: order_ids_for_products() finds orders whose
+	 * items name a product or variation mapped to this course, newest first,
+	 * bounded to `anchor_courses_wc_retry_order_limit` (default
+	 * RETRY_ORDER_LIMIT) - so the bound counts course orders only. Each is
+	 * then checked for a qualifying status and re-checked through
+	 * courses_for_item() (a variation's own mapping can override its
+	 * parent's). Hitting the bound is logged.
 	 *
 	 * @return int How many access roles were newly granted across all matching orders.
 	 */
 	public function retry_orders_for_course( int $course_id ): int {
-		if ( ! \function_exists( 'wc_get_orders' ) || $course_id <= 0 ) {
+		if ( ! \function_exists( 'wc_get_order' ) || $course_id <= 0 ) {
 			return 0;
 		}
 
-		$order_ids = \wc_get_orders(
-			[
-				'status'  => self::qualifying_statuses(),
-				'limit'   => self::RETRY_ORDER_LIMIT,
-				'return'  => 'ids',
-				'orderby' => 'date',
-				'order'   => 'DESC',
-			]
-		);
-		$order_ids = \is_array( $order_ids ) ? $order_ids : [];
+		$limit = \max( 1, (int) \apply_filters( 'anchor_courses_wc_retry_order_limit', self::RETRY_ORDER_LIMIT, $course_id ) );
 
-		if ( \count( $order_ids ) >= self::RETRY_ORDER_LIMIT ) {
-			// Not silently dropped: a store with more qualifying orders than the
-			// bound needs a human to notice and, if it matters, resync by hand.
-			Log::write( 'wc_retry_capped', [ 'course' => $course_id, 'limit' => self::RETRY_ORDER_LIMIT ] );
+		$order_ids = self::order_ids_for_products( self::mapped_product_ids( $course_id ), $limit );
+
+		if ( \count( $order_ids ) >= $limit ) {
+			// Not silently dropped: a course sold on more orders than the bound
+			// needs a human to notice and, if it matters, resync by hand.
+			Log::write( 'wc_retry_capped', [ 'course' => $course_id, 'limit' => $limit ] );
 		}
 
-		$granted = 0;
+		$statuses = self::qualifying_statuses();
+		$granted  = 0;
 
 		foreach ( $order_ids as $order_id ) {
-			$order = \wc_get_order( (int) $order_id );
-			if ( ! $order ) {
+			$order = \wc_get_order( $order_id );
+			if ( ! $order instanceof \WC_Order || ! $order->has_status( $statuses ) ) {
 				continue;
 			}
 
@@ -635,10 +658,78 @@ final class WooCommerce {
 				continue;
 			}
 
-			$granted += $this->enroll_order( (int) $order_id );
+			$granted += $this->enroll_order( $order_id );
 		}
 
 		return $granted;
+	}
+
+	/**
+	 * Every product or variation - any status - whose mapping includes this
+	 * course. Same serialised-int LIKE + exact PHP re-check as
+	 * products_for_course(), without that method's publish/purchasable
+	 * shaping: an order may have bought a product that is now a draft.
+	 *
+	 * @return int[]
+	 */
+	private static function mapped_product_ids( int $course_id ): array {
+		$ids = \get_posts(
+			[
+				'post_type'      => [ 'product', 'product_variation' ],
+				'post_status'    => 'any',
+				'fields'         => 'ids',
+				'posts_per_page' => -1,
+				'no_found_rows'  => true,
+				'meta_query'     => [ // phpcs:ignore WordPress.DB.SlowDBQuery
+					[ 'key' => self::META_KEY, 'value' => ';i:' . $course_id . ';', 'compare' => 'LIKE' ],
+				],
+			]
+		);
+
+		return \array_values(
+			\array_filter(
+				\array_map( 'intval', $ids ),
+				static fn( int $id ): bool => \in_array( $course_id, self::courses_for_product( $id ), true )
+			)
+		);
+	}
+
+	/**
+	 * Newest order ids (at most $limit) with a line item for any of these
+	 * products/variations.
+	 *
+	 * Reads WooCommerce's order ITEM tables (`woocommerce_order_items` +
+	 * `woocommerce_order_itemmeta` `_product_id`/`_variation_id`), which both
+	 * the posts and the HPOS order stores use, so this is HPOS-safe. Not
+	 * `wc_order_product_lookup`: that analytics table is filled by a
+	 * scheduled Action Scheduler import, so a just-paid order may not be in
+	 * it yet. Refund ids can appear (refunds carry items too); the caller's
+	 * instanceof WC_Order check drops them.
+	 *
+	 * @param int[] $product_ids
+	 * @return int[]
+	 */
+	private static function order_ids_for_products( array $product_ids, int $limit ): array {
+		global $wpdb;
+
+		$product_ids = \array_values( \array_unique( \array_filter( \array_map( 'intval', $product_ids ) ) ) );
+		if ( [] === $product_ids ) {
+			return [];
+		}
+
+		// meta_value is text: compare as strings, so MySQL never casts every row.
+		$in  = \implode( ',', \array_fill( 0, \count( $product_ids ), '%s' ) );
+		$sql = "SELECT DISTINCT oi.order_id FROM {$wpdb->prefix}woocommerce_order_items oi
+			INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta im ON im.order_item_id = oi.order_item_id
+			WHERE oi.order_item_type = 'line_item'
+			AND im.meta_key IN ('_product_id','_variation_id')
+			AND im.meta_value IN ($in)
+			ORDER BY oi.order_id DESC
+			LIMIT %d";
+
+		$ids = $wpdb->get_col( $wpdb->prepare( $sql, \array_merge( \array_map( 'strval', $product_ids ), [ $limit ] ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+		return \array_map( 'intval', (array) $ids );
 	}
 
 	/* ---------------------------------------------------------------------

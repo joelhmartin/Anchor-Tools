@@ -373,4 +373,74 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 		$this->assertSame( 1, $granted );
 		$this->assertTrue( $this->enrollments->is_enrolled( $this->customer, $this->course ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Phase 5 final review I6 - retry-on-publish selects orders by line item.
+	 * ------------------------------------------------------------------- */
+
+	private function draft_course_order( int $customer, string $status = 'processing' ): array {
+		$draft = self::factory()->post->create( [ 'post_type' => 'anchor_course', 'post_status' => 'draft', 'post_title' => 'Staged' ] );
+		$product = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+		WooCommerce::set_courses_for_product( $product, [ $draft ] );
+
+		$order = wc_create_order( [ 'customer_id' => $customer ] );
+		$order->add_product( wc_get_product( $product ), 1 );
+		$order->set_status( $status );
+		$order->save();
+
+		return [ $draft, $product, $order ];
+	}
+
+	/**
+	 * The old scan read the store's newest qualifying orders and filtered in
+	 * PHP, so a course order older than that window was never retried. It
+	 * must be found by its line item however many other orders came after.
+	 */
+	public function test_retry_on_publish_finds_a_course_order_behind_many_newer_orders() {
+		[ $draft, , $order ] = $this->draft_course_order( $this->customer );
+
+		for ( $i = 0; $i < 201; $i++ ) {
+			wc_create_order( [ 'status' => 'processing' ] );
+		}
+
+		wp_publish_post( $draft );
+
+		$this->assertTrue(
+			Roles::user_has( $this->customer, Roles::access_slug( $draft ) ),
+			'The course order must be found by its line item, not by being among the newest orders.'
+		);
+		remove_role( Roles::access_slug( $draft ) );
+	}
+
+	public function test_retry_on_publish_skips_a_course_order_in_a_non_qualifying_status() {
+		[ $draft ] = $this->draft_course_order( $this->customer, 'pending' );
+
+		wp_publish_post( $draft );
+
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $draft ) ) );
+		remove_role( Roles::access_slug( $draft ) );
+	}
+
+	public function test_retry_on_publish_is_bounded_to_the_newest_matching_orders() {
+		add_filter( 'anchor_courses_wc_retry_order_limit', static fn() => 1 );
+
+		$older = $this->make_learner( [ 'role' => 'customer' ] );
+		[ $draft, $product ] = $this->draft_course_order( $older );
+
+		$newer = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$newer->add_product( wc_get_product( $product ), 1 );
+		$newer->set_status( 'processing' );
+		$newer->save();
+
+		$granted = ( new WooCommerce() )->retry_orders_for_course( $draft );
+		$this->assertSame( 0, $granted, 'Still a draft: nothing can be granted yet.' );
+
+		wp_update_post( [ 'ID' => $draft, 'post_status' => 'publish' ] );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $draft ) ), 'The newest matching order is inside the bound.' );
+		$this->assertFalse( Roles::user_has( $older, Roles::access_slug( $draft ) ), 'The bound applies to matching orders only; the older one is past it.' );
+
+		remove_all_filters( 'anchor_courses_wc_retry_order_limit' );
+		remove_role( Roles::access_slug( $draft ) );
+	}
 }

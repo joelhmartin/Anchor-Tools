@@ -191,4 +191,58 @@ class Test_Courses_Wc_Mapping extends Anchor_Courses_TestCase {
 	public function test_the_module_constructs_the_adapter_when_woocommerce_is_active() {
 		$this->assertInstanceOf( WooCommerce::class, $this->courses()->woocommerce );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Phase 5 final review I4 - unpublished courses are mappable in the UI.
+	 * ------------------------------------------------------------------- */
+
+	/** @return int[] The option values the rendered panel marks selected. */
+	private function selected_in_panel(): array {
+		global $post;
+		$post = get_post( $this->product );
+
+		ob_start();
+		( new WooCommerce() )->render_product_panel();
+		$html = (string) ob_get_clean();
+
+		preg_match_all( '/<option value="(\d+)" selected="selected">/', $html, $m );
+		return array_map( 'intval', $m[1] );
+	}
+
+	public function test_the_panel_lists_unpublished_courses_and_labels_a_draft() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$draft   = self::factory()->post->create( [ 'post_type' => 'anchor_course', 'post_status' => 'draft', 'post_title' => 'Staged Course' ] );
+		$pending = self::factory()->post->create( [ 'post_type' => 'anchor_course', 'post_status' => 'pending', 'post_title' => 'Pending Course' ] );
+		$future  = self::factory()->post->create( [ 'post_type' => 'anchor_course', 'post_status' => 'future', 'post_title' => 'Future Course', 'post_date' => gmdate( 'Y-m-d H:i:s', time() + WEEK_IN_SECONDS ) ] );
+
+		global $post;
+		$post = get_post( $this->product );
+		ob_start();
+		( new WooCommerce() )->render_product_panel();
+		$html = (string) ob_get_clean();
+
+		$this->assertMatchesRegularExpression( '/<option value="' . $draft . '"[^>]*>Staged Course \(draft\)<\/option>/', $html );
+		$this->assertStringContainsString( 'value="' . $pending . '"', $html );
+		$this->assertStringContainsString( 'value="' . $future . '"', $html );
+	}
+
+	public function test_a_draft_mapping_is_shown_checked_and_survives_a_product_save() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$draft = self::factory()->post->create( [ 'post_type' => 'anchor_course', 'post_status' => 'draft', 'post_title' => 'Staged Course' ] );
+		WooCommerce::set_courses_for_product( $this->product, [ $this->course_a, $draft ] );
+
+		$selected = $this->selected_in_panel();
+		$this->assertContains( $draft, $selected, 'The draft mapping must appear checked in the panel.' );
+
+		// Save the product exactly as the browser would: the panel's own
+		// selected options are what gets posted back.
+		$_POST = [
+			WooCommerce::NONCE  => wp_create_nonce( WooCommerce::NONCE ),
+			'anchor_course_ids' => array_map( 'strval', $selected ),
+		];
+		( new WooCommerce() )->save_product( $this->product );
+		$_POST = [];
+
+		$this->assertSame( [ $this->course_a, $draft ], WooCommerce::courses_for_product( $this->product ) );
+	}
 }

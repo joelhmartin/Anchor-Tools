@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.32.0
+Stable tag: 3.32.1
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,25 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.32.1 =
+
+Fixes found by the end-to-end suite (green for the first time since 3.24.0):
+
+* Events Manager: the front-end `[event_manager]` form fataled for a signed-in
+  manager in 3.31.0 and 3.32.0 (the Access section called an admin-only
+  WordPress function). Do not run those two versions on a site that uses the
+  front-end manager; update straight to 3.32.1.
+* Events Manager: a group parent event rendered the "Choose a date" picker twice
+  on the plugin's default single-event template (since 3.24.0). Themes that
+  render their own picker were not affected.
+* Compliance: a per-element consent opt-out, `data-anchor-consent-exempt`, for a
+  `<script>` or `<iframe>` that IS the service the visitor asked for. Honoured
+  by the output rewrite and the front-end iframe guard; never by `<img>`
+  pixels; text inside another attribute's value does not count. The events
+  module's hosted stream player carries it, so an entitled attendee's room no
+  longer shows an "Accept & Load" placeholder in strict posture while the rest
+  of the page stays gated.
 
 = 3.32.0 =
 

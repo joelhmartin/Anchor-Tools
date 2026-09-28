@@ -4,7 +4,10 @@ declare(strict_types=1);
 namespace Anchor\Courses\Integrations;
 
 use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Support\Accounts;
 use Anchor\Courses\Support\Capabilities;
+use Anchor\Courses\Support\Log;
+use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -28,6 +31,18 @@ final class WooCommerce {
 
 	public const NONCE = 'anchor_courses_product_nonce';
 
+	/**
+	 * Order statuses that grant access.
+	 *
+	 * Both `processing` and `completed` by default: this store confirms event
+	 * tickets on `processing`, and a learner who has paid should not wait for a
+	 * human to tick "completed" (design spec 4).
+	 */
+	public const ENROLL_STATUSES = [ 'processing', 'completed' ];
+
+	/** Bound on the retry-on-publish order scan (progress.md T39 ruling 2). */
+	public const RETRY_ORDER_LIMIT = 200;
+
 	public function __construct() {
 		\add_filter( 'woocommerce_product_data_tabs', [ $this, 'add_product_tab' ] );
 		\add_action( 'woocommerce_product_data_panels', [ $this, 'render_product_panel' ] );
@@ -36,6 +51,16 @@ final class WooCommerce {
 		// Turn the course page's "Ask us about access" line into a real link
 		// when something on this store sells the course.
 		\add_filter( 'anchor_courses_access_cta', [ $this, 'filter_access_cta' ], 10, 3 );
+
+		// Grant access the moment a qualifying order lands (Task 39, brief 18).
+		\add_action( 'woocommerce_order_status_changed', [ $this, 'on_order_status_changed' ], 10, 4 );
+
+		// Retry-on-publish (progress.md T39 ruling 2): Task 38's mapping
+		// deliberately allows staging a draft/private course, so an order that
+		// already paid while the course was unpublished never got the grant.
+		// The moment the course publishes, re-run the grant for every
+		// already-qualifying order whose lines map to it.
+		\add_action( 'transition_post_status', [ $this, 'on_course_published' ], 10, 3 );
 	}
 
 	public static function available(): bool {
@@ -231,5 +256,253 @@ final class WooCommerce {
 			'label'   => \__( 'Enrol', 'anchor-schema' ),
 			'message' => '',
 		];
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Order-driven enrolment (Task 39, brief 18, design spec 4).
+	 * ------------------------------------------------------------------- */
+
+	/** @return string[] */
+	public static function qualifying_statuses(): array {
+		/**
+		 * Filter the order statuses that grant course access.
+		 *
+		 * @param string[] $statuses
+		 */
+		$statuses = (array) \apply_filters( 'anchor_courses_wc_enroll_statuses', self::ENROLL_STATUSES );
+
+		return \array_values( \array_filter( \array_map( 'sanitize_key', $statuses ) ) );
+	}
+
+	/** `woocommerce_order_status_changed`. */
+	public function on_order_status_changed( $order_id, $from, $to, $order = null ): void {
+		if ( ! \in_array( \sanitize_key( (string) $to ), self::qualifying_statuses(), true ) ) {
+			return;
+		}
+
+		$this->enroll_order( (int) $order_id );
+	}
+
+	/**
+	 * Give the order's customer the access role for every course its lines
+	 * grant. Support\Roles' listener turns each grant into an enrolment row
+	 * (source `woocommerce`, source_id the order id) - this method never
+	 * writes an enrolment row itself, and never calls EnrollmentService::enroll()
+	 * directly: `Roles::grant_access()` is the only enrol path (progress.md).
+	 *
+	 * Idempotent: a course the customer already holds the access role for is
+	 * skipped, so a duplicate `woocommerce_order_status_changed` fire (or a
+	 * later retry-on-publish pass) grants nothing new.
+	 *
+	 * @return int How many access roles were NEWLY granted.
+	 */
+	public function enroll_order( int $order_id ): int {
+		if ( ! \function_exists( 'wc_get_order' ) ) {
+			return 0;
+		}
+
+		$order = \wc_get_order( $order_id );
+		if ( ! $order ) {
+			return 0;
+		}
+
+		$user_id = self::customer_for_order( $order );
+		if ( $user_id <= 0 ) {
+			// A guest order with no resolvable/creatable account: progress
+			// needs an identity, and Accounts::ensure_user() already tried.
+			Log::write( 'wc_order_no_customer', [ 'order' => $order_id ] );
+			return 0;
+		}
+
+		$granted = 0;
+
+		foreach ( $order->get_items() as $item ) {
+			if ( ! \is_object( $item ) || ! \method_exists( $item, 'get_product_id' ) ) {
+				continue;
+			}
+			if ( (int) $item->get_product_id() <= 0 ) {
+				continue;
+			}
+
+			foreach ( self::courses_for_item( $item ) as $course_id ) {
+				if ( Roles::user_has( $user_id, Roles::access_slug( $course_id ) ) ) {
+					continue; // Already has access: nothing new (brief 26).
+				}
+
+				// The grant - not enroll(). The role is the enrolment, and
+				// grant_access() carries the source through to the listener.
+				$result = Roles::grant_access( $user_id, $course_id, 'woocommerce', (string) $order_id );
+
+				if ( \is_wp_error( $result ) ) {
+					$code = (string) $result->get_error_code();
+
+					Log::write( 'wc_grant_failed', [ 'order' => $order_id, 'course' => $course_id, 'code' => $code ] );
+
+					// missing_prerequisite: the buyer does not hold a required
+					// role yet. no_course: the mapped course is still
+					// draft/private (Task 38 deliberately allows staging such a
+					// mapping) - both are refusals a human should see on the
+					// order (progress.md T39 ruling 1), and neither refunds,
+					// cancels or fails the order: money already changed hands,
+					// and that decision belongs to a shop manager, not this
+					// adapter.
+					$note_codes = [
+						'missing_prerequisite' => 'blocked_prerequisite',
+						'no_course'            => 'blocked_no_course',
+					];
+
+					if ( isset( $note_codes[ $code ] ) && \method_exists( $order, 'add_order_note' ) ) {
+						$order->add_order_note(
+							\sprintf(
+								/* translators: 1: internal reason code, 2: course title, 3: human-readable reason. */
+								\__( '%1$s: access to "%2$s" was not granted. %3$s', 'anchor-schema' ),
+								$note_codes[ $code ],
+								(string) \get_the_title( $course_id ),
+								(string) $result->get_error_message()
+							)
+						);
+					}
+
+					continue;
+				}
+
+				$granted++;
+			}
+		}
+
+		return $granted;
+	}
+
+	/**
+	 * The user this order enrols. A guest order (no customer_id) resolves or
+	 * creates an account from the billing details, exactly as the events
+	 * module does for a seat with no attendee data of its own
+	 * (`Entitlements::create_account()`) - `Accounts::ensure_user()` sends no
+	 * welcome email, because staff/checkout added this person, they did not
+	 * sign themselves up.
+	 *
+	 * @param mixed $order A WC_Order.
+	 */
+	public static function customer_for_order( $order ): int {
+		if ( ! \is_object( $order ) || ! \method_exists( $order, 'get_customer_id' ) ) {
+			return 0;
+		}
+
+		$user_id = (int) $order->get_customer_id();
+		if ( $user_id > 0 ) {
+			return $user_id;
+		}
+
+		if ( ! \method_exists( $order, 'get_billing_email' ) ) {
+			return 0;
+		}
+
+		$email = (string) $order->get_billing_email();
+		$first = \method_exists( $order, 'get_billing_first_name' ) ? (string) $order->get_billing_first_name() : '';
+		$last  = \method_exists( $order, 'get_billing_last_name' ) ? (string) $order->get_billing_last_name() : '';
+		$name  = \trim( $first . ' ' . $last );
+
+		return Accounts::ensure_user( $name, $email );
+	}
+
+	/**
+	 * Which courses does this order line grant?
+	 *
+	 * The variation's own mapping wins when it is non-empty; only when a
+	 * variation has no mapping of its own do we fall back to its parent
+	 * product's (progress.md T39 ruling 3) - a variation is free to grant
+	 * nothing even when its parent grants something.
+	 *
+	 * @param mixed $item A WC_Order_Item_Product.
+	 * @return int[]
+	 */
+	private static function courses_for_item( $item ): array {
+		if ( ! \is_object( $item ) || ! \method_exists( $item, 'get_product_id' ) ) {
+			return [];
+		}
+
+		$variation_id = \method_exists( $item, 'get_variation_id' ) ? (int) $item->get_variation_id() : 0;
+		if ( $variation_id > 0 ) {
+			$courses = self::courses_for_product( $variation_id );
+			if ( [] !== $courses ) {
+				return $courses;
+			}
+		}
+
+		return self::courses_for_product( (int) $item->get_product_id() );
+	}
+
+	/**
+	 * `transition_post_status`: retry-on-publish (progress.md T39 ruling 2).
+	 *
+	 * @param mixed $post A WP_Post.
+	 */
+	public function on_course_published( string $new_status, string $old_status, $post ): void {
+		if ( 'publish' !== $new_status || 'publish' === $old_status ) {
+			return;
+		}
+		if ( ! $post instanceof \WP_Post || CoursePostType::CPT !== $post->post_type ) {
+			return;
+		}
+
+		$this->retry_orders_for_course( (int) $post->ID );
+	}
+
+	/**
+	 * Re-run the grant for every already-qualifying order whose lines map to
+	 * this course. Idempotent (grant_access() no-ops for a role already held),
+	 * which is what makes it safe to run on every publish, not only the first.
+	 *
+	 * Bounded to the most recent RETRY_ORDER_LIMIT qualifying orders: this is a
+	 * retry for orders that paid while a mapped course was still draft/private,
+	 * not an unbounded historical backfill.
+	 *
+	 * @return int How many access roles were newly granted across all matching orders.
+	 */
+	public function retry_orders_for_course( int $course_id ): int {
+		if ( ! \function_exists( 'wc_get_orders' ) || $course_id <= 0 ) {
+			return 0;
+		}
+
+		$order_ids = \wc_get_orders(
+			[
+				'status'  => self::qualifying_statuses(),
+				'limit'   => self::RETRY_ORDER_LIMIT,
+				'return'  => 'ids',
+				'orderby' => 'date',
+				'order'   => 'DESC',
+			]
+		);
+		$order_ids = \is_array( $order_ids ) ? $order_ids : [];
+
+		if ( \count( $order_ids ) >= self::RETRY_ORDER_LIMIT ) {
+			// Not silently dropped: a store with more qualifying orders than the
+			// bound needs a human to notice and, if it matters, resync by hand.
+			Log::write( 'wc_retry_capped', [ 'course' => $course_id, 'limit' => self::RETRY_ORDER_LIMIT ] );
+		}
+
+		$granted = 0;
+
+		foreach ( $order_ids as $order_id ) {
+			$order = \wc_get_order( (int) $order_id );
+			if ( ! $order ) {
+				continue;
+			}
+
+			$matches = false;
+			foreach ( $order->get_items() as $item ) {
+				if ( \in_array( $course_id, self::courses_for_item( $item ), true ) ) {
+					$matches = true;
+					break;
+				}
+			}
+			if ( ! $matches ) {
+				continue;
+			}
+
+			$granted += $this->enroll_order( (int) $order_id );
+		}
+
+		return $granted;
 	}
 }

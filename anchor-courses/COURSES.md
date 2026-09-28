@@ -614,7 +614,12 @@ Templates (`single-course`, `single-lesson`, `course`, `lesson`, `quiz`,
 
 ## REST (`anchor-courses/v1`)
 
-All routes require a signed-in user (`Routes::require_login`, 401 otherwise).
+Quiz and `/me/` routes require a signed-in user (`Routes::require_login`, 401
+otherwise). The `/courses` catalogue (Task 33) is readable by anyone the
+`anchor_course` post type is itself readable by (`Routes::public_read()` -
+not `__return_true`; a site that makes courses non-public closes the
+catalogue with it) and carries no learner data - `progress`/`enrollment`
+never appear on a logged-out (or unenrolled) response.
 
 | Method | Route | Args | Success |
 |---|---|---|---|
@@ -622,6 +627,24 @@ All routes require a signed-in user (`Routes::require_login`, 401 otherwise).
 | GET | `/quiz-attempts/{id}` | `course_id` (optional) | 200, attempt (questions while open); applies the timer first |
 | POST | `/quiz-attempts/{id}/answer` | `question_id`, `value` (string or up to 50 strings), `course_id` (optional) | 200 `{saved:true}` |
 | POST | `/quiz-attempts/{id}/submit` | `answers` (object, question_id => value), `course_id` (optional) | 200, graded attempt |
+| GET | `/courses` | `per_page` (20), `page` (1) | 200, published courses (id, title, excerpt, permalink, instructor, duration, difficulty, `ce_credits`, `progression_mode`, `item_count`) - no learner data |
+| GET | `/courses/{id}` | - | 200, one course summary; 404 `no_course` when absent/unpublished |
+| GET | `/courses/{id}/curriculum` | - | 200, modules -> items with `type`/`id`/`title`/`required` only - never a quiz's questions or answers |
+| GET | `/me/courses` | - | 200, the signed-in learner's own enrolments (`course_id`, `title`, `permalink`, `status`, `percent`) |
+| GET | `/me/courses/{id}/progress` | - | 200, `ProgressService::get_course_progress()->to_array()` for the signed-in learner |
+| POST | `/lessons/{id}/start` | `course_id` (required) | 200, `Progress::to_array()`; 403 `locked` when `ProgressService::start_lesson()` refuses (not enrolled, not in the course, or sequential gating) |
+| POST | `/lessons/{id}/complete` | `course_id` (required) | 200, `Progress::to_array()`; service `WP_Error` mapped through `Routes::error_response()` (403 `not_enrolled`, `not_in_course`, `locked`; 503 `save_failed`; 400 `quiz_required`, unmapped) |
+| GET | `/me/certificates` | - | 200, the signed-in learner's certificates + `course_title` |
+| GET | `/me/credits` | - | 200 `{credits:[...], total}` for the signed-in learner |
+
+There is no `POST /courses/{id}/enroll`: a REST enrol route is self-enrolment
+with a JSON body, and self-enrolment does not exist (design spec 7). Access
+is a role, and the things that may hand one out - the Learners tab, the
+WooCommerce adapter - are both server-side; a client that needs to know
+whether it may show a "buy" link reads `/me/courses`. Every `/me/` and
+`/lessons/{id}/*` callback reads `get_current_user_id()` and ignores any
+`user_id` in the request, so one learner can never address another's records
+(brief 25).
 
 Attempt routes check ownership first (`no_attempt` 404, `attempt_not_yours` 403),
 then course context (audit F05): the attempt row's `course_id` is authoritative,

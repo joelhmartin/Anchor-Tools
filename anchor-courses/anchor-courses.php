@@ -86,9 +86,14 @@ class Module {
 		);
 		$this->progress->set_completion_service( $this->completion );
 
-		// The quiz REST surface (Task 26). Routes::__construct() only hooks
-		// rest_api_init; nothing else needs this instance, so it is not kept.
-		new Rest\Routes( new Rest\QuizController( $this->quizzes ) );
+		// The quiz, course-catalogue and learner REST surfaces (Tasks 26, 33).
+		// Routes::__construct() only hooks rest_api_init; nothing else needs
+		// this instance, so it is not kept.
+		new Rest\Routes(
+			new Rest\QuizController( $this->quizzes ),
+			new Rest\CoursesController(),
+			new Rest\MeController( $this->enrollments, $this->progress, $this->credits, $this->certificates )
+		);
 
 		// admin-post.php, not wp-admin, so it must be constructed unconditionally
 		// (not inside the is_admin() block above) - the handler runs on requests

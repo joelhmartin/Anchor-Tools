@@ -113,7 +113,9 @@ final class Analytics {
 		$payload = self::payload_for( $event, $args );
 
 		/**
-		 * Filter (or drop) one dataLayer event before it is queued.
+		 * Filter (or drop) one dataLayer event before it is queued. The
+		 * allow-list is re-applied to whatever this returns (store()), so a
+		 * filter can remove or change allowed keys but never add others.
 		 *
 		 * @param array|null $payload Return null (or an empty array) to drop the event entirely.
 		 * @param string     $event   The dataLayer event name (EVENTS value, not the hook name).
@@ -224,8 +226,18 @@ final class Analytics {
 				break;
 		}
 
-		// Belt and braces: whatever a filter or a future hook adds, only the
-		// allow-listed keys ever survive.
+		return self::allowed( $payload );
+	}
+
+	/**
+	 * Strip a payload to ALLOWED_KEYS. Applied in store() - the single point
+	 * every event passes on its way into the queue, AFTER the
+	 * `anchor_courses_datalayer_event` filter and for queue()'s own callers
+	 * alike - so no filter or custom caller can add a key the hard rule
+	 * forbids. (payload_for() applies it too, so its own return value is
+	 * already clean for anybody reading it directly.)
+	 */
+	private static function allowed( array $payload ): array {
 		return \array_intersect_key( $payload, \array_flip( self::ALLOWED_KEYS ) );
 	}
 
@@ -234,7 +246,8 @@ final class Analytics {
 	 * entry point (a site's own code can call this to queue a custom event
 	 * the same way this module queues its own); `record()` above does not
 	 * use it, since it queues by the event's subject rather than by whoever
-	 * is currently logged in - see its docblock.
+	 * is currently logged in - see its docblock. The same allow-list applies
+	 * (store()): keys outside ALLOWED_KEYS are dropped, `event` is kept.
 	 */
 	public static function queue( string $event, array $payload ): void {
 		$payload['event'] = $event;
@@ -245,7 +258,7 @@ final class Analytics {
 		if ( $user_id <= 0 ) {
 			return;
 		}
-		self::queue_instance()->push( $user_id, $payload );
+		self::queue_instance()->push( $user_id, self::allowed( $payload ) );
 	}
 
 	/** @return array<int,array<string,mixed>> */

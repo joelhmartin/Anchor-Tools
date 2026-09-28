@@ -218,4 +218,33 @@ class Test_Courses_Analytics extends Anchor_Courses_TestCase {
 		( new Analytics() )->print_events();
 		$this->assertSame( '', trim( (string) ob_get_clean() ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Phase 5 final review M1 - the allow-list runs after the filter, and on queue().
+	 * ------------------------------------------------------------------- */
+
+	public function test_a_filter_cannot_add_pii_to_a_payload() {
+		add_filter(
+			'anchor_courses_datalayer_event',
+			static function ( $payload ) {
+				$payload['email']        = 'ada@example.test';
+				$payload['display_name'] = 'Ada Lovelace';
+				return $payload;
+			}
+		);
+
+		( new EnrollmentService() )->enroll( $this->user, $this->course );
+
+		$queued = Analytics::pending( $this->user );
+		$this->assertSame( 'course_enrolled', $queued[0]['event'] );
+		$this->assertArrayNotHasKey( 'email', $queued[0], 'The allow-list must run AFTER the filter.' );
+		$this->assertArrayNotHasKey( 'display_name', $queued[0] );
+	}
+
+	public function test_queue_applies_the_allow_list_too() {
+		Analytics::queue( 'custom_event', [ 'course_id' => 5, 'email' => 'ada@example.test', 'user_id' => $this->user ] );
+
+		$queued = Analytics::pending( $this->user );
+		$this->assertSame( [ 'course_id' => 5, 'event' => 'custom_event' ], $queued[0] );
+	}
 }

@@ -15384,11 +15384,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // keeps meaning the raw provider URL so legacy templates are untouched.
         $room_link = $this->room_link_for_recipient( $event_id, [ 'seat' => $seat ] );
 
+        // Confirmation/reminder/cancellation/roster emails all read event_date
+        // and event_time from here (send_confirmation_email(), send_reminder_
+        // email(), send_roster_email(), documented_email_preview_ctx()) — the
+        // event's own zone, the same event_timezone( $meta ) the room and
+        // render_room_schedule() render with, not the site's (this used to be
+        // a bare wp_date() with no third argument, so a reminder could quote
+        // a different clock time than the room for the same session).
+        $tz = $this->event_timezone( $meta );
+
         return [
             'event_title'  => $event_id ? \get_the_title( $event_id ) : \get_bloginfo( 'name' ),
             'event_url'    => $event_id ? \get_permalink( $event_id ) : \home_url(),
-            'event_date'   => $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '',
-            'event_time'   => ( $start_ts && empty( $meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '',
+            'event_date'   => $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts, $tz ) : '',
+            'event_time'   => ( $start_ts && empty( $meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts, $tz ) : '',
             'venue'        => $venue,
             'days_until'   => $days_until,
             'attendee_name'=> (string) ( $seat['name'] ?? '' ),
@@ -16239,8 +16248,9 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // default constant), then expand the same scalar+block token set into it.
         $template = $this->resolve_email_template( $type, $event_id );
 
-        $start_ts = (int) ( $event_meta['start_ts'] ?? 0 );
-        $venue    = '';
+        $start_ts   = (int) ( $event_meta['start_ts'] ?? 0 );
+        $event_tz   = $this->event_timezone( $event_meta );
+        $venue      = '';
         if ( ! empty( $event_meta['virtual'] ) ) {
             $venue = __( 'Online', 'anchor-schema' );
         } elseif ( ! empty( $event_meta['venue'] ) ) {
@@ -16271,8 +16281,8 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'join_link'     => esc_url( $join_url ),
             'room_link'     => esc_url( $room_link ),
             'event_url'     => esc_url( $event_id ? \get_permalink( $event_id ) : \home_url() ),
-            'event_date'    => esc_html( $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '' ),
-            'event_time'    => esc_html( ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '' ),
+            'event_date'    => esc_html( $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts, $event_tz ) : '' ),
+            'event_time'    => esc_html( ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts, $event_tz ) : '' ),
             'venue'         => esc_html( $venue ),
             'days_until'    => esc_html( ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '' ),
 

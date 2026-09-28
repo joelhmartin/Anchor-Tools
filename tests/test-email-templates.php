@@ -728,6 +728,85 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 		remove_role( 'anchor_event_' . $event_id );
 	}
 
+	/**
+	 * `Module::OPTION_KEY`'s `timezone_mode` helper (mirrors
+	 * tests/test-timezone.php's set_timezone_mode()).
+	 */
+	private function set_timezone_mode( string $mode ): void {
+		$settings                  = get_option( Module::OPTION_KEY, [] );
+		$settings                  = is_array( $settings ) ? $settings : [];
+		$settings['timezone_mode'] = $mode;
+		update_option( Module::OPTION_KEY, $settings );
+		$this->module()->clear_caches();
+	}
+
+	/**
+	 * email_tokens() feeds event_date/event_time to every lifecycle email
+	 * (confirmation, reminder, cancellation, roster - send_confirmation_
+	 * email(), send_reminder_email(), send_roster_email() all read it) and
+	 * to build_registration_email_html()'s own {event_date}/{event_time}
+	 * scalars. Both used to call wp_date() with no third argument, so an
+	 * attendee reminder could quote a different clock time than the room
+	 * for the exact same session once timezone_mode=event (Codex +
+	 * CodeRabbit, PR #36). One derivation: event_timezone( $meta ), the
+	 * same the room's render_room_schedule() and get_sessions() already use.
+	 */
+	public function test_email_tokens_event_time_matches_the_event_timezone_not_the_site() {
+		update_option( 'timezone_string', 'UTC' );
+		$this->set_timezone_mode( 'event' );
+
+		$start_ts = time() + DAY_IN_SECONDS;
+		$event_id = $this->make_event( [
+			'registration_mode' => 'free',
+			'timezone'          => 'America/Denver',
+			'start_ts'          => $start_ts,
+			'end_ts'            => $start_ts + 3600,
+		] );
+
+		$denver_time = wp_date( get_option( 'time_format' ), $start_ts, new DateTimeZone( 'America/Denver' ) );
+		$site_time   = wp_date( get_option( 'time_format' ), $start_ts, new DateTimeZone( 'UTC' ) );
+		$this->assertNotSame( $denver_time, $site_time, 'Precondition: Denver and UTC must actually differ.' );
+
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id ] );
+
+		$this->assertSame( $denver_time, $tokens['event_time'] );
+
+		// build_registration_email_html()'s own {event_date}/{event_time}
+		// scalars (used by any per-event custom template that spells the
+		// token literally) must resolve to the same zone, not a second one.
+		$html = $this->module()->build_registration_email_html( [
+			'event_id'      => $event_id,
+			'name'          => 'Denver Attendee',
+			'status'        => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+			'intro_message' => '',
+			'detail_rows'   => [ [ 'label' => 'Time', 'value' => $tokens['event_time'] ] ],
+			'cta_label'     => '',
+			'cta_url'       => '',
+			'type'          => 'confirmation',
+		] );
+		$this->assertStringContainsString( esc_html( $denver_time ), $html );
+	}
+
+	/** timezone_mode=site (the default) still renders the site's own zone. */
+	public function test_email_tokens_event_time_falls_back_to_the_site_timezone_when_timezone_mode_is_site() {
+		update_option( 'timezone_string', 'UTC' );
+		$this->set_timezone_mode( 'site' );
+
+		$start_ts = time() + DAY_IN_SECONDS;
+		$event_id = $this->make_event( [
+			'registration_mode' => 'free',
+			'timezone'          => 'America/Denver', // present, but ignored under timezone_mode=site.
+			'start_ts'          => $start_ts,
+			'end_ts'            => $start_ts + 3600,
+		] );
+
+		$site_time = wp_date( get_option( 'time_format' ), $start_ts, new DateTimeZone( 'UTC' ) );
+
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id ] );
+
+		$this->assertSame( $site_time, $tokens['event_time'] );
+	}
+
 	/** A switched-off event's confirmation resolves no account at all. */
 	public function test_room_link_is_inert_when_the_switch_is_off() {
 		$event_id = $this->make_event( [

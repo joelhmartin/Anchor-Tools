@@ -195,7 +195,14 @@ final class Events {
 	 * `resolved_sessions()` already includes them, so this is defensive
 	 * against a future narrowing, not the primary path.
 	 *
-	 * @return array<int,array{label:string,date:string,start_time:string,end_time:string,start_ts:int,end_ts:int,modality:string}>
+	 * `timezone` is the zone NAME every row was resolved in - the same
+	 * `event_timezone( $event_id )` the room itself renders with (below),
+	 * so a `live_session` lesson can print `wp_date( ..., $start_ts, $tz )`
+	 * and never disagree with the room over what clock time a session is at
+	 * (the defect this class exists to close: the lesson used to render in
+	 * the SITE zone via a bare `wp_date()` call with no third argument).
+	 *
+	 * @return array<int,array{label:string,date:string,start_time:string,end_time:string,start_ts:int,end_ts:int,modality:string,timezone:string}>
 	 */
 	public static function sessions( int $event_id ): array {
 		if ( ! self::available() || ! self::event_exists( $event_id ) ) {
@@ -207,8 +214,9 @@ final class Events {
 			return [];
 		}
 
-		$rows = (array) $module->resolved_sessions( $event_id );
-		$out  = [];
+		$rows    = (array) $module->resolved_sessions( $event_id );
+		$out     = [];
+		$tz_name = self::event_timezone( $event_id )->getName();
 
 		foreach ( $rows as $row ) {
 			if ( ! \is_array( $row ) ) {
@@ -237,10 +245,38 @@ final class Events {
 				'start_ts'   => \max( 0, $start_ts ),
 				'end_ts'     => \max( 0, $end_ts ),
 				'modality'   => (string) ( $row['modality'] ?? 'in_person' ),
+				'timezone'   => $tz_name,
 			];
 		}
 
 		return $out;
+	}
+
+	/**
+	 * The zone an event's session times render in - reuses the events
+	 * module's OWN `Module::event_timezone( $meta )` (the single derivation;
+	 * see the class docblock's "Courses never re-derives" rule), fed the
+	 * same `get_meta( $event_id )` shape `resolved_sessions()` and the
+	 * room's `render_room_schedule()` both read it from. Falls back to
+	 * `wp_timezone()` - the SITE zone - when the events module is absent,
+	 * the event id does not resolve, or either method is missing (a future
+	 * narrowing of the module's public API), so a `live_session` lesson
+	 * degrades to today's site-zone rendering rather than fataling.
+	 */
+	public static function event_timezone( int $event_id ): \DateTimeZone {
+		if ( ! self::available() || ! self::event_exists( $event_id ) ) {
+			return \wp_timezone();
+		}
+
+		$module = \Anchor\Events\Module::instance();
+		if ( ! \method_exists( $module, 'get_meta' ) || ! \method_exists( $module, 'event_timezone' ) ) {
+			return \wp_timezone();
+		}
+
+		$meta = (array) $module->get_meta( $event_id );
+		$tz   = $module->event_timezone( $meta );
+
+		return $tz instanceof \DateTimeZone ? $tz : \wp_timezone();
 	}
 
 	/**

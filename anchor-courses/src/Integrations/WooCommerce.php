@@ -496,9 +496,14 @@ final class WooCommerce {
 
 		if ( $result['declined'] ) {
 			Log::write( 'wc_account_declined', [ 'order' => $order_id ] );
-			$order->add_order_note(
-				\__( 'account_not_created: this order grants a course, but the anchor_courses_create_account filter declined to create an account for the buyer, so no access was granted.', 'anchor-schema' )
-			);
+			// One note per order, not one per status transition.
+			if ( '' === (string) $order->get_meta( '_anchor_courses_wc_account_declined', true ) ) {
+				$order->add_order_note(
+					\__( 'account_not_created: this order grants a course, but the anchor_courses_create_account filter declined to create an account for the buyer, so no access was granted.', 'anchor-schema' )
+				);
+				$order->update_meta_data( '_anchor_courses_wc_account_declined', '1' );
+				$order->save();
+			}
 			return 0;
 		}
 

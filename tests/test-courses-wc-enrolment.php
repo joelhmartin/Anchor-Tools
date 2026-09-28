@@ -386,6 +386,10 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 		$order = wc_create_order( [ 'customer_id' => $customer ] );
 		$order->add_product( wc_get_product( $product ), 1 );
 		$order->set_status( $status );
+		// Backdated a day: the retry test needs this order to be OLDER than the
+		// filler orders, or a newest-first scan would still find it by tie order
+		// and the test could not distinguish the two implementations.
+		$order->set_date_created( time() - DAY_IN_SECONDS );
 		$order->save();
 
 		return [ $draft, $product, $order ];

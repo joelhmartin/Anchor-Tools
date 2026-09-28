@@ -1031,7 +1031,9 @@ read from WooCommerce's order-item tables (`woocommerce_order_items` +
 HPOS order stores; not `wc_order_product_lookup`, which is filled by an
 asynchronous Action Scheduler import). The bound is the newest
 `anchor_courses_wc_retry_order_limit` (default `RETRY_ORDER_LIMIT`, 500)
-matching orders - it counts course orders only, not the whole store - and
+matching orders - it counts course orders only, not the whole store, but
+of ANY status (failed, cancelled and refund records included), so a course
+with many abandoned attempts can push older paid orders past the bound - and
 hitting it is logged (`wc_retry_capped`); older orders past the bound need
 a manual resync (`enroll_order( $order_id )`). Each order is then checked
 for a qualifying status and re-resolved line by line before granting.
@@ -1125,8 +1127,11 @@ When the stream veto (below) would refuse this learner the room, the
 template shows the veto's notice - "Finish the earlier lessons in {course}
 first." with a link to the unfinished lesson - **instead of** the Join
 button. It asks `Events::prework_block()`, the same decision
-`veto_stream_access()` makes, for the lesson's own `session_index`, so the
-lesson page and the room can never disagree.
+`veto_stream_access()` makes, for the lesson's own `session_index`. The room
+asks the same function for the session that is live RIGHT NOW, so when a
+lesson is bound to a different session than the one streaming, the lesson
+page and the room can legitimately show different states - each is answering
+for its own session.
 
 The events module's own event page has a separate "Join here" link
 (`Module::can_view_virtual_link()`); that is events-side behaviour and it

@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.31.0
+Stable tag: 3.32.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,42 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.32.0 =
+
+Anchor Courses - Phase 5 (module still ships OFF; enable it under Anchor Tools
+Settings > Modules):
+
+* REST API under `anchor-courses/v1`: course catalogue and curriculum (published
+  items only), learner progress / lesson start + complete / quiz attempts, and
+  admin reporting (learners, completions, credits - capped, with `total` and
+  `truncated`). Every service error maps through one status table (see
+  COURSES.md); unpublished lessons answer 404 `no_lesson`.
+* dataLayer analytics: course and lesson events are queued per subject and
+  flushed to the page; off by default, toggle `anchor_courses_analytics_enabled`.
+* Live-session lesson type: a lesson can point at an Events Manager event and
+  renders its schedule plus the room link through the events module's own read
+  API. Trashed or deleted events read as "Live session unavailable."
+* Stream pre-work veto: a course can require its earlier lessons before the
+  learner may enter an event's livestream (`anchor_events_can_access_stream`);
+  deny-only, enrolled learners only, staff exempt.
+* WooCommerce: map any product or variation to one or more courses (drafts
+  allowed; `none` opts a variation out). Paid orders grant the course role via
+  the single enrol path; guest checkout creates a no-mail account only for
+  course orders; a course that was not grantable at purchase is granted when
+  it becomes so. Refunds revoke per order line - a role survives while another
+  paid line on the order still carries the course; amount-only full refunds
+  revoke every line.
+* Session times in live-session lessons and in event confirmation, reminder and
+  roster emails now render in the same zone as the room: the event's own
+  timezone when the events setting "Timezone behavior" is set to the event, the
+  site timezone otherwise (the default, so nothing changes until you opt in).
+* COURSES.md documents the whole module; a test keeps its hook list in sync
+  with the code.
+
+Known limitations (documented in COURSES.md): the grants map holds one record
+per course per user, so when two separate orders grant the same course a refund
+of the first still revokes it.
 
 = 3.31.0 =
 

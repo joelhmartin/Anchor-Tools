@@ -281,4 +281,46 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 		$this->assertSame( 100.0, $p->percent );
 		$this->assertTrue( $p->complete );
 	}
+
+	/**
+	 * PR36 round 2, CodeRabbit (Major): a required curriculum that is
+	 * NON-EMPTY but made ENTIRELY of drafts must not complete the course
+	 * under `minimum_percentage` - published_only() leaves $total at 0,
+	 * and percent()'s own zero-total short-circuit returns 100.0, which is
+	 * correct for a genuinely empty curriculum (nothing to do) but wrong
+	 * here: this course has real required work, it is simply all
+	 * unpublished right now.
+	 */
+	public function test_a_draft_only_required_curriculum_does_not_complete_under_minimum_percentage() {
+		update_post_meta( $this->course, '_anchor_course_completion_mode', 'minimum_percentage' );
+		update_post_meta( $this->course, '_anchor_course_completion_percentage', 50 );
+
+		$draft = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'draft', 'post_title' => 'Only Draft' ]
+		);
+
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $draft ] ] ] ] );
+
+		$p = $this->progress->get_course_progress( $this->user, $this->course );
+
+		$this->assertSame( 0, $p->total_required, 'The only required item is a draft - it must not count toward the total.' );
+		$this->assertFalse(
+			$p->complete,
+			'A non-empty required curriculum with zero published items must not complete the course, unlike a genuinely EMPTY curriculum.'
+		);
+	}
+
+	/** The genuinely empty case (no required items at all) is unaffected: still 100% and complete. */
+	public function test_a_genuinely_empty_required_curriculum_still_completes_under_minimum_percentage() {
+		update_post_meta( $this->course, '_anchor_course_completion_mode', 'minimum_percentage' );
+		update_post_meta( $this->course, '_anchor_course_completion_percentage', 50 );
+
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [] ] ] );
+
+		$p = $this->progress->get_course_progress( $this->user, $this->course );
+
+		$this->assertSame( 0, $p->total_required );
+		$this->assertSame( 100.0, $p->percent );
+		$this->assertTrue( $p->complete, 'A genuinely empty curriculum has nothing left to do.' );
+	}
 }

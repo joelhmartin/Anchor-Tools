@@ -274,6 +274,11 @@ final class Events {
 	 * applies across LESSONS below; this is what makes it also apply across
 	 * COURSES for a lesson shared between them.
 	 *
+	 * Only a PUBLISHED live_session lesson gates anything (PR36 round 2,
+	 * Codex): a private or draft one is staged content a learner cannot
+	 * open through any public route, so it must not be able to deny an
+	 * attendee a stream nobody has told them is behind pre-work at all.
+	 *
 	 * @return array<int,array{lesson_id:int,course_id:int,session_index:int}>
 	 */
 	public static function live_lessons_for_event( int $event_id ): array {
@@ -288,7 +293,11 @@ final class Events {
 		$lessons = \get_posts(
 			[
 				'post_type'      => LessonPostType::CPT,
-				'post_status'    => [ 'publish', 'private' ],
+				// PUBLISHED only (PR36 round 2, Codex): a private (or draft)
+				// live_session lesson is staged content a learner cannot
+				// open through any public route, so it must never be able to
+				// gate someone else's event session either.
+				'post_status'    => 'publish',
 				'fields'         => 'ids',
 				'posts_per_page' => -1,
 				'no_found_rows'  => true,

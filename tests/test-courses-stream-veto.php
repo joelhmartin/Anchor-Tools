@@ -533,4 +533,44 @@ class Test_Courses_Stream_Veto extends Anchor_Courses_TestCase {
 			'A draft required lesson must never veto - it cannot be completed through any public route.'
 		);
 	}
+
+	/**
+	 * PR36 round 2 (Codex): a PRIVATE `live_session` lesson is staged
+	 * content - a learner cannot open it through any public route - so it
+	 * must not be able to veto anyone else's event session either. Only a
+	 * PUBLISHED live_session lesson may participate in
+	 * `live_lessons_for_event()`'s gating set.
+	 */
+	public function test_a_private_live_session_lesson_never_vetoes_the_stream() {
+		$event_id     = 6262;
+		$private_live = self::factory()->post->create(
+			[ 'post_type' => \Anchor\Courses\Content\LessonPostType::CPT, 'post_status' => 'private', 'post_title' => 'Private Livestream' ]
+		);
+		update_post_meta( $private_live, '_anchor_lesson_type', 'live_session' );
+		update_post_meta( $private_live, '_anchor_lesson_event_id', $event_id );
+		update_post_meta( $private_live, '_anchor_lesson_session_index', 0 );
+		update_post_meta( $private_live, '_anchor_lesson_require_prior_items', 1 );
+
+		$prework = $this->make_lesson( [], 'Prework For Private' );
+		$course  = $this->make_course( [ 'progression_mode' => 'free' ], 'Private Gate Course' );
+
+		Curriculum::save(
+			$course,
+			[ [ 'title' => 'M', 'items' => [
+				[ 'type' => 'lesson', 'id' => $prework ],
+				[ 'type' => 'lesson', 'id' => $private_live ],
+			] ] ]
+		);
+		Roles::grant_access( $this->user, $course );
+
+		$this->assertSame(
+			[],
+			Events::live_lessons_for_event( $event_id ),
+			'A private live-session lesson must not appear in the gating set at all.'
+		);
+		$this->assertTrue(
+			Events::veto_stream_access( true, $event_id, 0, $this->user ),
+			'A private live-session lesson cannot be opened by an ordinary learner and must not gate an attendee.'
+		);
+	}
 }

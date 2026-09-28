@@ -55,8 +55,9 @@ final class ProgressService {
 		// REST route already hides it, CoursesController::curriculum()), so
 		// counting it against the percentage would hold a course below 100%
 		// for a reason no learner can ever act on.
-		$required  = self::published_only( Curriculum::required_items( $course_id ) );
-		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
+		$all_required = Curriculum::required_items( $course_id );
+		$required     = self::published_only( $all_required );
+		$completed    = ProgressRepository::completed_keys( $user_id, $course_id );
 
 		$done = 0;
 		foreach ( $required as $item ) {
@@ -74,7 +75,17 @@ final class ProgressService {
 		if ( 'all_required_items' === $mode ) {
 			$complete = $total > 0 && $done >= $total;
 		} elseif ( 'minimum_percentage' === $mode ) {
-			$complete = $percent >= (float) CourseEditor::setting( $course_id, 'completion_percentage' );
+			// PR36 round 2, CodeRabbit (Major): percent()'s own zero-total
+			// short-circuit returns 100.0 for ANY $total <= 0, which is
+			// correct for a genuinely EMPTY required curriculum (nothing
+			// left to do) but wrong for a curriculum that is non-empty
+			// before the publish filter above and only empty AFTER it - a
+			// required curriculum made entirely of drafts. That case must
+			// stay incomplete, distinct from the empty one, or a course
+			// could complete for a reason no learner can act on (the exact
+			// hazard the publish filter itself exists to avoid).
+			$complete = [] === $all_required
+				|| ( $total > 0 && $percent >= (float) CourseEditor::setting( $course_id, 'completion_percentage' ) );
 		}
 		// 'manual' never derives completion from items - an admin marks it.
 

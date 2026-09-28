@@ -271,6 +271,21 @@ Progression is governed by the course's `progression_mode`: `sequential`
 the single authority both the lesson gate (`ContentGuard`) and the curriculum
 template consult.
 
+**Unpublished required items never count toward completion.**
+`ProgressService::get_course_progress()` filters `Curriculum::required_items()`
+to `publish` posts before computing `total_required`/`percent()` - a
+draft/pending/private required lesson or quiz cannot be completed through any
+public route, so it must not hold a course below 100% for a reason no learner
+can act on. This makes two curricula that both filter down to zero published
+required items look identical to `percent()` (which returns 100.0 for any
+`$total <= 0`) but they are NOT the same thing for `minimum_percentage`
+completion: a genuinely EMPTY required curriculum has nothing left to do and
+completes; a curriculum that is non-empty BEFORE the publish filter and only
+empty after it - required items that all happen to be drafts right now - has
+real, if currently unreachable, work, and must stay incomplete (PR36 round 2,
+CodeRabbit, Major). `all_required_items` mode already requires `$total > 0`
+to complete and was never affected.
+
 ### The completion pipeline
 
 - **`CompletionService::complete()`** requires `is_enrolled()`, takes the
@@ -1250,7 +1265,12 @@ has `require_prior_items` ticked, every required curriculum item ordered
 before it - in every PUBLISHED course that lists it
 (`Events::live_lessons_for_event()`, one row per (lesson, course) pairing) -
 must be complete for this learner in THAT course; access is denied as soon
-as any one applicable row blocks. The prior-items rule itself is
+as any one applicable row blocks. **The gating `live_session` lesson itself
+must also be PUBLISHED** (PR36 round 2, Codex) -
+`live_lessons_for_event()`'s own query only selects `publish` lessons, so a
+private or draft one (staged content a learner cannot open through any
+public route) is never in the gating set at all and cannot veto anyone. The
+prior-items rule itself is
 `ProgressService::prior_required_items_complete()`, the exact loop
 `is_item_available()` runs for sequential progression, reused rather than
 re-implemented, and applied regardless of the course's own

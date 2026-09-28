@@ -569,9 +569,14 @@ class Anchor_Compliance_Script_Blocker {
 	 * x-bind:src — never real src attributes); anything beyond the tag's own
 	 * ">" no matter how the quote or value is malformed.
 	 */
-	/** Whether a tag's attribute string carries EXEMPT_ATTR (any value, or bare). */
+	/**
+	 * Whether a tag's attribute string carries EXEMPT_ATTR as a real attribute
+	 * (any value, or bare). Quoted attribute VALUES are blanked first, so the
+	 * text appearing inside e.g. title="..." never counts (Codex, PR #39).
+	 */
 	public static function is_exempt( $attrs ) {
-		return (bool) preg_match( '/\s' . preg_quote( self::EXEMPT_ATTR, '/' ) . '(?=[\s=>\/]|$)/i', (string) $attrs );
+		$names_only = preg_replace( '/=\s*(["\'])(?:(?!\1).)*\1/s', '=""', (string) $attrs );
+		return (bool) preg_match( '/\s' . preg_quote( self::EXEMPT_ATTR, '/' ) . '(?=[\s=>\/]|$)/i', (string) $names_only );
 	}
 
 	private function rewrite_src_tags( $html, $tag, array $rules, array $allowed ) {

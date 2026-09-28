@@ -815,5 +815,12 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$this->assertTrue( Anchor_Compliance_Script_Blocker::is_exempt( ' width="1" data-anchor-consent-exempt' ) );
 		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( ' data-anchor-consent-exemption="1"' ), 'Prefix collisions do not count.' );
 		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( ' data-anchor-consent="marketing"' ) );
+
+		// The text inside another attribute's VALUE is not an opt-out (Codex, PR #39).
+		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( ' title="x data-anchor-consent-exempt" width="1"' ) );
+		$this->assertFalse( Anchor_Compliance_Script_Blocker::is_exempt( " alt='data-anchor-consent-exempt'" ) );
+		$this->assertTrue( Anchor_Compliance_Script_Blocker::is_exempt( ' title="a b" data-anchor-consent-exempt="1"' ) );
+		$smuggled = '<iframe title="see data-anchor-consent-exempt" src="https://www.youtube.com/embed/abc123"></iframe>';
+		$this->assertStringContainsString( 'anchor-cmp-placeholder', $this->blocker()->rewrite( '<body>' . $smuggled . '</body>' ), 'A smuggled mention still gets blocked.' );
 	}
 }

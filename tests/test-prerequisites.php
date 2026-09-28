@@ -321,4 +321,25 @@ class Test_Prerequisites extends Anchor_Events_TestCase {
 
 		$this->assertSame( 0, $this->module()->get_registration_count( $event_id ) );
 	}
+
+	/**
+	 * 3.32.1: the front-end [event_manager] form renders the Access section,
+	 * where the role picker used to call get_editable_roles() - a wp-admin
+	 * include the front end never loads (fatal). The picker must build its
+	 * "Site roles" group without that function, through the same
+	 * `editable_roles` filter get_editable_roles() applies.
+	 */
+	public function test_role_choices_do_not_need_the_admin_user_include() {
+		$source = file_get_contents( dirname( __DIR__ ) . '/anchor-events-manager/anchor-events-manager.php' );
+		// A CALL on a code line (comments may still name the function).
+		$this->assertDoesNotMatchRegularExpression( '/^(?!\s*(\/\/|\*|\/\*)).*\bget_editable_roles\s*\(/m', $source, 'wp-admin/includes/user.php is not loaded on the front end.' );
+
+		$groups = $this->module()->prerequisite_role_choices();
+		$site   = $groups[ __( 'Site roles', 'anchor-schema' ) ] ?? [];
+		$this->assertArrayHasKey( 'subscriber', $site );
+
+		add_filter( 'editable_roles', static function ( $roles ) { unset( $roles['subscriber'] ); return $roles; } );
+		$groups = $this->module()->prerequisite_role_choices();
+		$this->assertArrayNotHasKey( 'subscriber', $groups[ __( 'Site roles', 'anchor-schema' ) ] ?? [], 'The editable_roles filter still applies.' );
+	}
 }

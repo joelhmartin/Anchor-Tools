@@ -393,6 +393,87 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 		remove_role( Roles::access_slug( $second_course ) );
 	}
 
+	/* ---------------------------------------------------------------------
+	 * PR36 round 2 (Codex + CodeRabbit) - `wc_create_refund()` accepts a
+	 * bare `amount` with no `line_items`, which leaves
+	 * get_qty_refunded_for_item() at 0 for every line - the quantity check
+	 * alone cannot see this refund at all.
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * A FULL amount-only refund - the cumulative refunded total already
+	 * covers the order's total, which is also what makes WooCommerce itself
+	 * flip the order to `refunded` - revokes every mapped line, the same as
+	 * the existing no-refund-records fallback.
+	 */
+	public function test_an_amount_only_full_refund_revokes_every_mapped_line() {
+		$second_course  = $this->make_course( [], 'Second Paid Course' );
+		$second_product = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+		WooCommerce::set_courses_for_product( $second_product, [ $second_course ] );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		// These fixtures' products carry no price by default; an explicit
+		// total is what gives this order (and the refund below) a real,
+		// non-zero amount to work with.
+		$order->add_product( wc_get_product( $this->product ), 1, [ 'subtotal' => 20, 'total' => 20 ] );
+		$order->add_product( wc_get_product( $second_product ), 1, [ 'subtotal' => 15, 'total' => 15 ] );
+		$order->calculate_totals();
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->adapter->enroll_order( $order->get_id() );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ) );
+
+		$order_total = (float) $order->get_total();
+		$this->assertGreaterThan( 0, $order_total );
+
+		// No `line_items` at all - the shape CodeRabbit/Codex flagged.
+		$refund = wc_create_refund( [ 'order_id' => $order->get_id(), 'amount' => $order_total ] );
+		$this->assertNotWPError( $refund );
+
+		$this->adapter->on_order_refunded( $order->get_id(), $refund->get_id() );
+
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ) );
+		$this->assertCount( 1, $this->revoke_notes( $order->get_id() ), 'One note for the whole revoke pass, not one per course.' );
+
+		remove_role( Roles::access_slug( $second_course ) );
+	}
+
+	/**
+	 * A PARTIAL amount-only refund cannot be attributed to any one line -
+	 * there is no per-line quantity to read, and the cumulative refunded
+	 * amount is still below the order total, so treating it as a full
+	 * refund (the test above) would be wrong too. The documented, safe
+	 * behaviour (COURSES.md) is to revoke nothing until either a real
+	 * line-item refund arrives or the cumulative amount reaches the order's
+	 * total.
+	 */
+	public function test_an_amount_only_partial_refund_revokes_nothing() {
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_product( wc_get_product( $this->product ), 1, [ 'subtotal' => 20, 'total' => 20 ] );
+		$order->calculate_totals();
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->adapter->enroll_order( $order->get_id() );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+
+		$order_total = (float) $order->get_total();
+		$this->assertGreaterThan( 0, $order_total );
+
+		$refund = wc_create_refund( [ 'order_id' => $order->get_id(), 'amount' => \round( $order_total / 2, 2 ) ] );
+		$this->assertNotWPError( $refund );
+
+		$this->adapter->on_order_refunded( $order->get_id(), $refund->get_id() );
+
+		$this->assertTrue(
+			Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ),
+			'A partial amount-only refund must not be attributed to any line.'
+		);
+		$this->assertCount( 0, $this->revoke_notes( $order->get_id() ) );
+	}
+
 	/**
 	 * The order-level marker: a revoke must not be silently undone by a
 	 * duplicate/stray re-fire of a qualifying status on the same order.

@@ -1010,20 +1010,28 @@ WooCommerce's own `woocommerce_product_after_variable_attributes` /
 `anchor-events-manager/class-woocommerce.php` uses for its own per-variation
 event field).
 
-**The resolved courses are snapshotted onto the order line.** At checkout
-(`woocommerce_checkout_create_order_line_item`) the line's mapped courses -
-resolved from the product/variation exactly as above - are written onto the
-order item as `_anchor_courses_course_ids` (`WooCommerce::COURSE_IDS_META`),
-before the order is ever saved. `enroll_order()`, `retry_orders_for_course()`
-and both revoke paths all resolve a line's courses through this snapshot
-FIRST, falling back to the live product/variation mapping only when no
-snapshot exists (a line from before this existed, or an order created
-outside checkout - the same "outside checkout" cases the account section
-below already distinguishes). A line lacking a snapshot gets one written the
-first time `enroll_order()` resolves it, whether or not the grant that
-follows succeeds. The practical effect: remapping a product from course A to
-B while an order is still pending does not change what that order grants -
-the buyer who checked out against A still gets A; and removing a mapping
+**The resolved courses are snapshotted onto the order line, ALWAYS.** At
+checkout (`woocommerce_checkout_create_order_line_item`) the line's mapped
+courses - resolved from the product/variation exactly as above - are written
+onto the order item as `_anchor_courses_course_ids`
+(`WooCommerce::COURSE_IDS_META`), before the order is ever saved -
+UNCONDITIONALLY, even when the line resolves to `[]` (an unmapped product,
+or a variation's explicit `NONE_OVERRIDE` opt-out). An empty array IS the
+snapshot for such a line, not "nothing to freeze": the only thing that means
+"no snapshot" is the meta being ABSENT entirely, which happens only for a
+line from before this existed, or an order created outside checkout (the
+same "outside checkout" cases the account section below already
+distinguishes) - `resolve_item_courses()`'s `is_array()` check is what tells
+a real `[]` snapshot apart from that legacy absence. `enroll_order()`,
+`retry_orders_for_course()` and both revoke paths all resolve a line's
+courses through this snapshot FIRST, falling back to the live
+product/variation mapping only for a line with no snapshot at all. A legacy
+line without one gets a snapshot written the first time `enroll_order()`
+resolves it (empty or not), whether or not the grant that follows succeeds.
+The practical effect: remapping a product from course A to B while an order
+is still pending does not change what that order grants - the buyer who
+checked out against A still gets A, and a buyer whose line sold NO course at
+all cannot be handed one by a later remap either; and removing a mapping
 entirely before a refund does not make the already-granted course
 un-revocable - the refund still finds A in the snapshot and takes it back.
 
@@ -1063,19 +1071,30 @@ always ends up with a login, by one of two paths:
 already-qualifying order against it (`on_course_published()` ->
 `retry_orders_for_course()`), so an order blocked by `blocked_no_course`
 self-heals once the course goes live without anyone having to touch the
-order. Orders are found **by line item**: every product/variation (any
-status) mapped to the course, then the orders whose items name one of them,
-read from WooCommerce's order-item tables (`woocommerce_order_items` +
-`_product_id`/`_variation_id` item meta - used by both the posts and the
-HPOS order stores; not `wc_order_product_lookup`, which is filled by an
-asynchronous Action Scheduler import). The bound is the newest
+order. Orders are found **by line item, through the UNION of two lookups**:
+every product/variation (any status) CURRENTLY mapped to the course, then
+the orders whose items name one of them, read from WooCommerce's order-item
+tables (`woocommerce_order_items` + `_product_id`/`_variation_id` item meta -
+used by both the posts and the HPOS order stores; not
+`wc_order_product_lookup`, which is filled by an asynchronous Action
+Scheduler import) - **and, separately, every order whose line already froze
+this course into its own `_anchor_courses_course_ids` snapshot**, whatever
+the product maps to now. The second lookup is what catches a course bought
+while still a draft and then remapped onto a different product (or the
+product remapped to a different course entirely) before it published - the
+first lookup alone would find nothing of the original sale in that case. Each
+candidate from either lookup is re-verified through the line's own
+`resolve_item_courses()` (snapshot first, same as every other read path)
+before anything is granted, so a false match from either lookup's LIKE query
+is harmless. Each of the two lookups is bounded separately to the newest
 `anchor_courses_wc_retry_order_limit` (default `RETRY_ORDER_LIMIT`, 500)
-matching orders - it counts course orders only, not the whole store, but
-of ANY status (failed, cancelled and refund records included), so a course
-with many abandoned attempts can push older paid orders past the bound - and
-hitting it is logged (`wc_retry_capped`); older orders past the bound need
-a manual resync (`enroll_order( $order_id )`). Each order is then checked
-for a qualifying status and re-resolved line by line before granting.
+matching orders - it counts course orders only, not the whole store, but of
+ANY status (failed, cancelled and refund records included), so a course with
+many abandoned attempts can push older paid orders past the bound - and
+hitting either bound is logged (`wc_retry_capped`); older orders past the
+bound need a manual resync (`enroll_order( $order_id )`). Each order found by
+either lookup is then checked for a qualifying status and re-resolved line by
+line before granting.
 
 A course page shows an **Enrol** button only when a product maps to the
 course (`WooCommerce::products_for_course()`, the reverse lookup), and it
@@ -1108,6 +1127,24 @@ by a gateway that skips WooCommerce's own refund flow, with no
 read, so every mapped line is treated as fully refunded instead - the
 order's status is the only fact available, and it says the whole order is
 refunded.
+
+**Amount-only refunds** (`wc_create_refund()` called with a bare `amount`
+and no `line_items` - the same shape
+`anchor-events-manager/class-woocommerce.php` recognises for its own
+refunds) leave `get_qty_refunded_for_item()` at 0 for every line, exactly
+like the no-refund-records case above - there is no per-line quantity for
+either signal to read. The two are told apart by the order's CUMULATIVE
+refunded amount (`get_total_refunded()`) against its total: once the
+cumulative amount reaches the order's total - which is also what makes
+WooCommerce itself flip the order to `refunded` - every mapped line is
+treated as fully refunded, the same as a full refund with real line items.
+A **partial** amount-only refund (cumulative amount still under the order's
+total) is different: it cannot be attributed to any one line at all - there
+is no quantity AND no whole-order signal - so it revokes nothing rather than
+guess. A line-item refund and an amount-only refund on the same order still
+compose correctly: the amount-only branch only ever fires when the
+cumulative total already covers the whole order, at which point every line
+is fully refunded regardless of how the total got there.
 
 **What "this order granted" means.** Revocation is matched through
 `Roles::grant_record( $user_id, $course_id )` - what the grants map says is

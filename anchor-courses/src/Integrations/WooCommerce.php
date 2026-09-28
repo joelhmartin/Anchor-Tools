@@ -736,9 +736,20 @@ final class WooCommerce {
 	 * `woocommerce_checkout_create_order_line_item`: snapshot the line's
 	 * live-resolved courses onto the order item itself, before checkout ever
 	 * saves it (PR36 finding b) - nothing else can remap the product faster
-	 * than this. An unmapped line gets no meta at all; it has nothing worth
-	 * freezing, and resolve_item_courses() already treats "no snapshot" the
-	 * same as "resolved to nothing" for such a line.
+	 * than this.
+	 *
+	 * Written UNCONDITIONALLY, even when it resolves to `[]` (PR36 round 2):
+	 * a line that resolves to no courses - an unmapped product, or a
+	 * variation's explicit NONE_OVERRIDE opt-out - is just as much a real
+	 * decision as a non-empty one, and must be frozen the same way. Only
+	 * skipping the empty case (the old behaviour) left such a line with NO
+	 * marker at all, which resolve_item_courses() cannot tell apart from a
+	 * line that predates snapshotting entirely - so a later remap of the
+	 * product onto a real course would grant a course this specific line
+	 * never sold. "No snapshot" (legacy) is meta ABSENT; "[] snapshot"
+	 * (resolved to nothing, frozen) is meta present and an empty array -
+	 * resolve_item_courses()'s `is_array()` check already tells the two
+	 * apart correctly once this is always written.
 	 *
 	 * @param \WC_Order_Item_Product $item
 	 * @param string                 $cart_item_key
@@ -750,12 +761,7 @@ final class WooCommerce {
 			return;
 		}
 
-		$courses = self::courses_for_item( $item );
-		if ( [] === $courses ) {
-			return;
-		}
-
-		$item->update_meta_data( self::COURSE_IDS_META, $courses );
+		$item->update_meta_data( self::COURSE_IDS_META, self::courses_for_item( $item ) );
 	}
 
 	/** Order-item meta: the course ids THIS line resolved to (PR36 finding b). */
@@ -822,13 +828,23 @@ final class WooCommerce {
 	 * which is what makes it safe to run on every publish, not only the first.
 	 *
 	 * Orders are selected BY LINE ITEM (final review I6), not by scanning the
-	 * store's newest orders: order_ids_for_products() finds orders whose
-	 * items name a product or variation mapped to this course, newest first,
-	 * bounded to `anchor_courses_wc_retry_order_limit` (default
-	 * RETRY_ORDER_LIMIT) - so the bound counts course orders only. Each is
-	 * then checked for a qualifying status and re-checked through
-	 * courses_for_item() (a variation's own mapping can override its
-	 * parent's). Hitting the bound is logged.
+	 * store's newest orders, and by the UNION of two lookups (PR36 round 2,
+	 * Codex): order_ids_for_products() finds orders whose items name a
+	 * product or variation CURRENTLY mapped to this course; order_ids_by_
+	 * snapshot() separately finds orders whose line already froze this
+	 * course into its own `_anchor_courses_course_ids` snapshot, whatever
+	 * the product maps to NOW - the case the first lookup alone misses: a
+	 * course bought while still a draft, then its product remapped to
+	 * something else entirely before it published, would otherwise never be
+	 * found at all (the line's own resolve_item_courses() snapshot-first
+	 * read below is what re-verifies each candidate either lookup finds).
+	 * Both are newest first, each bounded to
+	 * `anchor_courses_wc_retry_order_limit` (default RETRY_ORDER_LIMIT) - so
+	 * the bound counts course orders only. Each candidate is then checked
+	 * for a qualifying status and re-checked through resolve_item_courses()
+	 * (a variation's own mapping can override its parent's; a snapshotted
+	 * line is matched against ITS snapshot, not the live mapping). Hitting
+	 * either bound is logged.
 	 *
 	 * @return int How many access roles were newly granted across all matching orders.
 	 */
@@ -839,9 +855,11 @@ final class WooCommerce {
 
 		$limit = \max( 1, (int) \apply_filters( 'anchor_courses_wc_retry_order_limit', self::RETRY_ORDER_LIMIT, $course_id ) );
 
-		$order_ids = self::order_ids_for_products( self::mapped_product_ids( $course_id ), $limit );
+		$by_mapping  = self::order_ids_for_products( self::mapped_product_ids( $course_id ), $limit );
+		$by_snapshot = self::order_ids_by_snapshot( $course_id, $limit );
+		$order_ids   = \array_values( \array_unique( \array_merge( $by_mapping, $by_snapshot ) ) );
 
-		if ( \count( $order_ids ) >= $limit ) {
+		if ( \count( $by_mapping ) >= $limit || \count( $by_snapshot ) >= $limit ) {
 			// Not silently dropped: a course sold on more orders than the bound
 			// needs a human to notice and, if it matters, resync by hand.
 			Log::write( 'wc_retry_capped', [ 'course' => $course_id, 'limit' => $limit ] );
@@ -941,6 +959,39 @@ final class WooCommerce {
 			LIMIT %d";
 
 		$ids = $wpdb->get_col( $wpdb->prepare( $sql, \array_merge( \array_map( 'strval', $product_ids ), [ $limit ] ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+		return \array_map( 'intval', (array) $ids );
+	}
+
+	/**
+	 * Newest order ids (at most $limit) whose LINE ITEM SNAPSHOT
+	 * (`COURSE_IDS_META`) names this course - found even when the product's
+	 * CURRENT mapping no longer does (PR36 round 2: a draft course bought,
+	 * then its product remapped elsewhere before the course published, must
+	 * still be found by publishing the ORIGINAL course).
+	 *
+	 * Same table, same serialised-int LIKE + exact PHP re-check pattern as
+	 * order_ids_for_products()/mapped_product_ids(): the snapshot is a
+	 * serialised int[] order-item meta value, so `;i:$course_id;` matches
+	 * it exactly the way it matches the product mapping's own serialised
+	 * int[]; retry_orders_for_course()'s own resolve_item_courses() loop is
+	 * what re-verifies the exact value, so a substring false-positive here
+	 * (12 inside 123) is harmless.
+	 *
+	 * @return int[]
+	 */
+	private static function order_ids_by_snapshot( int $course_id, int $limit ): array {
+		global $wpdb;
+
+		$sql = "SELECT DISTINCT oi.order_id FROM {$wpdb->prefix}woocommerce_order_items oi
+			INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta im ON im.order_item_id = oi.order_item_id
+			WHERE oi.order_item_type = 'line_item'
+			AND im.meta_key = %s
+			AND im.meta_value LIKE %s
+			ORDER BY oi.order_id DESC
+			LIMIT %d";
+
+		$ids = $wpdb->get_col( $wpdb->prepare( $sql, self::COURSE_IDS_META, '%;i:' . $course_id . ';%', $limit ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 
 		return \array_map( 'intval', (array) $ids );
 	}
@@ -1070,10 +1121,35 @@ final class WooCommerce {
 	 * available, and it says the whole order is refunded, so every mapped
 	 * line is treated as fully refunded instead.
 	 *
+	 * The same blindness happens with a real refund RECORD that simply
+	 * carries no line items - `wc_create_refund()` accepts a bare `amount`
+	 * (PR36 round 2, Codex + CodeRabbit): the events module's own
+	 * `reconcile_line()` recognises this exact shape as a valid, amount-only
+	 * refund. get_qty_refunded_for_item() stays at 0 for every line in that
+	 * case too, so a FULL amount-only refund - the order's cumulative
+	 * refunded total already covers its total, which is also what makes
+	 * WooCommerce itself flip the order to `refunded` - is treated the same
+	 * as the no-refund-records case above: every mapped line is fully
+	 * refunded. A PARTIAL amount-only refund (cumulative total still under
+	 * the order's total) is a different story: there is no line quantity
+	 * AND no full-order signal to attribute it to any one line, so it
+	 * revokes nothing rather than guess (documented in COURSES.md).
+	 *
 	 * @return int How many access roles were removed.
 	 */
 	private function revoke_refunded_lines( int $order_id, \WC_Order $order ): int {
 		$has_refund_records = \method_exists( $order, 'get_refunds' ) && [] !== $order->get_refunds();
+
+		$order_total    = (float) $order->get_total();
+		$total_refunded = $has_refund_records ? (float) $order->get_total_refunded() : 0.0;
+
+		// A refund record with no line quantities leaves every per-item
+		// check below at 0; once the cumulative refunded amount reaches the
+		// order's total, treat every mapped line as fully refunded rather
+		// than silently revoking nothing.
+		$fully_refunded_by_amount = $has_refund_records
+			&& $order_total > 0
+			&& \round( $total_refunded, 2 ) >= \round( $order_total, 2 );
 
 		$fully_refunded = [];
 
@@ -1082,7 +1158,7 @@ final class WooCommerce {
 				continue;
 			}
 
-			if ( ! $has_refund_records ) {
+			if ( ! $has_refund_records || $fully_refunded_by_amount ) {
 				$fully_refunded[] = $item;
 				continue;
 			}
@@ -1092,7 +1168,7 @@ final class WooCommerce {
 			// module does (class-woocommerce.php reconcile_line()).
 			$refunded = \abs( (int) $order->get_qty_refunded_for_item( (int) $item_id ) );
 			if ( $refunded < (int) $item->get_quantity() ) {
-				continue; // Not refunded in full (yet).
+				continue; // Not refunded in full (yet), and no amount-only signal either.
 			}
 
 			$fully_refunded[] = $item;

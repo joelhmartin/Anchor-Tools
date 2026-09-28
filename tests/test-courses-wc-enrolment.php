@@ -419,6 +419,79 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 	}
 
 	/* ---------------------------------------------------------------------
+	 * PR36 round 2 (Codex + CodeRabbit) - a line resolving to NO courses
+	 * (unmapped, or a variation's explicit opt-out) still gets an explicit
+	 * `[]` snapshot, so a later remap can never grant what this line did
+	 * not sell.
+	 * ------------------------------------------------------------------- */
+
+	public function test_an_opt_out_variation_line_snapshots_an_empty_array_and_a_later_remap_grants_nothing() {
+		$parent = new WC_Product_Variable();
+		$parent->set_name( 'Variable Product' );
+		$parent_id = $parent->save();
+
+		$variation = new WC_Product_Variation();
+		$variation->set_parent_id( $parent_id );
+		$variation_id = $variation->save();
+
+		WooCommerce::set_courses_for_product( $parent_id, [ $this->course ] );
+		WooCommerce::set_courses_for_product( $variation_id, [], true ); // Explicit "no courses" override.
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $variation_id ) );
+		$item->set_quantity( 1 );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_item( $item );
+		$order->set_status( 'pending' );
+
+		( new WooCommerce() )->snapshot_courses_for_line_item( $item, 'cartkey', [], $order );
+		$order->save();
+
+		$this->assertSame(
+			[],
+			$item->get_meta( WooCommerce::COURSE_IDS_META, true ),
+			'An opt-out line must snapshot an explicit empty array, not leave the meta absent.'
+		);
+
+		// The variation is remapped to a REAL course while the order is
+		// still pending - a live re-resolve at grant time would now find
+		// this course, even though the line itself sold nothing.
+		WooCommerce::set_courses_for_product( $variation_id, [ $this->course ] );
+
+		$order->set_status( 'processing' );
+		$order->save();
+
+		$this->assertSame(
+			0,
+			( new WooCommerce() )->enroll_order( $order->get_id() ),
+			'The frozen empty snapshot must win over the later remap.'
+		);
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+	}
+
+	/**
+	 * The parent's own line (no variation at all) resolving to nothing -
+	 * because it is simply unmapped - must snapshot the same way.
+	 */
+	public function test_an_unmapped_product_line_also_snapshots_an_empty_array() {
+		$unmapped = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $unmapped ) );
+		$item->set_quantity( 1 );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_item( $item );
+		$order->set_status( 'pending' );
+
+		( new WooCommerce() )->snapshot_courses_for_line_item( $item, 'cartkey', [], $order );
+		$order->save();
+
+		$this->assertSame( [], $item->get_meta( WooCommerce::COURSE_IDS_META, true ) );
+	}
+
+	/* ---------------------------------------------------------------------
 	 * Phase 5 final review I6 - retry-on-publish selects orders by line item.
 	 * ------------------------------------------------------------------- */
 
@@ -490,5 +563,41 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 
 		remove_all_filters( 'anchor_courses_wc_retry_order_limit' );
 		remove_role( Roles::access_slug( $draft ) );
+	}
+
+	/**
+	 * PR36 round 2 (Codex) - retry discovery must also find an order by its
+	 * frozen LINE SNAPSHOT, not only by what the product currently maps to:
+	 * remapping the product to a different, already-published course before
+	 * the draft ever publishes must not lose the order that already
+	 * resolved (and snapshotted, on its first - refused - grant attempt)
+	 * the ORIGINAL course.
+	 */
+	public function test_retry_on_publish_finds_an_order_whose_product_was_remapped_after_purchase() {
+		[ $draft, $product, $order ] = $this->draft_course_order( $this->customer );
+
+		// The first grant attempt - still refused, $draft is unpublished -
+		// is what persists the line's snapshot (resolve_item_courses( $item,
+		// true ) inside enroll_order(), the same persistence point every
+		// grant uses).
+		( new WooCommerce() )->enroll_order( $order->get_id() );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $draft ) ) );
+
+		// Remapped to a DIFFERENT, already-published course before the
+		// draft ever publishes - a live re-resolve at retry time would now
+		// find nothing of the original course on this order at all.
+		$elsewhere = $this->make_course( [], 'Remapped Elsewhere' );
+		WooCommerce::set_courses_for_product( $product, [ $elsewhere ] );
+
+		wp_publish_post( $draft );
+
+		$this->assertTrue(
+			Roles::user_has( $this->customer, Roles::access_slug( $draft ) ),
+			'The order must be found by its frozen line snapshot, not by what the product currently maps to.'
+		);
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $elsewhere ) ) );
+
+		remove_role( Roles::access_slug( $draft ) );
+		remove_role( Roles::access_slug( $elsewhere ) );
 	}
 }

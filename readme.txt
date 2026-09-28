@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.30.1
+Stable tag: 3.31.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,67 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.31.0 =
+
+Events Manager - hosted livestream rooms and a role per event:
+
+* Every plugin-registered event now mints a WordPress role, `anchor_event_{id}`
+  ("Event: title", no capabilities), and grants it to confirmed attendees along
+  with a no-mail account. The role is the entitlement other modules read (the
+  file manager, course prerequisites). Existing attendees receive it via the
+  new "Grant role to current attendees" button on the event's Basics panel; the
+  roster gains Grant / Revoke / add-by-email, and a "Reconcile roles" action
+  removes seat-derived grants whose seat is gone (manual grants are never
+  touched). Untick "Give confirmed attendees the event role" to stop future
+  grants for one event.
+* Hosted room at `<event>/live/` (noindex, no-store, theme-overridable at
+  `events/live-event.php`) with a countdown that switches to the stream at
+  session time. Embeds are provider-agnostic (Vimeo, YouTube, Zoom, raw
+  iframe). Sessions carry a modality (in person / virtual) and an optional
+  per-session embed; tiers carry a modality; "In-person tickets include the
+  stream" defaults on. Legacy virtual events on Vimeo, YouTube or Zoom get a
+  room automatically; Teams and Meet keep the plain join link.
+* Emails: `{room_link}` carries a one-click sign-in for the recipient's own
+  account only (never staff, never another attendee); the default virtual CTA
+  becomes the room link. Reminder, confirmation and buyer emails updated.
+* Prerequisites: an event can require roles (other event roles or course
+  completion roles); ineligible visitors see "not eligible" below
+  closed / full / sold-out.
+* Entitlement fixes from review: seat-owner identity (never the buyer's
+  customer id) decides who keeps a role; a refund of one seat cannot strip a
+  colleague's or a comp; `set_role()` no longer strips event roles; retired
+  virtual tiers keep their frozen modality; YouTube playlist URLs are refused.
+
+Anchor Courses - a new module (off until enabled in Anchor Tools > Modules):
+
+* Courses, lessons and quizzes with a drag-and-drop curriculum; sequential or
+  free progression; per-lesson completion modes (view, manual, quiz pass).
+* Holding the course role `anchor_course_{id}` IS enrolment: grant it from the
+  Learners tab, wp-admin, WP-CLI or `anchor_courses_enroll_user()`; a completion
+  role `anchor_course_{id}_completed` is the prerequisite currency. Completed
+  learners keep access; expiry ends access for unfinished courses.
+* Quizzes: server-side grading, attempt limits and retry delay per course, a
+  timer pinned at attempt start and enforced on save and submit, autosave with
+  conflict detection, ownership on every REST route.
+* Once-only completion pipeline: completion role, CE credit and an HTML
+  certificate (race-free numbering, random verification token, public
+  verification page rendering the name as it was at issue), with per-effect
+  tracking, admin Repair / Reset / Undo completion actions, and a
+  `course_recompleted` hook for re-completions. Per-course certificate templates
+  via the course's template slug (`certificate-{slug}.php`, theme-overridable).
+* Lesson bodies are off the core REST API and out of search and sitemaps; one
+  content guard gates them in templates, feeds and excerpts.
+* Learners tab (batch-loaded columns, pagination, add by email), user-profile
+  tab, enrolment management, shared admin notices. Developer doc:
+  `anchor-courses/COURSES.md`. Live-session lesson controls are present but
+  disabled until the events adapter ships.
+* Database: five tables, migrations 1.0.0-1.3.0; opt-in uninstall removes
+  tables, roles and grant records.
+
+Known: the Playwright end-to-end suite did not run for this release (wp-env
+unavailable in the build environment); PHPUnit ran green at 2342 tests.
+
 
 = 3.30.1 =
 

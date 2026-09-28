@@ -52,7 +52,7 @@ final class WooCommerce {
 	}
 
 	/**
-	 * Store the mapping, keeping only ids that are really published courses.
+	 * Store the mapping, keeping only ids that are really courses (any status - a mapping may be staged before the course publishes).
 	 *
 	 * @param int[] $course_ids
 	 * @return int[] What was actually stored.

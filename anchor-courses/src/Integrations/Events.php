@@ -6,6 +6,7 @@ namespace Anchor\Courses\Integrations;
 use Anchor\Courses\Admin\LessonEditor;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\LessonPostType;
+use Anchor\Courses\Frontend\Access;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Clock;
@@ -95,6 +96,17 @@ final class Events {
 	private static array $live_lessons_cache = [];
 
 	/**
+	 * The last veto per (event, user) this request - what blocked, so the
+	 * room's denial copy (`anchor_events_room_denied_message`) and its REST
+	 * poll can say WHY instead of "not registered" (final review I3). Set
+	 * and cleared by veto_stream_access() itself, so it always reflects the
+	 * decision the events module just acted on; dropped by flush().
+	 *
+	 * @var array<int,array<int,array{course_id:int,item_id:int,item_type:string}>>
+	 */
+	private static array $denials = [];
+
+	/**
 	 * Constructed unconditionally by the Module bootstrap (like
 	 * ContentGuard/Templates), sharing the same `ProgressService`/
 	 * `EnrollmentService` instances the rest of the module uses rather than
@@ -118,6 +130,11 @@ final class Events {
 		// single correct invalidation point, not something re-derived at
 		// each caller.
 		\add_action( 'anchor_courses_curriculum_saved', [ self::class, 'flush' ] );
+
+		// Say why a vetoed learner is out (final review I3). The events
+		// module fires this only on its denied branch, right after the
+		// can_access_stream() call veto_stream_access() recorded against.
+		\add_filter( 'anchor_events_room_denied_message', [ self::class, 'denied_message' ], 10, 2 );
 	}
 
 	private static function enrollments(): EnrollmentService {
@@ -319,6 +336,7 @@ final class Events {
 	 */
 	public static function flush(): void {
 		self::$live_lessons_cache = [];
+		self::$denials            = [];
 	}
 
 	/**
@@ -354,13 +372,40 @@ final class Events {
 	 * `is_item_available()` (mode-gated) would not do.
 	 */
 	public static function veto_stream_access( bool $allowed, int $event_id, int $session_index = 0, int $user_id = 0 ): bool {
+		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
+
 		if ( ! $allowed ) {
+			// The events module refused on its own; whatever this module
+			// said last time is not the reason now.
+			unset( self::$denials[ $event_id ][ $user_id ] );
 			return false;
 		}
 
-		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
 		if ( $user_id <= 0 ) {
 			return $allowed;
+		}
+
+		$block = self::prework_block( $event_id, $session_index, $user_id );
+		if ( null === $block ) {
+			unset( self::$denials[ $event_id ][ $user_id ] );
+			return true;
+		}
+
+		self::$denials[ $event_id ][ $user_id ] = $block;
+		return false;
+	}
+
+	/**
+	 * THE veto decision: the first (course, unfinished item) that blocks
+	 * this learner from this event session, or null when nothing does.
+	 * veto_stream_access() and the live-session lesson template both ask
+	 * this, so the Join button and the room can never disagree.
+	 *
+	 * @return array{course_id:int,item_id:int,item_type:string}|null
+	 */
+	public static function prework_block( int $event_id, int $session_index, int $user_id ): ?array {
+		if ( $user_id <= 0 ) {
+			return null;
 		}
 
 		foreach ( self::live_lessons_for_event( $event_id ) as $row ) {
@@ -373,11 +418,56 @@ final class Events {
 			if ( ! self::enrollments()->is_enrolled( $user_id, $row['course_id'] ) ) {
 				continue; // Not on this course: no pre-work owed to it.
 			}
-			if ( ! self::progress()->prior_required_items_complete( $user_id, $row['course_id'], $row['lesson_id'], 'lesson' ) ) {
-				return false;
+			$first = self::progress()->first_incomplete_prior_item( $user_id, $row['course_id'], $row['lesson_id'], 'lesson' );
+			if ( null !== $first ) {
+				return [ 'course_id' => $row['course_id'], 'item_id' => $first['id'], 'item_type' => $first['type'] ];
 			}
 		}
 
-		return true;
+		return null;
+	}
+
+	/**
+	 * `anchor_events_room_denied_message`: when this module's veto is what
+	 * denied the current user, replace "not registered" with the real
+	 * reason. Any other denial passes through untouched.
+	 *
+	 * @param mixed $message
+	 * @param mixed $event_id
+	 * @return mixed
+	 */
+	public static function denied_message( $message, $event_id = 0 ) {
+		$user_id = (int) \get_current_user_id();
+		$block   = self::$denials[ (int) $event_id ][ $user_id ] ?? null;
+
+		return null === $block ? $message : self::prework_notice( $block );
+	}
+
+	/**
+	 * The one piece of copy for a pre-work block, as a short escaped HTML
+	 * fragment: the course named, and a link to the unfinished item in its
+	 * course context (a quiz has no URL of its own, so it links the course).
+	 * Raw post_title through esc_html(), not get_the_title(): the latter is
+	 * already texturized, and escaping it again would print `&#8217;`.
+	 *
+	 * @param array{course_id:int,item_id:int,item_type:string} $block
+	 */
+	public static function prework_notice( array $block ): string {
+		$course_id = (int) $block['course_id'];
+		$item_id   = (int) $block['item_id'];
+
+		$url = 'lesson' === $block['item_type']
+			? Access::lesson_url( $item_id, $course_id )
+			: (string) \get_permalink( $course_id );
+
+		return \sprintf(
+			/* translators: %s: course title. */
+			\esc_html__( 'Finish the earlier lessons in %s first.', 'anchor-schema' ),
+			\esc_html( (string) \get_post_field( 'post_title', $course_id ) )
+		) . ' <a href="' . \esc_url( $url ) . '">' . \sprintf(
+			/* translators: %s: lesson or quiz title. */
+			\esc_html__( 'Continue with %s', 'anchor-schema' ),
+			\esc_html( (string) \get_post_field( 'post_title', $item_id ) )
+		) . '</a>';
 	}
 }

@@ -272,4 +272,35 @@ class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( 'anchor-live-session', $html );
 		$this->assertStringContainsString( 'anchor-lesson', $html );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Phase 5 final review I3 - the Join button respects the pre-work veto.
+	 * ------------------------------------------------------------------- */
+
+	public function test_a_learner_the_prework_veto_blocks_sees_the_notice_instead_of_join() {
+		$event_id = $this->streamed_event();
+		$prework  = $this->make_lesson( [], 'Read this first' );
+		update_post_meta( $this->lesson, '_anchor_lesson_event_id', $event_id );
+		update_post_meta( $this->lesson, '_anchor_lesson_require_prior_items', 1 );
+		Curriculum::save(
+			$this->course,
+			[ [ 'title' => 'M', 'items' => [
+				[ 'type' => 'lesson', 'id' => $prework ],
+				[ 'type' => 'lesson', 'id' => $this->lesson ],
+			] ] ]
+		);
+
+		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
+
+		$this->assertStringNotContainsString( 'Join the livestream', $html );
+		$this->assertStringContainsString( 'Finish the earlier lessons in', $html );
+		$this->assertStringContainsString( str_replace( '&#038;', '&amp;', esc_url( \Anchor\Courses\Frontend\Access::lesson_url( $prework, $this->course ) ) ), $html ); // wp_kses_post() normalises the entity.
+
+		$this->courses()->progress->complete_lesson( $this->user, $this->course, $prework );
+		Events::flush();
+
+		$html = $this->courses()->shortcodes->render_live_session( $this->lesson, $this->course );
+		$this->assertStringContainsString( 'Join the livestream', $html, 'Pre-work done: Join comes back.' );
+		$this->assertStringNotContainsString( 'Finish the earlier lessons in', $html );
+	}
 }

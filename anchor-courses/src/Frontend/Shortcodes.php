@@ -314,6 +314,12 @@ final class Shortcodes {
 		$is_enrolled     = $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id );
 		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
 
+		// The stream veto's own decision (Events::prework_block(), the same
+		// call veto_stream_access() makes), so this page never offers a Join
+		// button the room would then refuse (final review I3).
+		$block          = ( $ready && $is_enrolled ) ? Events::prework_block( $event_id, (int) LessonEditor::setting( $lesson_id, 'session_index' ), $user_id ) : null;
+		$prework_notice = null === $block ? '' : Events::prework_notice( $block );
+
 		return Templates::render(
 			'live-session',
 			[
@@ -326,6 +332,7 @@ final class Shortcodes {
 				// room's own entitlement check still runs when this link is
 				// followed.
 				'room_url'       => ( $ready && $is_enrolled ) ? Events::room_url( $event_id ) : '',
+				'prework_notice' => $prework_notice,
 				'state'          => $ready ? Events::stream_state( $event_id ) : [ 'state' => 'unknown' ],
 				'item_available' => $item_available,
 				'complete'       => $course_progress && \in_array( 'lesson:' . $lesson_id, $course_progress->completed_item_keys, true ),

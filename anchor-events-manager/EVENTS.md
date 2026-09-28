@@ -662,7 +662,7 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_can_access_stream` | `$allowed, $event_id, $session_index, $user_id` | The final say on room access. The courses module vetoes here ("finish the pre-work first"). |
 | `anchor_events_embed_providers` | `$providers` | The stream provider table — `slug => { hosts[], kind: iframe\|link, transform }`. Add a host to allow it. |
 | `anchor_events_create_account` | `$create, $event_id, $email` | Return `false` to stop the module creating accounts for registrants who have none. Since the access switch defaults on, this is the site-wide way to say "do not make accounts for my attendees"; opting out means those guests hold no event role and get no room access. |
-| `anchor_events_room_denied_message` | `$message, $event_id` | The wording a signed-in but unentitled visitor sees in the room. |
+| `anchor_events_room_denied_message` | `$message, $event_id` | The wording a signed-in but unentitled visitor sees in the room (rendered through `wp_kses_post()`), and the message of the REST poll's 403 (tags stripped). |
 | `anchor_events_room_login_notice` | `$message, $event_id` | The notice shown above the sign-in form when an invalid/expired one-click `?aek=` link brought a logged-out visitor to the room. |
 | `anchor_events_stream_now` | `$now, $event_id` | The instant `Stream_State` reasons about. Exists for end-to-end tests; filtering it in production lies to the room. |
 

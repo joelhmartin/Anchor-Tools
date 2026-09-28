@@ -144,6 +144,19 @@ final class ProgressService {
 	 * must weigh it per-course rather than refuse outright).
 	 */
 	public function prior_required_items_complete( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
+		return null === $this->first_incomplete_prior_item( $user_id, $course_id, $item_id, $item_type );
+	}
+
+	/**
+	 * The first required item before $item_id that this learner has not
+	 * completed, or null when there is none - the same loop
+	 * prior_required_items_complete() answers yes/no from, exposed so a
+	 * caller that has to say WHICH item is blocking (the stream veto's
+	 * notice) does not re-walk the curriculum itself.
+	 *
+	 * @return array{type:string,id:int}|null
+	 */
+	public function first_incomplete_prior_item( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): ?array {
 		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
 		foreach ( Curriculum::items_before( $course_id, $item_id, $item_type ) as $earlier ) {
 			if ( ! $earlier['required'] ) {
@@ -153,10 +166,10 @@ final class ProgressService {
 				continue; // The quiz's own parent lesson (see docblock above).
 			}
 			if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
-				return false;
+				return [ 'type' => (string) $earlier['type'], 'id' => (int) $earlier['id'] ];
 			}
 		}
-		return true;
+		return null;
 	}
 
 	/**

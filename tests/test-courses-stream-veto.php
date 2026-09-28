@@ -321,6 +321,96 @@ class Test_Courses_Stream_Veto extends Anchor_Courses_TestCase {
 	}
 
 	/* ---------------------------------------------------------------------
+	 * Phase 5 final review I3 - a vetoed learner is told WHY, everywhere.
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * A learner with a real confirmed virtual seat, enrolled on a course
+	 * that gates the event's session 0 on unfinished pre-work.
+	 *
+	 * @return array{0:int,1:int,2:int,3:int} [event_id, learner, course, prework]
+	 */
+	private function vetoed_learner( string $suffix, string $course_title = '' ): array {
+		[ $event_id, $virtual_tier ] = $this->real_stream_event();
+
+		$email   = "veto-msg-$suffix@example.test";
+		$learner = $this->make_learner( [ 'user_email' => $email ] );
+		$this->make_seat( $event_id, [ 'email' => $email, 'ticket_type_id' => $virtual_tier ] );
+
+		[ $course, $prework ] = $this->real_gated_course( $event_id, $suffix );
+		if ( '' !== $course_title ) {
+			wp_update_post( [ 'ID' => $course, 'post_title' => $course_title ] );
+		}
+		Roles::grant_access( $learner, $course );
+
+		return [ $event_id, $learner, $course, $prework ];
+	}
+
+	public function test_the_room_tells_a_vetoed_learner_to_finish_the_prework_with_a_link() {
+		$this->require_events();
+		[ $event_id, $learner, $course, $prework ] = $this->vetoed_learner( 'room' );
+		wp_set_current_user( $learner );
+
+		$html = $this->module()->render_room( $event_id );
+
+		$this->assertStringContainsString( 'anchor-room--denied', $html );
+		$this->assertStringNotContainsString( "isn't registered", $html, 'A vetoed learner IS registered - the default copy is wrong for them.' );
+		$this->assertStringContainsString( 'Finish the earlier lessons in', $html );
+		$this->assertStringContainsString( esc_html( get_the_title( $course ) ), $html );
+		$this->assertStringContainsString(
+			str_replace( '&#038;', '&amp;', esc_url( \Anchor\Courses\Frontend\Access::lesson_url( $prework, $course ) ) ), // wp_kses_post() normalises the entity.
+			$html,
+			'The notice links the unfinished lesson, in its course context.'
+		);
+
+		$this->progress->complete_lesson( $learner, $course, $prework );
+		Events::flush();
+
+		$html = $this->module()->render_room( $event_id );
+		$this->assertStringNotContainsString( 'anchor-room--denied', $html, 'Pre-work done: the room opens.' );
+	}
+
+	public function test_the_room_keeps_the_default_message_for_a_visitor_the_events_module_itself_refused() {
+		$this->require_events();
+		[ $event_id ] = $this->vetoed_learner( 'noseat' );
+
+		// Enrolled on the gating course, but holding no seat of their own.
+		$stranger = $this->make_learner();
+		wp_set_current_user( $stranger );
+
+		$html = $this->module()->render_room( $event_id );
+
+		$this->assertStringContainsString( "isn't registered", $html );
+		$this->assertStringNotContainsString( 'Finish the earlier lessons', $html );
+	}
+
+	public function test_the_course_title_in_the_room_notice_is_escaped() {
+		$this->require_events();
+		[ $event_id, $learner ] = $this->vetoed_learner( 'esc', 'Lasers <img src=x onerror=alert(1)>' );
+		wp_set_current_user( $learner );
+
+		$html = $this->module()->render_room( $event_id );
+
+		$this->assertStringContainsString( 'Finish the earlier lessons in', $html );
+		$this->assertStringNotContainsString( '<img src=x', $html );
+	}
+
+	public function test_the_rest_poll_gives_a_vetoed_learner_the_same_reason_in_plain_text() {
+		$this->require_events();
+		do_action( 'rest_api_init' );
+		[ $event_id, $learner, $course ] = $this->vetoed_learner( 'rest' );
+		wp_set_current_user( $learner );
+
+		$res = rest_get_server()->dispatch( new WP_REST_Request( 'GET', '/anchor-events/v1/events/' . $event_id . '/room' ) );
+
+		$this->assertSame( 403, $res->get_status() );
+		$error = $res->as_error();
+		$this->assertSame( 'anchor_events_room_denied', $error->get_error_code() );
+		$this->assertStringContainsString( 'Finish the earlier lessons in ' . get_the_title( $course ), $error->get_error_message() );
+		$this->assertStringNotContainsString( '<a', $error->get_error_message(), 'A REST message is plain text.' );
+	}
+
+	/* ---------------------------------------------------------------------
 	 * Fix round 1 (task 37) - live_lessons_for_event()'s per-request memo.
 	 * ------------------------------------------------------------------- */
 

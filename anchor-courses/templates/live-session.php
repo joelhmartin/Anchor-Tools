@@ -11,7 +11,10 @@
  * (string - '' unless both the event resolves AND the current learner is
  * is_enrolled() in $course_id), $state (array), $item_available (bool - the
  * same ProgressService::is_item_available() authority the plain lesson
- * template gates its "Mark complete" form on), $complete (bool).
+ * template gates its "Mark complete" form on), $complete (bool),
+ * $prework_notice (string - '' unless the pre-work veto,
+ * Integrations\Events::prework_block(), would refuse this learner the room;
+ * an escaped HTML fragment from Events::prework_notice() otherwise).
  *
  * The body goes through the_content exactly like templates/lesson.php:
  * Frontend\ContentGuard hooks that filter and substitutes the access notice
@@ -74,7 +77,9 @@ $notice = Actions::notice();
 			</table>
 		<?php endif; ?>
 
-		<?php if ( '' !== $room_url ) : ?>
+		<?php if ( '' !== $room_url && '' !== ( $prework_notice ?? '' ) ) : ?>
+			<p class="anchor-courses-notice anchor-live-session-prework"><?php echo wp_kses_post( $prework_notice ); ?></p>
+		<?php elseif ( '' !== $room_url ) : ?>
 			<p class="anchor-live-session-join">
 				<a class="anchor-courses-button" href="<?php echo esc_url( $room_url ); ?>">
 					<?php esc_html_e( 'Join the livestream', 'anchor-schema' ); ?>

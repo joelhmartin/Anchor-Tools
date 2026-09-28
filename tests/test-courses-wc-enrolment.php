@@ -375,6 +375,50 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 	}
 
 	/* ---------------------------------------------------------------------
+	 * PR36 bot review finding b - the resolved course ids are snapshotted
+	 * onto the order line, so a later remap of the product cannot change
+	 * what an order that already checked out goes on to grant.
+	 * ------------------------------------------------------------------- */
+
+	/** An order line snapshotted the way `woocommerce_checkout_create_order_line_item` would, left pending. */
+	private function checkout_order_pending(): \WC_Order {
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $this->product ) );
+		$item->set_quantity( 1 );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_item( $item );
+		$order->set_status( 'pending' );
+
+		( new WooCommerce() )->snapshot_courses_for_line_item( $item, 'cartkey', [], $order );
+
+		$order->save();
+
+		return $order;
+	}
+
+	public function test_a_remapped_product_still_grants_the_course_snapshotted_at_checkout() {
+		$remapped_to = $this->make_course( [], 'Remapped-To Course' );
+		$order       = $this->checkout_order_pending();
+
+		// The product is remapped WHILE the order is still pending - a live
+		// re-resolve at grant time would now find $remapped_to, not the
+		// original course the line snapshotted at checkout.
+		WooCommerce::set_courses_for_product( $this->product, [ $remapped_to ] );
+
+		$order->set_status( 'processing' );
+		$order->save();
+
+		$this->assertTrue(
+			Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ),
+			'The snapshot taken at checkout must win over a later remap.'
+		);
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $remapped_to ) ) );
+
+		remove_role( Roles::access_slug( $remapped_to ) );
+	}
+
+	/* ---------------------------------------------------------------------
 	 * Phase 5 final review I6 - retry-on-publish selects orders by line item.
 	 * ------------------------------------------------------------------- */
 

@@ -77,6 +77,15 @@ final class WooCommerce {
 		// both.
 		\add_filter( 'woocommerce_checkout_registration_required', [ $this, 'require_registration_for_courses' ], 20 );
 		\add_filter( 'woocommerce_checkout_registration_enabled', [ $this, 'require_registration_for_courses' ], 20 );
+
+		// Snapshot the resolved course ids onto the order line at checkout
+		// (PR36 finding b), before a later remap of the product/variation
+		// mapping can change what this specific order already decided.
+		\add_action( 'woocommerce_checkout_create_order_line_item', [ $this, 'snapshot_courses_for_line_item' ], 10, 4 );
+
+		// A variation's own opt-out of its parent's mapping (PR36 finding c).
+		\add_action( 'woocommerce_product_after_variable_attributes', [ $this, 'render_variation_fields' ], 10, 3 );
+		\add_action( 'woocommerce_save_product_variation', [ $this, 'save_variation_courses' ], 10, 2 );
 	}
 
 	public static function available(): bool {
@@ -93,12 +102,34 @@ final class WooCommerce {
 	}
 
 	/**
+	 * Sentinel meta value: a variation explicitly grants NO courses,
+	 * overriding its parent's mapping (PR36 finding c) - distinct from
+	 * unmapped (meta absent), which INHERITS the parent's mapping
+	 * (`courses_for_ids()` below). Only ever written to a variation; a
+	 * simple/parent product has no parent to inherit from, so the
+	 * distinction is moot there.
+	 */
+	public const NONE_OVERRIDE = 'none';
+
+	/** Does this product/variation carry the explicit "no courses" override? */
+	private static function has_none_override( int $product_id ): bool {
+		return self::NONE_OVERRIDE === \get_post_meta( $product_id, self::META_KEY, true );
+	}
+
+	/**
 	 * Store the mapping, keeping only ids that are really courses (any status - a mapping may be staged before the course publishes).
 	 *
 	 * @param int[] $course_ids
-	 * @return int[] What was actually stored.
+	 * @param bool  $override_empty When $course_ids is empty, store the
+	 *                              explicit NONE_OVERRIDE sentinel instead of
+	 *                              deleting the meta - "this variation grants
+	 *                              nothing, do not inherit the parent" rather
+	 *                              than "unmapped" (PR36 finding c).
+	 * @return int[] What was actually stored (the sentinel itself is never
+	 *               returned here - callers that care check
+	 *               has_none_override() or courses_for_ids()).
 	 */
-	public static function set_courses_for_product( int $product_id, array $course_ids ): array {
+	public static function set_courses_for_product( int $product_id, array $course_ids, bool $override_empty = false ): array {
 		$clean = [];
 
 		foreach ( $course_ids as $course_id ) {
@@ -113,7 +144,11 @@ final class WooCommerce {
 		}
 
 		if ( [] === $clean ) {
-			\delete_post_meta( $product_id, self::META_KEY );
+			if ( $override_empty ) {
+				\update_post_meta( $product_id, self::META_KEY, self::NONE_OVERRIDE );
+			} else {
+				\delete_post_meta( $product_id, self::META_KEY );
+			}
 		} else {
 			\update_post_meta( $product_id, self::META_KEY, $clean );
 		}
@@ -209,12 +244,77 @@ final class WooCommerce {
 		self::set_courses_for_product( $product_id, (array) $ids );
 	}
 
+	/** Order-item meta key posted for the variation opt-out checkbox below. */
+	private const VARIATION_NONE_FIELD = '_anchor_courses_variation_none';
+
+	/**
+	 * `woocommerce_product_after_variable_attributes`: the minimal per-
+	 * variation field this task adds (PR36 finding c) - a single opt-out
+	 * checkbox, not a full course picker. Setting specific courses on a
+	 * variation (distinct from its parent's) stays code-only
+	 * (`set_courses_for_product( $variation_id, [ ... ] )`), documented in
+	 * COURSES.md; this checkbox only lets a variation say "grant nothing",
+	 * which the multi-select on the parent panel has no way to express for
+	 * one variation.
+	 *
+	 * @param int      $loop
+	 * @param array    $variation_data
+	 * @param \WP_Post $variation
+	 */
+	public function render_variation_fields( $loop, $variation_data, $variation ): void {
+		$variation_id = (int) $variation->ID;
+		$checked      = self::has_none_override( $variation_id );
+
+		echo '<div class="form-row form-row-full anchor-courses-variation-override">';
+		echo '<label><input type="checkbox" name="' . \esc_attr( self::VARIATION_NONE_FIELD . '[' . (int) $loop . ']' ) . '" value="1"'
+			. \checked( $checked, true, false ) . ' /> '
+			. \esc_html__( 'No courses (override the parent)', 'anchor-schema' ) . '</label>';
+		echo '</div>';
+	}
+
+	/**
+	 * `woocommerce_save_product_variation` (WooCommerce verifies the nonce
+	 * for this hook itself - see anchor-events-manager's own use of it).
+	 * Checking the box stores the NONE_OVERRIDE sentinel; unchecking it
+	 * clears that sentinel back to unmapped (inherit the parent) - it never
+	 * touches a real per-variation mapping set in code, since this panel has
+	 * no field for one.
+	 *
+	 * @param int $variation_id
+	 * @param int $loop
+	 */
+	public function save_variation_courses( $variation_id, $loop ): void {
+		$variation_id = (int) $variation_id;
+		// 'edit_products', not a per-post meta-cap check: the same capability
+		// anchor-events-manager's own save_variation_link() gates on for this
+		// same hook, and the one WC itself grants to shop_manager/admin.
+		if ( ! \current_user_can( 'edit_products' ) ) {
+			return;
+		}
+
+		$loop     = (int) $loop;
+		$override = isset( $_POST[ self::VARIATION_NONE_FIELD ][ $loop ] ) && '1' === $_POST[ self::VARIATION_NONE_FIELD ][ $loop ]; // phpcs:ignore WordPress.Security.NonceVerification.Missing
+
+		if ( $override ) {
+			self::set_courses_for_product( $variation_id, [], true );
+			return;
+		}
+
+		if ( self::has_none_override( $variation_id ) ) {
+			\delete_post_meta( $variation_id, self::META_KEY );
+		}
+	}
+
 	/**
 	 * Which products grant this course?
 	 *
-	 * The reverse of the mapping, by meta query. Purchasable products come
-	 * first, so the course page links at something the visitor can actually
-	 * buy rather than a draft or an out-of-stock variant.
+	 * The reverse of the mapping, by meta query. A course mapped only on a
+	 * `product_variation` is included by resolving to its PARENT product
+	 * (PR36 finding d) - a visitor cannot add a bare variation to the cart,
+	 * only the product it belongs to - deduplicated against any product that
+	 * also matches directly. Purchasable products come first, so the course
+	 * page links at something the visitor can actually buy rather than a
+	 * draft or an out-of-stock variant.
 	 *
 	 * @return int[] Product ids.
 	 */
@@ -223,9 +323,9 @@ final class WooCommerce {
 			return [];
 		}
 
-		$products = \get_posts(
+		$posts = \get_posts(
 			[
-				'post_type'      => 'product',
+				'post_type'      => [ 'product', 'product_variation' ],
 				'post_status'    => 'publish',
 				'fields'         => 'ids',
 				'posts_per_page' => 50,
@@ -245,9 +345,18 @@ final class WooCommerce {
 		);
 
 		$matches = [];
-		foreach ( $products as $product_id ) {
-			if ( \in_array( $course_id, self::courses_for_product( (int) $product_id ), true ) ) {
-				$matches[] = (int) $product_id;
+		foreach ( $posts as $post_id ) {
+			$post_id = (int) $post_id;
+			if ( ! \in_array( $course_id, self::courses_for_product( $post_id ), true ) ) {
+				continue;
+			}
+
+			$product_id = 'product_variation' === \get_post_type( $post_id )
+				? (int) \wp_get_post_parent_id( $post_id )
+				: $post_id;
+
+			if ( $product_id > 0 && ! \in_array( $product_id, $matches, true ) ) {
+				$matches[] = $product_id;
 			}
 		}
 
@@ -315,10 +424,26 @@ final class WooCommerce {
 		$to_status = \sanitize_key( (string) $to );
 
 		if ( \in_array( $to_status, self::REVOKE_STATUSES, true ) ) {
-			// Cancelled/failed carry no refund object at all, so this is the
-			// only signal they ever give - the whole order's grants go back,
-			// not only the lines a (nonexistent) refund would name.
-			$this->revoke_order( (int) $order_id );
+			if ( 'refunded' === $to_status ) {
+				// Only the line(s) actually refunded IN FULL lose their
+				// course (PR36 finding a) - unlike cancelled/failed below,
+				// `refunded` can follow a PARTIAL refund (a shop manager, or
+				// some gateways, set the order to `refunded` by hand), and
+				// the unconditional revoke_order() used to take back every
+				// mapped line regardless of what was actually refunded.
+				$order_obj = $order instanceof \WC_Order
+					? $order
+					: ( \function_exists( 'wc_get_order' ) ? \wc_get_order( (int) $order_id ) : null );
+				if ( $order_obj instanceof \WC_Order ) {
+					$this->revoke_refunded_lines( (int) $order_id, $order_obj );
+				}
+			} else {
+				// Cancelled/failed carry no refund object at all, so this is
+				// the only signal they ever give - the whole order's grants
+				// go back, not only the lines a (nonexistent) refund would
+				// name.
+				$this->revoke_order( (int) $order_id );
+			}
 			return;
 		}
 
@@ -363,10 +488,15 @@ final class WooCommerce {
 		// Courses FIRST (final review C1): only an order that actually
 		// carries a mapped course line may go on to resolve - and possibly
 		// create - an account. A ticket-only or any other unmapped order is
-		// none of this adapter's business, at any status.
+		// none of this adapter's business, at any status. resolve_item_courses()
+		// reads the line's own snapshot first (PR36 finding b) and, for a
+		// line that still lacks one (a legacy order, or one created outside
+		// checkout), persists whatever it resolves live right here - so a
+		// later remap of the product can never change what THIS line grants
+		// once a grant has been attempted against it.
 		$lines = [];
 		foreach ( $order->get_items() as $item ) {
-			$courses = self::courses_for_item( $item );
+			$courses = self::resolve_item_courses( $item, true );
 			if ( [] !== $courses ) {
 				$lines[] = $courses;
 			}
@@ -587,6 +717,12 @@ final class WooCommerce {
 	 */
 	private static function courses_for_ids( int $product_id, int $variation_id = 0 ): array {
 		if ( $variation_id > 0 ) {
+			if ( self::has_none_override( $variation_id ) ) {
+				// The variation explicitly grants nothing (PR36 finding c) -
+				// this is NOT "unmapped", so it must not fall through to the
+				// parent's mapping below.
+				return [];
+			}
 			$courses = self::courses_for_product( $variation_id );
 			if ( [] !== $courses ) {
 				return $courses;
@@ -594,6 +730,74 @@ final class WooCommerce {
 		}
 
 		return $product_id > 0 ? self::courses_for_product( $product_id ) : [];
+	}
+
+	/**
+	 * `woocommerce_checkout_create_order_line_item`: snapshot the line's
+	 * live-resolved courses onto the order item itself, before checkout ever
+	 * saves it (PR36 finding b) - nothing else can remap the product faster
+	 * than this. An unmapped line gets no meta at all; it has nothing worth
+	 * freezing, and resolve_item_courses() already treats "no snapshot" the
+	 * same as "resolved to nothing" for such a line.
+	 *
+	 * @param \WC_Order_Item_Product $item
+	 * @param string                 $cart_item_key
+	 * @param array                  $values
+	 * @param \WC_Order              $order
+	 */
+	public function snapshot_courses_for_line_item( $item, $cart_item_key, $values, $order ): void {
+		if ( ! \is_object( $item ) || ! \method_exists( $item, 'update_meta_data' ) ) {
+			return;
+		}
+
+		$courses = self::courses_for_item( $item );
+		if ( [] === $courses ) {
+			return;
+		}
+
+		$item->update_meta_data( self::COURSE_IDS_META, $courses );
+	}
+
+	/** Order-item meta: the course ids THIS line resolved to (PR36 finding b). */
+	public const COURSE_IDS_META = '_anchor_courses_course_ids';
+
+	/**
+	 * Which courses does this order line grant - the line's own frozen
+	 * snapshot first, falling back to the live product/variation mapping
+	 * only when no snapshot exists (a legacy line placed before this
+	 * snapshot existed, or an order created outside checkout - PR36 finding
+	 * b). Everywhere an order line's grant is decided (enrol, retry-on-
+	 * publish, revoke) reads through here instead of courses_for_item()
+	 * directly, so a later remap - or an outright removal - of the
+	 * product's mapping can never change what an order that already
+	 * resolved its lines goes on to grant or revoke.
+	 *
+	 * @param mixed $item    A WC_Order_Item_Product.
+	 * @param bool  $persist When true and no snapshot exists, a freshly
+	 *                       resolved NON-EMPTY result is written back onto
+	 *                       the item as its snapshot immediately (the "first
+	 *                       qualifying grant" persistence point - only
+	 *                       enroll_order() passes true).
+	 * @return int[]
+	 */
+	private static function resolve_item_courses( $item, bool $persist = false ): array {
+		if ( ! \is_object( $item ) || ! \method_exists( $item, 'get_meta' ) ) {
+			return self::courses_for_item( $item );
+		}
+
+		$snapshot = $item->get_meta( self::COURSE_IDS_META, true );
+		if ( \is_array( $snapshot ) ) {
+			return \array_values( \array_map( 'intval', $snapshot ) );
+		}
+
+		$live = self::courses_for_item( $item );
+
+		if ( $persist && [] !== $live && \method_exists( $item, 'update_meta_data' ) && \method_exists( $item, 'save' ) ) {
+			$item->update_meta_data( self::COURSE_IDS_META, $live );
+			$item->save();
+		}
+
+		return $live;
 	}
 
 	/**
@@ -654,7 +858,11 @@ final class WooCommerce {
 
 			$matches = false;
 			foreach ( $order->get_items() as $item ) {
-				if ( \in_array( $course_id, self::courses_for_item( $item ), true ) ) {
+				// resolve_item_courses() (PR36 finding b): a line that
+				// already snapshotted its courses is matched against THAT,
+				// not whatever the product maps to right now - the actual
+				// grant enroll_order() makes below reads the same snapshot.
+				if ( \in_array( $course_id, self::resolve_item_courses( $item ), true ) ) {
 					$matches = true;
 					break;
 				}
@@ -854,13 +1062,28 @@ final class WooCommerce {
 	 * picked up too, and a repeat pass over an already-fully-refunded line
 	 * is a harmless no-op.
 	 *
+	 * When the order carries NO refund records at all (PR36 finding a) -
+	 * `refunded` set by hand, or by a gateway that skips WooCommerce's own
+	 * refund flow - get_qty_refunded_for_item() would read 0 for every line,
+	 * which is indistinguishable from "nothing was refunded" and would
+	 * revoke nothing. The order's own status is then the only fact
+	 * available, and it says the whole order is refunded, so every mapped
+	 * line is treated as fully refunded instead.
+	 *
 	 * @return int How many access roles were removed.
 	 */
 	private function revoke_refunded_lines( int $order_id, \WC_Order $order ): int {
+		$has_refund_records = \method_exists( $order, 'get_refunds' ) && [] !== $order->get_refunds();
+
 		$fully_refunded = [];
 
 		foreach ( $order->get_items() as $item_id => $item ) {
 			if ( ! \is_object( $item ) || ! \method_exists( $item, 'get_product_id' ) || (int) $item->get_product_id() <= 0 ) {
+				continue;
+			}
+
+			if ( ! $has_refund_records ) {
+				$fully_refunded[] = $item;
 				continue;
 			}
 
@@ -925,7 +1148,11 @@ final class WooCommerce {
 		$revoked = 0;
 
 		foreach ( $items as $item ) {
-			foreach ( self::courses_for_item( $item ) as $course_id ) {
+			// resolve_item_courses() (PR36 finding b): revoke what THIS
+			// line's snapshot says it granted, not whatever the product
+			// maps to now - removing the mapping entirely before a refund
+			// must not leave the already-granted course un-revocable.
+			foreach ( self::resolve_item_courses( $item ) as $course_id ) {
 				$record = Roles::grant_record( $user_id, $course_id );
 				if ( 'woocommerce' !== ( $record['source'] ?? '' ) || (string) $order_id !== ( $record['source_id'] ?? '' ) ) {
 					continue; // Not this order's grant to take back (or already taken).

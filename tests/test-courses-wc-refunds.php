@@ -278,6 +278,122 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 	}
 
 	/**
+	 * PR36 bot review finding b: enroll_order() persists a line's live-
+	 * resolved courses as its snapshot the first time it grants against a
+	 * line that lacks one (every fixture in this suite is built by
+	 * wc_create_order()/add_product(), not through checkout, so none of
+	 * them has a snapshot until paid_order()'s own enroll_order() call
+	 * writes one). Removing the mapping afterwards must not make the
+	 * already-granted course un-revocable - the refund still reads the
+	 * snapshot, not the now-empty live mapping.
+	 */
+	public function test_removing_the_mapping_after_the_grant_still_revokes_the_snapshotted_course() {
+		$order = $this->paid_order();
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+
+		WooCommerce::set_courses_for_product( $this->product, [] );
+		$this->assertSame( [], WooCommerce::courses_for_product( $this->product ) );
+
+		$this->assertSame(
+			1,
+			$this->adapter->revoke_order( $order->get_id() ),
+			"The line's own snapshot must still be revocable after the mapping is removed."
+		);
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * PR36 bot review finding a - a `refunded` STATUS TRANSITION must not
+	 * revoke a line that was never actually refunded.
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * A shop manager (or a gateway) can set an order straight to `refunded`
+	 * by hand after only a partial refund. The old code sent every
+	 * REVOKE_STATUSES transition, `refunded` included, through
+	 * revoke_order() - which revokes every mapped line unconditionally and
+	 * ignores refund quantities entirely. The fix routes `refunded` through
+	 * the same per-line revoke_refunded_lines() path a real
+	 * woocommerce_order_refunded fire uses, so only the line actually
+	 * refunded in full loses its course.
+	 */
+	public function test_a_refunded_status_transition_after_a_partial_refund_revokes_only_that_line() {
+		$second_course  = $this->make_course( [], 'Second Paid Course' );
+		$second_product = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+		WooCommerce::set_courses_for_product( $second_product, [ $second_course ] );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_product( wc_get_product( $this->product ), 1 );
+		$order->add_product( wc_get_product( $second_product ), 1 );
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->adapter->enroll_order( $order->get_id() );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ) );
+
+		$refunded_item_id = 0;
+		foreach ( $order->get_items() as $item_id => $item ) {
+			if ( (int) $item->get_product_id() === $this->product ) {
+				$refunded_item_id = $item_id;
+				break;
+			}
+		}
+		$this->assertGreaterThan( 0, $refunded_item_id );
+
+		$line_total = (float) $order->get_item_total( $order->get_item( $refunded_item_id ), false );
+		$refund     = wc_create_refund(
+			[
+				'order_id'   => $order->get_id(),
+				'amount'     => $line_total,
+				'line_items' => [ $refunded_item_id => [ 'qty' => 1, 'refund_total' => $line_total ] ],
+			]
+		);
+		$this->assertNotWPError( $refund );
+
+		// The shop manager (or a gateway) then flips the order's STATUS to
+		// `refunded` by hand - a real status transition, not a second
+		// refund - after only that one line was actually refunded.
+		$this->adapter->on_order_status_changed( $order->get_id(), 'processing', 'refunded', $order );
+
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ), 'The line that was actually refunded in full loses its course.' );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ), 'The untouched line must survive a `refunded` STATUS transition, not just a refund object.' );
+
+		remove_role( Roles::access_slug( $second_course ) );
+	}
+
+	/**
+	 * When the order carries NO refund records at all - `refunded` set by
+	 * hand with no wc_create_refund() behind it - there is no per-line
+	 * quantity to read, so every mapped line is treated as fully refunded
+	 * (progress.md/PR36 ruling a): the order's own status is the only fact
+	 * available.
+	 */
+	public function test_a_refunded_status_with_no_refund_records_revokes_every_mapped_line() {
+		$second_course  = $this->make_course( [], 'Second Paid Course' );
+		$second_product = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
+		WooCommerce::set_courses_for_product( $second_product, [ $second_course ] );
+
+		$order = wc_create_order( [ 'customer_id' => $this->customer ] );
+		$order->add_product( wc_get_product( $this->product ), 1 );
+		$order->add_product( wc_get_product( $second_product ), 1 );
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->adapter->enroll_order( $order->get_id() );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ) );
+		$this->assertSame( [], $order->get_refunds(), 'This order must carry no refund records for the test to prove the no-records fallback.' );
+
+		$this->adapter->on_order_status_changed( $order->get_id(), 'processing', 'refunded', $order );
+
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $second_course ) ), 'With no refund records at all, every mapped line is treated as fully refunded.' );
+
+		remove_role( Roles::access_slug( $second_course ) );
+	}
+
+	/**
 	 * The order-level marker: a revoke must not be silently undone by a
 	 * duplicate/stray re-fire of a qualifying status on the same order.
 	 */

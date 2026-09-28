@@ -128,6 +128,42 @@ class Test_Courses_Wc_Mapping extends Anchor_Courses_TestCase {
 		$this->assertSame( [], WooCommerce::products_for_course( $this->course_a ) );
 	}
 
+	/**
+	 * PR36 bot review finding d: a course mapped only on a `product_variation`
+	 * is a real, purchasable path to the course - the reverse lookup must
+	 * find it, and link the PARENT product (a visitor cannot add a bare
+	 * variation to the cart).
+	 */
+	public function test_products_for_course_finds_a_course_mapped_only_on_a_variation() {
+		[ $parent_id, $variation_id ] = $this->make_variable_product();
+		WooCommerce::set_courses_for_product( $variation_id, [ $this->course_a ] );
+
+		$this->assertSame( [ $parent_id ], WooCommerce::products_for_course( $this->course_a ) );
+	}
+
+	/** Same course mapped on the product directly AND on its own variation must not link the parent twice. */
+	public function test_products_for_course_deduplicates_a_product_matched_via_its_own_variation() {
+		[ $parent_id, $variation_id ] = $this->make_variable_product();
+		WooCommerce::set_courses_for_product( $parent_id, [ $this->course_a ] );
+		WooCommerce::set_courses_for_product( $variation_id, [ $this->course_a ] );
+
+		$this->assertSame( [ $parent_id ], WooCommerce::products_for_course( $this->course_a ) );
+	}
+
+	/** The course page's Enrol CTA must link the variation-only course's PARENT product. */
+	public function test_filter_access_cta_links_to_the_parent_of_a_variation_only_mapping() {
+		[ $parent_id, $variation_id ] = $this->make_variable_product();
+		WooCommerce::set_courses_for_product( $variation_id, [ $this->course_a ] );
+
+		$cta = ( new WooCommerce() )->filter_access_cta(
+			[ 'url' => '', 'label' => '', 'message' => 'Ask us about access to this course.' ],
+			$this->course_a
+		);
+
+		$this->assertSame( get_permalink( $parent_id ), $cta['url'] );
+		$this->assertSame( 'Enrol', $cta['label'] );
+	}
+
 	public function test_filter_access_cta_links_to_the_mapped_products_permalink() {
 		WooCommerce::set_courses_for_product( $this->product, [ $this->course_a ] );
 
@@ -224,6 +260,94 @@ class Test_Courses_Wc_Mapping extends Anchor_Courses_TestCase {
 		$this->assertMatchesRegularExpression( '/<option value="' . $draft . '"[^>]*>Staged Course \(draft\)<\/option>/', $html );
 		$this->assertStringContainsString( 'value="' . $pending . '"', $html );
 		$this->assertStringContainsString( 'value="' . $future . '"', $html );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * PR36 bot review finding c - a variation may explicitly opt out of its
+	 * parent's mapping (distinct from being merely unmapped).
+	 * ------------------------------------------------------------------- */
+
+	/** @return array{0:int,1:int} parent product id, variation id. */
+	private function make_variable_product(): array {
+		$parent = new WC_Product_Variable();
+		$parent->set_name( 'Variable Product' );
+		$parent_id = $parent->save();
+
+		$variation = new WC_Product_Variation();
+		$variation->set_parent_id( $parent_id );
+		$variation_id = $variation->save();
+
+		return [ $parent_id, $variation_id ];
+	}
+
+	public function test_an_explicit_none_override_stores_a_sentinel_distinct_from_unmapped() {
+		[ , $variation_id ] = $this->make_variable_product();
+
+		WooCommerce::set_courses_for_product( $variation_id, [], true );
+
+		$this->assertSame( 'none', get_post_meta( $variation_id, WooCommerce::META_KEY, true ) );
+		// courses_for_product() itself still reports empty for the sentinel
+		// (only courses_for_ids() below tells the difference from unmapped).
+		$this->assertSame( [], WooCommerce::courses_for_product( $variation_id ) );
+	}
+
+	public function test_an_explicit_none_override_does_not_inherit_the_parents_mapping() {
+		[ $parent_id, $variation_id ] = $this->make_variable_product();
+		WooCommerce::set_courses_for_product( $parent_id, [ $this->course_a ] );
+		WooCommerce::set_courses_for_product( $variation_id, [], true );
+
+		$order = wc_create_order( [ 'customer_id' => $this->make_learner() ] );
+		$item  = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $variation_id ) );
+		$item->set_quantity( 1 );
+		$order->add_item( $item );
+		$order->set_status( 'pending' );
+		$order->save();
+
+		$this->assertSame( 0, ( new WooCommerce() )->enroll_order( $order->get_id() ), 'The variation explicitly grants nothing - it must not fall through to the parent.' );
+	}
+
+	public function test_saving_real_courses_on_a_variation_after_a_none_override_clears_the_sentinel() {
+		[ , $variation_id ] = $this->make_variable_product();
+		WooCommerce::set_courses_for_product( $variation_id, [], true );
+
+		WooCommerce::set_courses_for_product( $variation_id, [ $this->course_a ] );
+
+		$this->assertSame( [ $this->course_a ], WooCommerce::courses_for_product( $variation_id ) );
+	}
+
+	public function test_the_variation_panel_renders_the_override_checkbox_and_reflects_its_state() {
+		[ , $variation_id ] = $this->make_variable_product();
+		WooCommerce::set_courses_for_product( $variation_id, [], true );
+
+		ob_start();
+		( new WooCommerce() )->render_variation_fields( 0, [], get_post( $variation_id ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( 'No courses (override the parent)', $html );
+		$this->assertMatchesRegularExpression( '/type="checkbox"[^>]*checked/', $html );
+	}
+
+	public function test_saving_the_variation_panel_checked_stores_the_override() {
+		[ , $variation_id ] = $this->make_variable_product();
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'shop_manager' ] ) );
+
+		$_POST = [ '_anchor_courses_variation_none' => [ 0 => '1' ] ];
+		( new WooCommerce() )->save_variation_courses( $variation_id, 0 );
+		$_POST = [];
+
+		$this->assertSame( 'none', get_post_meta( $variation_id, WooCommerce::META_KEY, true ) );
+	}
+
+	public function test_unchecking_the_variation_panel_clears_the_override_back_to_unmapped() {
+		[ , $variation_id ] = $this->make_variable_product();
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'shop_manager' ] ) );
+		WooCommerce::set_courses_for_product( $variation_id, [], true );
+
+		$_POST = [];
+		( new WooCommerce() )->save_variation_courses( $variation_id, 0 );
+
+		$this->assertSame( '', get_post_meta( $variation_id, WooCommerce::META_KEY, true ) );
 	}
 
 	public function test_a_draft_mapping_is_shown_checked_and_survives_a_product_save() {

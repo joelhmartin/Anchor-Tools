@@ -277,16 +277,33 @@ final class QuizService {
 	}
 
 	/**
-	 * The quizzes in this course the learner has an open attempt at, in one
-	 * query (QuizAttemptRepository::open_quiz_ids()). A listing hint only:
-	 * it does not run the timer, so an attempt already past its deadline
-	 * still counts until the quiz step, a REST read or the daily sweep
-	 * closes it.
+	 * Resolve this learner's lapsed attempts in this course, then list the
+	 * quizzes still open: one pass per page, before it reads progress,
+	 * availability or builds the outline (PR #40 review, CodeRabbit).
 	 *
-	 * @return int[]
+	 * One query finds every open attempt in the course
+	 * (QuizAttemptRepository::open_for_course()); each goes through
+	 * enforce_timer(), the same call resumable_attempt() and the REST read
+	 * route make, so an attempt past its pinned deadline is closed by its
+	 * pinned on_timer_expiry policy (and its grade or failure recorded)
+	 * before the page shows progress or "In progress". An attempt still in
+	 * time costs nothing more. One whose resolution could not be read back
+	 * (read_failed) stays listed: it is not known to be closed.
+	 *
+	 * @return int[] Quiz ids with an open attempt after resolution.
 	 */
-	public function open_quiz_ids( int $user_id, int $course_id ): array {
-		return $user_id > 0 ? QuizAttemptRepository::open_quiz_ids( $user_id, $course_id ) : [];
+	public function settle_open_attempts( int $user_id, int $course_id ): array {
+		if ( $user_id <= 0 || $course_id <= 0 ) {
+			return [];
+		}
+		$open = [];
+		foreach ( QuizAttemptRepository::open_for_course( $user_id, $course_id ) as $attempt ) {
+			$current = $this->enforce_timer( $attempt );
+			if ( ! $current instanceof QuizAttempt || $current->is_open() ) {
+				$open[] = $attempt->quiz_id;
+			}
+		}
+		return \array_values( \array_unique( $open ) );
 	}
 
 	public function attempts_used( int $user_id, int $quiz_id, int $course_id ): int {

@@ -282,24 +282,23 @@ final class QuizAttemptRepository {
 	}
 
 	/**
-	 * The quizzes in one course this learner has an open (in_progress)
-	 * attempt at, in one query: the outline's and the course page's
-	 * "In progress" state for every quiz at once.
+	 * Every open (in_progress) attempt this learner has in one course, in
+	 * one query: what QuizService::settle_open_attempts() resolves and lists
+	 * for a whole course page at once.
 	 *
-	 * @return int[]
+	 * @return QuizAttempt[]
 	 */
-	public static function open_quiz_ids( int $user_id, int $course_id ): array {
+	public static function open_for_course( int $user_id, int $course_id ): array {
 		global $wpdb;
-		return \array_map(
-			'intval',
-			(array) $wpdb->get_col(
-				$wpdb->prepare(
-					'SELECT DISTINCT quiz_id FROM ' . self::table() . " WHERE user_id = %d AND course_id = %d AND status = 'in_progress'",
-					$user_id,
-					$course_id
-				)
-			)
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . self::table() . " WHERE user_id = %d AND course_id = %d AND status = 'in_progress' ORDER BY id ASC",
+				$user_id,
+				$course_id
+			),
+			ARRAY_A
 		);
+		return \array_map( [ QuizAttempt::class, 'from_row' ], (array) $rows );
 	}
 
 	/** Attempts that count against max_attempts (abandoned rows do not). */

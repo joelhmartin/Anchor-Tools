@@ -914,7 +914,9 @@ works without JavaScript; `frontend.js` collapses it on narrow screens).
   item. Each item's state is `current`, `done`, `available` or `locked`
   (`is-{state}` class; a completed item also gets `is-complete`), announced as
   visually hidden text; the current step carries `aria-current="page"`. A
-  locked item is not linked. A quiz links to its quiz step (below).
+  locked item is not linked, and neither is the step on screen when this
+  learner may not open it (a visitor on a denied step). A quiz links to its
+  quiz step (below).
   Unpublished items are left out (the step on screen stays, for an editor's
   preview).
 - **Previous / next bar** (`lesson-nav`, a `<nav aria-label="Lesson
@@ -975,10 +977,13 @@ past its time limit is closed by its pinned `on_timer_expiry` policy
 the box offers a fresh start if attempts remain, never a resume. The outline
 (state `in-progress`, class `is-started`, a half-filled marker; on the current
 step "Current step, In progress") and the course page (`is-started` and an
-"In progress" tag) mark such a quiz from `QuizService::open_quiz_ids()`, one
-query per page for the whole course; that listing hint does not run the
-timer, so a lapsed attempt reads "In progress" until the step, a REST read or
-the daily sweep closes it.
+"In progress" tag) mark such a quiz from `QuizService::settle_open_attempts()`,
+which every course page, lesson page, live-session page and quiz step runs
+once, first: one query finds the learner's open attempts in the course, and
+each goes through `enforce_timer()`, so a lapsed attempt is closed by its own
+policy (its grade or failure recorded) before the page reads progress,
+availability or builds the outline. Only attempts still in time read "In
+progress" (PR #40 review, CodeRabbit).
 
 The course page no longer renders any quiz inline: an item the learner may
 open links to its step (a lesson to its page, a quiz to its quiz step,

@@ -88,6 +88,10 @@ final class Shortcodes {
 		}
 
 		$user_id = \get_current_user_id();
+		// First, before anything reads progress or availability: close this
+		// learner's lapsed quiz attempts in this course by their own timer
+		// policy, and learn which quizzes are still open.
+		$in_progress = $this->settle_open_attempts( $user_id, $course_id );
 
 		return Templates::render(
 			'course',
@@ -104,8 +108,8 @@ final class Shortcodes {
 				'is_enrolled'  => $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id ),
 				// is_item_available() for every item, read once (PR #40 review).
 				'availability' => $user_id > 0 ? $this->progress->availability( $user_id, $course_id ) : [],
-				// Quizzes with an open attempt, one query ("In progress").
-				'in_progress'  => $this->open_quiz_ids( $user_id, $course_id ),
+				// Quizzes still open after settling ("In progress").
+				'in_progress'  => $in_progress,
 				'service'      => $this->progress,
 			]
 		);
@@ -259,6 +263,9 @@ final class Shortcodes {
 			return $this->render_live_session( $lesson_id, $course_id );
 		}
 
+		// Before any availability or progress read (settle_open_attempts()).
+		$open_quizzes = $this->settle_open_attempts( $user_id, $course_id );
+
 		$available = $user_id > 0 && $this->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' );
 		if ( $available ) {
 			$this->progress->start_lesson( $user_id, $course_id, $lesson_id );
@@ -267,7 +274,7 @@ final class Shortcodes {
 		// After start_lesson(): a `view`-completion lesson has just completed,
 		// and the outline and the Next button must already say so.
 		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
-		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $lesson_id, $course_progress );
+		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $lesson_id, $course_progress, 'lesson', $open_quizzes );
 
 		$body = Templates::render(
 			'lesson',
@@ -289,10 +296,17 @@ final class Shortcodes {
 		return $this->lesson_layout( $body, $outline );
 	}
 
-	/** @return int[] Quizzes in this course with an open attempt (QuizService::open_quiz_ids()). */
-	private function open_quiz_ids( int $user_id, int $course_id ): array {
+	/**
+	 * QuizService::settle_open_attempts(): close this learner's lapsed quiz
+	 * attempts in this course by their own timer policy, once per page and
+	 * before it reads progress or availability, and return the quizzes still
+	 * open ("In progress").
+	 *
+	 * @return int[]
+	 */
+	private function settle_open_attempts( int $user_id, int $course_id ): array {
 		$module = Module::instance();
-		return $module instanceof Module ? $module->quizzes->open_quiz_ids( $user_id, $course_id ) : [];
+		return $user_id > 0 && $module instanceof Module ? $module->quizzes->settle_open_attempts( $user_id, $course_id ) : [];
 	}
 
 	/** A previous/next step's id when it is a lesson, else 0. */
@@ -321,13 +335,15 @@ final class Shortcodes {
 		}
 
 		$user_id         = \get_current_user_id();
+		// First: every lapsed attempt in the course, this quiz's included, is
+		// closed by its timer policy before the denial, the progress and the
+		// outline are read. render_quiz()'s own resumable_attempt() then finds
+		// nothing left to resolve, so nothing is resolved twice.
+		$open_quizzes    = $this->settle_open_attempts( $user_id, $course_id );
 		$denial          = Access::item_denial( $course_id, $quiz_id, 'quiz', $user_id );
-		// Before the outline: rendering the box resolves an expired open
-		// attempt (QuizService::resumable_attempt()), which the outline's
-		// progress and states must already reflect.
 		$quiz_html       = '' === $denial ? $this->render_quiz( $quiz_id, $course_id, false ) : '';
 		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
-		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $quiz_id, $course_progress, 'quiz' );
+		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $quiz_id, $course_progress, 'quiz', $open_quizzes );
 
 		$body = Templates::render(
 			'quiz-step',
@@ -388,6 +404,9 @@ final class Shortcodes {
 		// which implies the event still exists and just hasn't started.
 		$ready    = Events::available() && Events::event_exists( $event_id );
 
+		// Before any availability or progress read (settle_open_attempts()).
+		$open_quizzes = $this->settle_open_attempts( $user_id, $course_id );
+
 		$item_available = $user_id > 0 && $this->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' );
 		if ( $item_available ) {
 			$this->progress->start_lesson( $user_id, $course_id, $lesson_id );
@@ -395,7 +414,7 @@ final class Shortcodes {
 
 		$is_enrolled     = $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id );
 		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
-		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $lesson_id, $course_progress );
+		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $lesson_id, $course_progress, 'lesson', $open_quizzes );
 
 		// The stream veto's own decision (Events::prework_block(), the same
 		// call veto_stream_access() makes), so this page never offers a Join

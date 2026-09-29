@@ -206,6 +206,20 @@ class Test_Courses_Quiz_Step extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( 'class="anchor-quiz"', $html );
 	}
 
+	public function test_a_denied_current_step_is_not_linked_in_the_outline() {
+		wp_set_current_user( 0 );
+		$outline = ( new CourseOutline( $this->progress() ) )->build( $this->course, 0, $this->quiz, null, 'quiz' );
+		$current = array_values( array_filter( $outline['modules'][0]['items'], static fn( $i ) => $i['current'] ) )[0];
+		$this->assertSame( '', $current['url'] );
+
+		// A locked learner on the step: current, but not linked either.
+		wp_set_current_user( $this->user );
+		$html = $this->step();
+		$this->assertStringNotContainsString( 'aria-current="page" href', $html );
+		$this->assertDoesNotMatchRegularExpression( '/href="' . preg_quote( esc_url( Access::quiz_url( $this->quiz, $this->course ) ), '/' ) . '"/', $html );
+		$this->assertStringContainsString( '(Current step)', $html );
+	}
+
 	public function test_the_step_asks_the_same_authority_a_lesson_does() {
 		$this->progress()->complete_lesson( $this->user, $this->course, $this->one );
 		add_filter(

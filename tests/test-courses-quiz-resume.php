@@ -86,7 +86,7 @@ class Test_Courses_Quiz_Resume extends Anchor_Courses_TestCase {
 
 	public function test_no_open_attempt_means_nothing_to_resume_and_start_quiz() {
 		$this->assertNull( $this->quizzes()->resumable_attempt( $this->user, $this->quiz, $this->course ) );
-		$this->assertSame( [], $this->quizzes()->open_quiz_ids( $this->user, $this->course ) );
+		$this->assertSame( [], $this->quizzes()->settle_open_attempts( $this->user, $this->course ) );
 
 		$html = $this->step();
 		$this->assertStringContainsString( 'Start quiz', $html );
@@ -97,7 +97,7 @@ class Test_Courses_Quiz_Resume extends Anchor_Courses_TestCase {
 		$attempt = $this->quizzes()->start_attempt( $this->user, $this->quiz, $this->course );
 
 		$this->assertSame( $attempt->id, $this->quizzes()->resumable_attempt( $this->user, $this->quiz, $this->course )->id );
-		$this->assertSame( [ $this->quiz ], $this->quizzes()->open_quiz_ids( $this->user, $this->course ) );
+		$this->assertSame( [ $this->quiz ], $this->quizzes()->settle_open_attempts( $this->user, $this->course ) );
 
 		$html = $this->step();
 		$this->assertStringContainsString( 'Resume quiz', $html );
@@ -216,12 +216,75 @@ class Test_Courses_Quiz_Resume extends Anchor_Courses_TestCase {
 		$this->assertMatchesRegularExpression( '/anchor-course-outline__item--quiz is-current is-started/', $html );
 	}
 
-	public function test_in_progress_is_one_query_for_the_whole_course() {
+	public function test_settling_an_attempt_still_in_time_is_one_query_for_the_whole_course() {
 		global $wpdb;
 		$this->quizzes()->start_attempt( $this->user, $this->quiz, $this->course );
 
 		$before = $wpdb->num_queries;
-		$this->quizzes()->open_quiz_ids( $this->user, $this->course );
+		$this->assertSame( [ $this->quiz ], $this->quizzes()->settle_open_attempts( $this->user, $this->course ) );
 		$this->assertSame( 1, $wpdb->num_queries - $before );
+	}
+
+	/** Start a timed attempt, save an answer, then move the clock past its limit. */
+	private function lapse_an_attempt( string $policy ): int {
+		$this->timed( $policy );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		$attempt = $this->quizzes()->start_attempt( $this->user, $this->quiz, $this->course );
+		$this->quizzes()->save_answer( $attempt->id, $this->q1, 'a2', $this->user );
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:05:00 UTC' ) );
+		return $attempt->id;
+	}
+
+	public function test_the_course_page_closes_a_lapsed_attempt_before_it_shows_anything() {
+		$attempt = $this->lapse_an_attempt( 'auto_submit' );
+
+		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
+
+		$this->assertStringNotContainsString( 'anchor-course-item-status', $html );
+		$this->assertStringNotContainsString( 'is-started', $html );
+		$this->assertSame( 'graded', $this->quizzes()->get_attempt( $attempt )->status, 'Closed by its own auto_submit policy.' );
+	}
+
+	public function test_the_lesson_page_closes_a_lapsed_attempt_before_its_outline() {
+		$attempt = $this->lapse_an_attempt( 'expire' );
+
+		global $post;
+		$post = get_post( $this->lesson );
+		$html = Module::instance()->shortcodes->render_lesson( $this->lesson );
+
+		$this->assertStringNotContainsString( '(In progress)', $html );
+		$this->assertStringNotContainsString( 'is-started', $html );
+		$this->assertSame( 'expired', $this->quizzes()->get_attempt( $attempt )->status, 'Closed by its own expire policy.' );
+	}
+
+	public function test_a_lapsed_passing_attempt_counts_in_the_progress_the_same_page_shows() {
+		// Both answers right, then the clock runs out: auto_submit grades a pass.
+		$this->timed( 'auto_submit' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		$attempt   = $this->quizzes()->start_attempt( $this->user, $this->quiz, $this->course );
+		$questions = Questions::get( $this->quiz );
+		$this->quizzes()->save_answer( $attempt->id, $questions[0]['id'], 'a2', $this->user );
+		$this->quizzes()->save_answer( $attempt->id, $questions[1]['id'], 'b1', $this->user );
+		$this->courses()->progress->complete_lesson( $this->user, $this->course, $this->lesson );
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:05:00 UTC' ) );
+
+		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
+
+		$this->assertStringContainsString( '(2 of 2)', $html, 'The pass the timer graded is already in the progress bar.' );
+	}
+
+	public function test_the_quiz_step_resolves_once_and_the_box_offers_a_fresh_start() {
+		$attempt = $this->lapse_an_attempt( 'auto_submit' );
+		$graded  = 0;
+		add_action( 'anchor_courses_quiz_submitted', function () use ( &$graded ) { $graded++; } );
+
+		$html = $this->step();
+
+		$this->assertSame( 1, $graded, 'Resolved once, not again by the quiz box.' );
+		$this->assertStringContainsString( 'Start quiz', $html );
+		$this->assertStringNotContainsString( '(Current step, In progress)', $html );
+		$this->assertSame( 'graded', $this->quizzes()->get_attempt( $attempt )->status );
 	}
 }

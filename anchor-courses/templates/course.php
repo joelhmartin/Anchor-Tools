@@ -6,7 +6,7 @@
  * $is_enrolled (bool - true only for an ACTIVE enrolment; a cancelled or
  * expired row reads false, same as no row at all), $availability
  * (array<string,bool> - ProgressService::availability(), keyed "type:id"),
- * $in_progress (int[] - quizzes with an open attempt, QuizService::open_quiz_ids()),
+ * $in_progress (int[] - quizzes still open after QuizService::settle_open_attempts()),
  * $service (ProgressService, for overrides written before $availability).
  *
  * Every item an enrolled learner may open links to its step: a lesson to its

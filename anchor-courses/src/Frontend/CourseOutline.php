@@ -37,7 +37,7 @@ final class CourseOutline {
 	public const STATE_CURRENT   = 'current';
 	public const STATE_DONE      = 'done';
 	public const STATE_AVAILABLE = 'available';
-	/** A quiz with an open, unsubmitted attempt (QuizService::open_quiz_ids()). */
+	/** A quiz with an open, unsubmitted attempt (QuizService::settle_open_attempts()). */
 	public const STATE_IN_PROGRESS = 'in-progress';
 	public const STATE_LOCKED    = 'locked';
 
@@ -65,6 +65,9 @@ final class CourseOutline {
 	 * @param int                 $item_id    The lesson or quiz on screen.
 	 * @param CourseProgress|null $progress   The caller's get_course_progress() result, or null for a visitor.
 	 * @param string              $item_type  'lesson' or 'quiz': what $item_id is.
+	 * @param int[]|null          $open_quizzes The caller's QuizService::settle_open_attempts() result,
+	 *                                          taken with $progress; null settles here (after $progress
+	 *                                          was read, so pass it where the caller has one).
 	 * @return array{
 	 *     course_id:int, course_title:string, course_url:string, lesson_id:int,
 	 *     current:array{type:string,id:int},
@@ -74,11 +77,13 @@ final class CourseOutline {
 	 *     next:?array{type:string,id:int,title:string,url:string,available:bool,complete:bool}
 	 * }
 	 */
-	public function build( int $course_id, int $user_id, int $item_id, ?CourseProgress $progress, string $item_type = 'lesson' ): array {
+	public function build( int $course_id, int $user_id, int $item_id, ?CourseProgress $progress, string $item_type = 'lesson', ?array $open_quizzes = null ): array {
 		$completed    = $progress ? $progress->completed_item_keys : [];
 		$availability = $user_id > 0 ? $this->progress->availability( $user_id, $course_id ) : [];
-		$module       = Module::instance();
-		$open_quizzes = $user_id > 0 && $module instanceof Module ? $module->quizzes->open_quiz_ids( $user_id, $course_id ) : [];
+		if ( null === $open_quizzes ) {
+			$module       = Module::instance();
+			$open_quizzes = $user_id > 0 && $module instanceof Module ? $module->quizzes->settle_open_attempts( $user_id, $course_id ) : [];
+		}
 		$modules      = [];
 		$steps        = []; // Every item, lessons and quizzes: the walk previous/next steps through.
 
@@ -115,9 +120,10 @@ final class CourseOutline {
 					'type'        => $type,
 					'id'          => $id,
 					'title'       => (string) \get_the_title( $id ),
-					// No link to something this learner cannot open: a locked
-					// step would only show the locked notice.
-					'url'         => $available || $current ? self::item_url( $type, $id, $course_id ) : '',
+					// No link to something this learner cannot open, the step
+					// on screen included (a visitor on a denied step): it
+					// would only show the notice again (PR #40 review).
+					'url'         => $available ? self::item_url( $type, $id, $course_id ) : '',
 					'required'    => (bool) $item['required'],
 					'current'     => $current,
 					'complete'    => $complete,

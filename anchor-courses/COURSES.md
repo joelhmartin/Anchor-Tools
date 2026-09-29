@@ -960,6 +960,26 @@ place, with no redirect, and on a step `quiz.js` then re-reads the page and
 swaps in the server's fresh outline and footer, so a pass shows its done
 state and opens Next.
 
+**Resuming.** While the learner has an open (`in_progress`) attempt at the
+quiz in this course, the box says "Resume quiz" (with a line saying the saved
+answers are kept) instead of "Start quiz". Nothing new was needed server
+side: `QuizService::start_attempt()` already returns the open attempt rather
+than creating one, under the per-learner lock (audit F07), so a double click
+or a second tab resumes the same row; the REST start payload carries its
+saved `answers` (which `quiz.js` re-checks) and the `deadline` pinned at
+start, so a timed quiz's countdown continues rather than restarting.
+`QuizService::resumable_attempt()` is what the step asks: the open attempt
+after `enforce_timer()` (the REST read route's call), so an attempt already
+past its time limit is closed by its pinned `on_timer_expiry` policy
+(`auto_submit` grades the saved answers, `expire` closes it as expired) and
+the box offers a fresh start if attempts remain, never a resume. The outline
+(state `in-progress`, class `is-started`, a half-filled marker; on the current
+step "Current step, In progress") and the course page (`is-started` and an
+"In progress" tag) mark such a quiz from `QuizService::open_quiz_ids()`, one
+query per page for the whole course; that listing hint does not run the
+timer, so a lapsed attempt reads "In progress" until the step, a REST read or
+the daily sweep closes it.
+
 The course page no longer renders any quiz inline: an item the learner may
 open links to its step (a lesson to its page, a quiz to its quiz step,
 tagged "Quiz"); a locked item, or any item for a visitor, is listed but not

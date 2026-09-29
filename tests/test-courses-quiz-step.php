@@ -395,6 +395,8 @@ class Test_Courses_Quiz_Step extends Anchor_Courses_TestCase {
 	public function test_the_course_page_does_not_link_a_locked_quiz_or_one_a_visitor_cannot_open() {
 		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
 		$this->assertStringNotContainsString( QuizStep::QUERY_VAR, $html, 'Locked by progression: not linked.' );
+		// Themes (TMJ's courses.css) and the E2E milestone rely on these classes.
+		$this->assertMatchesRegularExpression( '/class="anchor-course-item anchor-course-item--quiz[^"]*\bis-locked"/', $html );
 
 		wp_set_current_user( 0 );
 		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );

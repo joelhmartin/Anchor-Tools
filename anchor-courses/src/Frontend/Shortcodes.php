@@ -104,6 +104,8 @@ final class Shortcodes {
 				'is_enrolled'  => $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id ),
 				// is_item_available() for every item, read once (PR #40 review).
 				'availability' => $user_id > 0 ? $this->progress->availability( $user_id, $course_id ) : [],
+				// Quizzes with an open attempt, one query ("In progress").
+				'in_progress'  => $this->open_quiz_ids( $user_id, $course_id ),
 				'service'      => $this->progress,
 			]
 		);
@@ -287,6 +289,12 @@ final class Shortcodes {
 		return $this->lesson_layout( $body, $outline );
 	}
 
+	/** @return int[] Quizzes in this course with an open attempt (QuizService::open_quiz_ids()). */
+	private function open_quiz_ids( int $user_id, int $course_id ): array {
+		$module = Module::instance();
+		return $module instanceof Module ? $module->quizzes->open_quiz_ids( $user_id, $course_id ) : [];
+	}
+
 	/** A previous/next step's id when it is a lesson, else 0. */
 	private static function neighbour_lesson( ?array $step ): int {
 		return null !== $step && 'lesson' === ( $step['type'] ?? '' ) ? (int) $step['id'] : 0;
@@ -314,6 +322,10 @@ final class Shortcodes {
 
 		$user_id         = \get_current_user_id();
 		$denial          = Access::item_denial( $course_id, $quiz_id, 'quiz', $user_id );
+		// Before the outline: rendering the box resolves an expired open
+		// attempt (QuizService::resumable_attempt()), which the outline's
+		// progress and states must already reflect.
+		$quiz_html       = '' === $denial ? $this->render_quiz( $quiz_id, $course_id, false ) : '';
 		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
 		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $quiz_id, $course_progress, 'quiz' );
 
@@ -325,7 +337,7 @@ final class Shortcodes {
 				'user_id'   => $user_id,
 				'denial'    => $denial,
 				'notice'    => '' === $denial ? '' : Access::denial_notice( $denial, $course_id, $user_id ),
-				'quiz'      => '' === $denial ? $this->render_quiz( $quiz_id, $course_id, false ) : '',
+				'quiz'      => $quiz_html,
 				'complete'  => $course_progress && \in_array( 'quiz:' . $quiz_id, $course_progress->completed_item_keys, true ),
 				'outline'   => $outline,
 			]
@@ -455,10 +467,17 @@ final class Shortcodes {
 			return '';
 		}
 
+		// First: resolving an expired open attempt (its timer policy) can
+		// change the allowance and the best score read below.
+		$open = $module->quizzes->resumable_attempt( $user_id, $quiz_id, $course_id );
+
 		return Templates::render(
 			'quiz',
 			[
 				'quiz_id'            => $quiz_id,
+				// The open attempt "Resume quiz" reopens (start_attempt()
+				// returns it, answers and pinned deadline intact), or null.
+				'open_attempt'       => $open,
 				'course_id'          => $course_id,
 				'user_id'            => $user_id,
 				'can_start'          => $module->quizzes->can_start( $user_id, $quiz_id, $course_id ),

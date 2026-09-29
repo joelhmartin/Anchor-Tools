@@ -14,8 +14,10 @@ const { acceptConsentBanner } = require('../helpers/consent');
  * production - writing the ids/urls into e2e/.seed.json. Run
  * `npm run env:seed` first.
  *
- * The spec drives the real UI: read, mark complete, fail the quiz, retry,
- * pass, and land on a 100% course with a certificate link. There is no enrol
+ * The spec drives the real UI: read, mark complete, follow Next to the quiz
+ * step (/courses/{course}/quiz/{quiz}/ - a quiz is taken inside its course,
+ * not on the course page), fail the quiz, retry, pass, and land on a 100%
+ * course with a certificate link. There is no enrol
  * step to drive - the learner arrives already holding the access role, which
  * is the only way anybody is ever enrolled (design spec 3.1, 7).
  *
@@ -59,8 +61,11 @@ test('milestone: complete a lesson, fail a quiz, retry, pass, finish the course'
   await expect(page.locator('.anchor-course-cta')).toHaveCount(0);
   await expect(page.locator('.anchor-courses-progress-label')).toContainText('0%');
 
-  // 2) Sequential progression: the quiz is not startable yet.
+  // 2) Sequential progression: the quiz is not startable yet. The course page
+  //    lists it, locked and unlinked, and never renders the quiz itself.
   await expect(page.locator('.anchor-course-item--quiz.is-locked')).toHaveCount(1);
+  await expect(page.locator('.anchor-course-item--quiz a')).toHaveCount(0);
+  await expect(page.locator('.anchor-quiz')).toHaveCount(0);
 
   // 3) Open Lesson 1 and mark it complete.
   await page.goto(new URL(seed.courses_lesson_url).pathname);
@@ -69,21 +74,53 @@ test('milestone: complete a lesson, fail a quiz, retry, pass, finish the course'
   await expect(page.locator('.anchor-courses-notice')).toContainText(/complete/i);
   await expect(page.locator('.anchor-courses-progress-label')).toContainText('50%');
 
-  // 4) Back on the course, start the quiz and answer both wrong.
+  // 4) The lesson's Next button is now the quiz step. Follow it, start the
+  //    quiz there and answer both wrong.
+  const next = page.locator('.anchor-lesson-nav__link--next');
+  await expect(next).toContainText('Quiz 1');
+  await Promise.all([page.waitForNavigation(), next.click()]);
+  expect(page.url()).toMatch(/\/quiz\/|anchor_quiz_step=/);
+  const quizStepUrl = page.url();
+  await expect(page.locator('h1.anchor-quiz-step-title')).toHaveText('Quiz 1');
+  await expect(page.locator('.anchor-course-outline')).toBeVisible();
+  await expect(page.locator('.anchor-quiz-title')).toHaveCount(0); // The title is the H1 only.
+
+  // The course page links the now-open quiz to that same step.
   await page.goto(new URL(seed.courses_course_url).pathname);
+  await expect(page.locator('.anchor-course-item--quiz:not(.is-locked) a')).toHaveAttribute('href', quizStepUrl);
+  await expect(page.locator('.anchor-quiz')).toHaveCount(0);
+  await page.goto(quizStepUrl);
+
+  await expect(page.locator('.anchor-quiz-start')).toHaveText('Start quiz');
   await page.locator('.anchor-quiz-start').click();
   await expect(page.locator('.anchor-quiz-question')).toHaveCount(2);
 
   // No answer key may ever be in the page source (brief rule 8).
   expect(await page.content()).not.toContain('"correct"');
 
-  await page.locator('.anchor-quiz-question').nth(0).locator('input[value="a1"]').check();
+  // Answer one question (autosaved), then leave for another lesson mid-quiz.
+  await Promise.all([
+    page.waitForResponse((r) => /\/quiz-attempts\/\d+\/answer/.test(r.url()) && r.ok()),
+    page.locator('.anchor-quiz-question').nth(0).locator('input[value="a1"]').check(),
+  ]);
+  await page.goto(new URL(seed.courses_lesson_url).pathname);
+  await expect(page.locator('.anchor-course-outline__item--quiz.is-started')).toHaveCount(1);
+
+  // Coming back, the step knows the quiz is under way: "Resume quiz" reopens
+  // the same attempt with the saved answer still selected.
+  await page.goto(quizStepUrl);
+  await expect(page.locator('.anchor-quiz-start')).toHaveText('Resume quiz');
+  await page.locator('.anchor-quiz-start').click();
+  await expect(page.locator('.anchor-quiz-question')).toHaveCount(2);
+  await expect(page.locator('.anchor-quiz-question').nth(0).locator('input[value="a1"]')).toBeChecked();
+
   await page.locator('.anchor-quiz-question').nth(1).locator('input[value="b2"]').check();
   await page.locator('.anchor-quiz-form button[type="submit"]').click();
   await expect(page.locator('.anchor-quiz-result')).toContainText(/not passed/i);
 
-  // 5) Retry and answer both correctly.
+  // 5) Retry on the step and answer both correctly.
   await page.reload();
+  expect(page.url()).toBe(quizStepUrl); // No redirect: the learner stays on the step.
   await expect(page.locator('.anchor-quiz-remaining')).toContainText('1 attempt');
   await page.locator('.anchor-quiz-start').click();
   await page.locator('.anchor-quiz-question').nth(0).locator('input[value="a2"]').check();
@@ -93,8 +130,14 @@ test('milestone: complete a lesson, fail a quiz, retry, pass, finish the course'
   await expect(page.locator('.anchor-quiz-result')).toContainText(/passed/i);
   await expect(page.locator('.anchor-quiz-result')).not.toContainText(/not passed/i);
 
+  // The step's outline and footer refresh in place after the grade.
+  await expect(page.locator('.anchor-course-outline__item--quiz.is-complete')).toHaveCount(1);
+  await expect(page.locator('.anchor-lesson-done')).toContainText(/passed/i);
+
   // 6) The course is finished: 100%, credits and a certificate.
   await page.reload();
+  await expect(page.locator('.anchor-courses-progress-label')).toContainText('100%');
+  await page.goto(new URL(seed.courses_course_url).pathname);
   await expect(page.locator('.anchor-courses-progress-label')).toContainText('100%');
 });
 

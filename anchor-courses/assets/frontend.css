@@ -77,7 +77,8 @@
 .anchor-course-item:where(.is-complete)::before { content: "\2713"; margin-right: .5rem; }
 .anchor-course-item:where(.is-locked) { opacity: .5; }
 .anchor-course-optional,
-.anchor-course-item-type { margin-left: .5rem; font-size: .8em; opacity: .7; }
+.anchor-course-item-type,
+.anchor-course-item-status { margin-left: .5rem; font-size: .8em; opacity: .7; }
 .anchor-course-cta--ask { margin: 1rem 0; opacity: .85; }
 
 /* --- progress ------------------------------------------------------------------------- */
@@ -144,6 +145,12 @@
 	content: ""; width: .4rem; height: .4rem; border-radius: 50%; background: var(--anchor-courses-accent, currentColor);
 }
 :where(.anchor-course-outline__item.is-locked) .anchor-course-outline__marker { border-style: dashed; }
+/* A quiz with an open attempt: a half-filled ring. */
+:where(.anchor-course-outline__item.is-started:not(.is-complete)) .anchor-course-outline__marker {
+	border-color: var(--anchor-courses-accent, currentColor);
+	background: linear-gradient(90deg, var(--anchor-courses-accent, currentColor) 50%, transparent 50%);
+}
+:where(.anchor-course-outline__item.is-started.is-current:not(.is-complete)) .anchor-course-outline__marker::before { content: none; }
 
 @media (min-width: 60rem) {
 	.anchor-lesson-layout {
@@ -210,6 +217,7 @@
 .anchor-quiz-remaining { font-size: .9em; opacity: .8; }
 .anchor-quiz-passed { margin-left: .5em; font-weight: 600; opacity: 1; }
 .anchor-quiz-actions { margin: 0; }
+.anchor-quiz-resume-note { font-weight: 600; }
 .anchor-quiz-timer {
 	justify-self: start; padding: .35rem .85rem; border-radius: 999px;
 	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));

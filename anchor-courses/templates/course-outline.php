@@ -7,8 +7,8 @@
  * Variables: $outline (array - Frontend\CourseOutline::build(): course_id,
  * course_title, course_url, progress (CourseProgress|null), modules (each
  * with title and items; an item has type, id, title, url ('' when this
- * learner cannot open it), required, current, complete, available and
- * state), previous, next).
+ * learner cannot open it), required, current, complete, available,
+ * in_progress (a quiz with an open attempt) and state), previous, next).
  *
  * A quiz links to its step in this course (/courses/{course}/quiz/{quiz}/).
  *
@@ -24,7 +24,8 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 $anchor_courses_states = [
 	'current'   => __( 'Current step', 'anchor-schema' ),
 	'done'      => __( 'Completed', 'anchor-schema' ),
-	'available' => __( 'Not started', 'anchor-schema' ),
+	'available'   => __( 'Not started', 'anchor-schema' ),
+	'in-progress' => __( 'In progress', 'anchor-schema' ),
 	'locked'    => __( 'Locked', 'anchor-schema' ),
 ];
 ?>
@@ -55,6 +56,11 @@ $anchor_courses_states = [
 						$anchor_courses_state_text = $anchor_courses_states[ $anchor_courses_item['state'] ] ?? '';
 						if ( $anchor_courses_item['current'] && $anchor_courses_item['complete'] ) {
 							$anchor_courses_state_text .= ', ' . $anchor_courses_states['done'];
+						} elseif ( $anchor_courses_item['current'] && ! empty( $anchor_courses_item['in_progress'] ) ) {
+							$anchor_courses_state_text .= ', ' . $anchor_courses_states['in-progress'];
+						}
+						if ( ! empty( $anchor_courses_item['in_progress'] ) ) {
+							$anchor_courses_classes .= ' is-started';
 						}
 						?>
 						<li class="<?php echo esc_attr( $anchor_courses_classes ); ?>">

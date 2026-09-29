@@ -5,6 +5,7 @@ namespace Anchor\Courses\Frontend;
 
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Domain\CourseProgress;
+use Anchor\Courses\Module;
 use Anchor\Courses\Services\ProgressService;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -36,6 +37,8 @@ final class CourseOutline {
 	public const STATE_CURRENT   = 'current';
 	public const STATE_DONE      = 'done';
 	public const STATE_AVAILABLE = 'available';
+	/** A quiz with an open, unsubmitted attempt (QuizService::open_quiz_ids()). */
+	public const STATE_IN_PROGRESS = 'in-progress';
 	public const STATE_LOCKED    = 'locked';
 
 	/** The fragment a step's footer (completion form + next/previous bar) carries. */
@@ -66,7 +69,7 @@ final class CourseOutline {
 	 *     course_id:int, course_title:string, course_url:string, lesson_id:int,
 	 *     current:array{type:string,id:int},
 	 *     progress:?CourseProgress,
-	 *     modules:array<int,array{id:string,title:string,items:array<int,array{type:string,id:int,title:string,url:string,required:bool,current:bool,complete:bool,available:bool,state:string}>}>,
+	 *     modules:array<int,array{id:string,title:string,items:array<int,array{type:string,id:int,title:string,url:string,required:bool,current:bool,complete:bool,available:bool,in_progress:bool,state:string}>}>,
 	 *     previous:?array{type:string,id:int,title:string,url:string,available:bool,complete:bool},
 	 *     next:?array{type:string,id:int,title:string,url:string,available:bool,complete:bool}
 	 * }
@@ -74,6 +77,8 @@ final class CourseOutline {
 	public function build( int $course_id, int $user_id, int $item_id, ?CourseProgress $progress, string $item_type = 'lesson' ): array {
 		$completed    = $progress ? $progress->completed_item_keys : [];
 		$availability = $user_id > 0 ? $this->progress->availability( $user_id, $course_id ) : [];
+		$module       = Module::instance();
+		$open_quizzes = $user_id > 0 && $module instanceof Module ? $module->quizzes->open_quiz_ids( $user_id, $course_id ) : [];
 		$modules      = [];
 		$steps        = []; // Every item, lessons and quizzes: the walk previous/next steps through.
 
@@ -92,11 +97,14 @@ final class CourseOutline {
 
 				$complete  = \in_array( $key, $completed, true );
 				$available = $availability[ $key ] ?? false;
+				$started   = 'quiz' === $type && ! $complete && \in_array( $id, $open_quizzes, true );
 
 				if ( $current ) {
 					$state = self::STATE_CURRENT;
 				} elseif ( $complete ) {
 					$state = self::STATE_DONE;
+				} elseif ( $available && $started ) {
+					$state = self::STATE_IN_PROGRESS;
 				} elseif ( $available ) {
 					$state = self::STATE_AVAILABLE;
 				} else {
@@ -104,17 +112,18 @@ final class CourseOutline {
 				}
 
 				$row = [
-					'type'      => $type,
-					'id'        => $id,
-					'title'     => (string) \get_the_title( $id ),
+					'type'        => $type,
+					'id'          => $id,
+					'title'       => (string) \get_the_title( $id ),
 					// No link to something this learner cannot open: a locked
 					// step would only show the locked notice.
-					'url'       => $available || $current ? self::item_url( $type, $id, $course_id ) : '',
-					'required'  => (bool) $item['required'],
-					'current'   => $current,
-					'complete'  => $complete,
-					'available' => $available,
-					'state'     => $state,
+					'url'         => $available || $current ? self::item_url( $type, $id, $course_id ) : '',
+					'required'    => (bool) $item['required'],
+					'current'     => $current,
+					'complete'    => $complete,
+					'available'   => $available,
+					'in_progress' => $started,
+					'state'       => $state,
 				];
 
 				$items[] = $row;

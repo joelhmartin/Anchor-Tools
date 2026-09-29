@@ -6,6 +6,7 @@
  * $is_enrolled (bool - true only for an ACTIVE enrolment; a cancelled or
  * expired row reads false, same as no row at all), $availability
  * (array<string,bool> - ProgressService::availability(), keyed "type:id"),
+ * $in_progress (int[] - quizzes with an open attempt, QuizService::open_quiz_ids()),
  * $service (ProgressService, for overrides written before $availability).
  *
  * Every item an enrolled learner may open links to its step: a lesson to its
@@ -78,8 +79,9 @@ $notice = Actions::notice();
 						<?php
 						$available = isset( $availability ) ? ( $availability[ $item['type'] . ':' . $item['id'] ] ?? false ) : ( $user_id > 0 && $service->is_item_available( $user_id, $course_id, (int) $item['id'], $item['type'] ) );
 						$done      = $progress && in_array( $item['type'] . ':' . $item['id'], $progress->completed_item_keys, true );
+						$started   = ! $done && 'quiz' === $item['type'] && in_array( (int) $item['id'], $in_progress ?? [], true );
 						?>
-						<li id="<?php echo esc_attr( CourseOutline::item_anchor( (string) $item['type'], (int) $item['id'] ) ); ?>" class="anchor-course-item anchor-course-item--<?php echo esc_attr( $item['type'] ); ?><?php echo $done ? ' is-complete' : ''; ?><?php echo $available ? '' : ' is-locked'; ?>">
+						<li id="<?php echo esc_attr( CourseOutline::item_anchor( (string) $item['type'], (int) $item['id'] ) ); ?>" class="anchor-course-item anchor-course-item--<?php echo esc_attr( $item['type'] ); ?><?php echo $done ? ' is-complete' : ''; ?><?php echo $available ? '' : ' is-locked'; ?><?php echo $started ? ' is-started' : ''; ?>">
 							<?php if ( $available ) : ?>
 								<a href="<?php echo esc_url( Access::item_url( (string) $item['type'], (int) $item['id'], (int) $course_id ) ); ?>"><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></a>
 							<?php else : ?>
@@ -87,6 +89,9 @@ $notice = Actions::notice();
 							<?php endif; ?>
 							<?php if ( 'quiz' === $item['type'] ) : ?>
 								<em class="anchor-course-item-type"><?php esc_html_e( 'Quiz', 'anchor-schema' ); ?></em>
+							<?php endif; ?>
+							<?php if ( $started ) : ?>
+								<em class="anchor-course-item-status"><?php esc_html_e( 'In progress', 'anchor-schema' ); ?></em>
 							<?php endif; ?>
 							<?php if ( ! $item['required'] ) : ?>
 								<em class="anchor-course-optional"><?php esc_html_e( 'Optional', 'anchor-schema' ); ?></em>

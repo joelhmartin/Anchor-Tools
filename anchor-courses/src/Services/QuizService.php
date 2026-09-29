@@ -256,6 +256,39 @@ final class QuizService {
 	}
 
 	/** Attempts counted against max_attempts in THIS course (audit F05). */
+	/**
+	 * The attempt this learner would resume at this quiz in this course, or
+	 * null: the open (in_progress) attempt, once the module's own timer rule
+	 * has had its say. enforce_timer() is the same call the REST read route
+	 * makes, so an attempt past its pinned deadline is closed by its pinned
+	 * on_timer_expiry policy (auto_submit grades the saved answers, expire
+	 * closes it) rather than offered for resuming.
+	 *
+	 * start_attempt() already resumes rather than creates while an attempt is
+	 * open, under the per-learner lock; this only lets a page say so first.
+	 */
+	public function resumable_attempt( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {
+		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
+		if ( ! $open instanceof QuizAttempt ) {
+			return null;
+		}
+		$current = $this->enforce_timer( $open );
+		return $current instanceof QuizAttempt && $current->is_open() ? $current : null;
+	}
+
+	/**
+	 * The quizzes in this course the learner has an open attempt at, in one
+	 * query (QuizAttemptRepository::open_quiz_ids()). A listing hint only:
+	 * it does not run the timer, so an attempt already past its deadline
+	 * still counts until the quiz step, a REST read or the daily sweep
+	 * closes it.
+	 *
+	 * @return int[]
+	 */
+	public function open_quiz_ids( int $user_id, int $course_id ): array {
+		return $user_id > 0 ? QuizAttemptRepository::open_quiz_ids( $user_id, $course_id ) : [];
+	}
+
 	public function attempts_used( int $user_id, int $quiz_id, int $course_id ): int {
 		return QuizAttemptRepository::count_for_quiz( $user_id, $quiz_id, $course_id );
 	}

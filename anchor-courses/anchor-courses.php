@@ -19,7 +19,7 @@ require_once __DIR__ . '/api.php';
 
 class Module {
 
-	const VERSION = '1.0.0';
+	const VERSION = '1.1.0';
 
 	private static ?Module $instance = null;
 

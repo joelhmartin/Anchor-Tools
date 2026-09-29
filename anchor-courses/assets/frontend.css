@@ -1,26 +1,195 @@
-/* Anchor Courses - front end. Theme-agnostic: spacing and state, no brand colours. */
+/*
+ * Anchor Courses - front end.
+ *
+ * Theme-agnostic structure only. Typography and colour come from the theme:
+ * no font-family, sizes in em/rem, text in the inherited colour.
+ *
+ * Specificity is kept low on purpose: every rule is one class deep (a state
+ * or a context goes inside :where(), which adds nothing), and this file loads
+ * before the theme's stylesheet, so a theme's own class selector wins without
+ * !important, while a bare element rule in a theme (ol, li, summary) cannot
+ * undo the structure.
+ *
+ * A theme re-skins the module by setting these custom properties (on :root,
+ * body or any wrapper); each has a neutral fallback:
+ *
+ *   --anchor-courses-accent         primary button, progress bar, outline markers
+ *                                   (fallback: the block theme's contrast colour, else near-black;
+ *                                   the bar and markers fall back to the text colour)
+ *   --anchor-courses-accent-ink     text on the accent (the block theme's base colour, else white)
+ *   --anchor-courses-border         hairlines (the text colour at 15%)
+ *   --anchor-courses-surface        tinted panels, current item (the text colour at 5%)
+ *   --anchor-courses-radius         corner radius (.5rem)
+ *   --anchor-courses-max-width      lesson page width (76rem)
+ *   --anchor-courses-course-width   course page width (48rem)
+ *   --anchor-courses-gutter         side padding of the page shell (1.25rem)
+ *   --anchor-courses-space          top and bottom padding of the page shell (2.5rem)
+ *   --anchor-courses-sidebar-width  lesson outline column (19rem)
+ *   --anchor-courses-sticky-top     outline offset under a sticky site header (1.5rem)
+ */
+
+/* --- page shell (single-course.php, single-lesson.php) ------------------------------- */
+.anchor-courses-container {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: var(--anchor-courses-max-width, 76rem);
+	margin-inline: auto;
+	padding: var(--anchor-courses-space, 2.5rem) var(--anchor-courses-gutter, 1.25rem);
+}
+:where(.anchor-courses-single--course) .anchor-courses-container { max-width: var(--anchor-courses-course-width, 48rem); }
+
+/* --- shared --------------------------------------------------------------------------- */
+.anchor-courses-sr-only {
+	position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+	overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.anchor-courses-button {
+	display: inline-flex; align-items: center; justify-content: center; gap: .4em;
+	padding: .65em 1.25em;
+	border: 1px solid var(--anchor-courses-accent, var(--wp--preset--color--contrast, #1e1e1e));
+	border-radius: var(--anchor-courses-radius, .5rem);
+	background: var(--anchor-courses-accent, var(--wp--preset--color--contrast, #1e1e1e));
+	color: var(--anchor-courses-accent-ink, var(--wp--preset--color--base, #fff));
+	font: inherit; line-height: 1.3; text-align: center; text-decoration: none; cursor: pointer;
+}
+.anchor-courses-button:where(:hover) { opacity: .88; }
+.anchor-courses-button:where(:focus-visible) { outline: 2px solid var(--anchor-courses-accent, currentColor); outline-offset: 2px; }
+.anchor-courses-button:where(.is-locked) { opacity: .45; cursor: not-allowed; }
+.anchor-courses-notice {
+	padding: .75rem 1rem; margin: 0 0 1rem;
+	border-left: 3px solid var(--anchor-courses-accent, currentColor);
+	border-radius: var(--anchor-courses-radius, .5rem);
+	background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent));
+}
+
+/* --- course list and course page ------------------------------------------------------ */
 .anchor-courses-list { list-style: none; margin: 0 0 1.5rem; padding: 0; }
-.anchor-courses-list-item { padding: .5rem 0; border-bottom: 1px solid rgba(0,0,0,.08); }
+.anchor-courses-list-item { padding: .5rem 0; border-bottom: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent)); }
 .anchor-courses-credits { font-size: .85em; opacity: .75; }
 .anchor-course-meta { display: flex; flex-wrap: wrap; gap: 1rem; margin: .5rem 0 1rem; font-size: .9em; opacity: .8; }
 .anchor-course-curriculum { list-style: none; margin: 0 0 1.5rem; padding: 0; }
 .anchor-course-module { margin: 0 0 1.25rem; }
 .anchor-course-items { list-style: none; margin: .25rem 0 0; padding: 0; }
-.anchor-course-item { padding: .35rem 0; }
-.anchor-course-item.is-complete::before { content: "\2713"; margin-right: .5rem; }
-.anchor-course-item.is-locked { opacity: .5; }
+.anchor-course-item { padding: .35rem 0; scroll-margin-top: calc(var(--anchor-courses-sticky-top, 1.5rem) + 1rem); }
+.anchor-course-item:where(:target) { background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent)); }
+.anchor-course-item:where(.is-complete)::before { content: "\2713"; margin-right: .5rem; }
+.anchor-course-item:where(.is-locked) { opacity: .5; }
 .anchor-course-optional { margin-left: .5rem; font-size: .8em; opacity: .7; }
-.anchor-courses-progress { margin: 1rem 0; }
-.anchor-courses-bar { background: rgba(0,0,0,.1); height: 10px; border-radius: 5px; overflow: hidden; }
-.anchor-courses-bar span { display: block; height: 100%; background: currentColor; }
-.anchor-courses-progress-label { margin: .35rem 0 0; font-size: .85em; }
-.anchor-courses-notice { padding: .75rem 1rem; margin: 0 0 1rem; border-left: 3px solid currentColor; background: rgba(0,0,0,.04); }
-.anchor-courses-button { display: inline-block; padding: .6rem 1.2rem; cursor: pointer; }
 .anchor-course-cta--ask { margin: 1rem 0; opacity: .85; }
+
+/* --- progress ------------------------------------------------------------------------- */
+.anchor-courses-progress { margin: 1rem 0; }
+.anchor-courses-bar {
+	height: .5rem; border-radius: 999px; overflow: hidden;
+	background: var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+}
+:where(.anchor-courses-bar) span { display: block; height: 100%; background: var(--anchor-courses-accent, currentColor); }
+.anchor-courses-progress-label { margin: .35rem 0 0; font-size: .85em; }
+
+/* --- lesson page: the outline beside the lesson ---------------------------------------- */
+.anchor-lesson-layout { display: grid; gap: 1.5rem; }
+.anchor-lesson-layout__main { min-width: 0; }
+
+.anchor-course-outline-toggle {
+	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+	border-radius: var(--anchor-courses-radius, .5rem);
+}
+.anchor-course-outline-toggle__summary {
+	display: flex; justify-content: space-between; align-items: center;
+	padding: .75rem 1rem; font-weight: 600; cursor: pointer; list-style: none;
+}
+.anchor-course-outline-toggle__summary::-webkit-details-marker { display: none; }
+.anchor-course-outline-toggle__summary::after { content: "+"; font-size: 1.25em; line-height: 1; }
+:where(.anchor-course-outline-toggle[open]) .anchor-course-outline-toggle__summary::after { content: "\2212"; }
+.anchor-course-outline { padding: 0 1rem 1rem; }
+.anchor-course-outline__course { margin: 0 0 .5rem; font-weight: 600; }
+:where(.anchor-course-outline__course) a { color: inherit; }
+:where(.anchor-course-outline) .anchor-courses-progress { margin: 0 0 1.25rem; }
+.anchor-course-outline__modules,
+.anchor-course-outline__items { list-style: none; margin: 0; padding: 0; }
+.anchor-course-outline__module { margin: 0 0 1rem; padding: 0; }
+.anchor-course-outline__item { margin: 0; padding: 0; }
+.anchor-course-outline__module-title {
+	margin: 0 0 .35rem; font-size: .8em; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; opacity: .7;
+}
+.anchor-course-outline__link {
+	display: flex; gap: .6rem; align-items: flex-start;
+	padding: .45rem .6rem; border-radius: var(--anchor-courses-radius, .5rem);
+	color: inherit; text-decoration: none; font-size: .95em; line-height: 1.35;
+}
+.anchor-course-outline__link:where(a:hover) { background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent)); }
+:where(.anchor-course-outline__item.is-current) .anchor-course-outline__link {
+	background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent)); font-weight: 600;
+}
+:where(.anchor-course-outline__item.is-locked) .anchor-course-outline__link { opacity: .55; }
+.anchor-course-outline__tag { margin-left: .35em; font-size: .75em; font-weight: 400; opacity: .7; }
+
+/* The marker: an empty ring (not started), a ring with a tick (done), a ring
+   with a dot (current), a dashed ring (locked). Drawn in the accent, which
+   falls back to the text colour. */
+.anchor-course-outline__marker {
+	flex: 0 0 auto; display: grid; place-items: center; box-sizing: border-box;
+	width: 1.1rem; height: 1.1rem; margin-top: .1em;
+	border: 2px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 30%, transparent));
+	border-radius: 50%; font-size: .7rem; font-weight: 700; line-height: 1;
+	color: var(--anchor-courses-accent, currentColor);
+}
+:where(.anchor-course-outline__item.is-complete) .anchor-course-outline__marker { border-color: var(--anchor-courses-accent, currentColor); }
+:where(.anchor-course-outline__item.is-complete) .anchor-course-outline__marker::before { content: "\2713"; }
+:where(.anchor-course-outline__item.is-current:not(.is-complete)) .anchor-course-outline__marker { border-color: var(--anchor-courses-accent, currentColor); }
+:where(.anchor-course-outline__item.is-current:not(.is-complete)) .anchor-course-outline__marker::before {
+	content: ""; width: .4rem; height: .4rem; border-radius: 50%; background: var(--anchor-courses-accent, currentColor);
+}
+:where(.anchor-course-outline__item.is-locked) .anchor-course-outline__marker { border-style: dashed; }
+
+@media (min-width: 60rem) {
+	.anchor-lesson-layout {
+		grid-template-columns: var(--anchor-courses-sidebar-width, 19rem) minmax(0, 1fr);
+		gap: 3rem; align-items: start;
+	}
+	.anchor-lesson-layout__outline {
+		position: sticky; top: var(--anchor-courses-sticky-top, 1.5rem);
+		max-height: calc(100vh - var(--anchor-courses-sticky-top, 1.5rem) - 1.5rem);
+		overflow-y: auto;
+	}
+	.anchor-course-outline-toggle { border: 0; border-radius: 0; }
+	.anchor-course-outline-toggle__summary { display: none; }
+	.anchor-course-outline { padding: 0; }
+}
+
+/* --- lesson body and footer ----------------------------------------------------------- */
 .anchor-lesson-breadcrumb { font-size: .85em; margin: 0 0 1rem; }
 .anchor-lesson-breadcrumb-sep { margin: 0 .4rem; opacity: .5; }
-.anchor-lesson-nav { display: flex; justify-content: space-between; margin: 1.5rem 0; }
+.anchor-lesson-title { margin: 0 0 1.5rem; }
+.anchor-lesson-footer {
+	display: grid; gap: 1rem; margin-top: 2.5rem; padding-top: 1.5rem;
+	border-top: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+	scroll-margin-top: calc(var(--anchor-courses-sticky-top, 1.5rem) + 1rem);
+}
+:where(.anchor-lesson-footer) > * { margin: 0; }
+.anchor-lesson-done { font-weight: 600; }
+.anchor-lesson-done::before { content: "\2713"; margin-right: .5rem; }
+
+.anchor-lesson-nav { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; margin: 0; }
+.anchor-lesson-nav__link {
+	display: inline-flex; flex-direction: column; gap: .15em; max-width: 100%;
+	text-decoration: none; line-height: 1.3;
+}
+.anchor-lesson-nav__link--prev { align-items: flex-start; padding: .65em 0; color: inherit; }
+.anchor-lesson-nav__link--prev:where(.is-locked) { opacity: .5; }
+.anchor-lesson-nav__link--next { align-items: flex-end; margin-left: auto; text-align: right; }
+.anchor-lesson-nav__label { font-size: .8em; opacity: .8; }
+.anchor-lesson-nav__title { font-weight: 600; }
+@media (max-width: 36rem) {
+	.anchor-lesson-nav__link { flex: 1 1 100%; }
+	.anchor-lesson-nav__link--next { order: -1; align-items: center; margin-left: 0; text-align: center; }
+}
+
+/* --- learner dashboard ---------------------------------------------------------------- */
 .anchor-courses-dashboard-list { list-style: none; margin: 0; padding: 0; }
-.anchor-courses-dashboard-item { display: flex; gap: 1rem; align-items: baseline; padding: .5rem 0; border-bottom: 1px solid rgba(0,0,0,.08); }
+.anchor-courses-dashboard-item {
+	display: flex; gap: 1rem; align-items: baseline; padding: .5rem 0;
+	border-bottom: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+}
 .anchor-courses-status { font-size: .8em; text-transform: uppercase; opacity: .7; }
 .anchor-courses-percent { margin-left: auto; font-variant-numeric: tabular-nums; }

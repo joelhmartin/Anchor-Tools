@@ -6,6 +6,9 @@
  * $is_enrolled (bool - true only for an ACTIVE enrolment; a cancelled or
  * expired row reads false, same as no row at all), $service (ProgressService).
  *
+ * Each item carries the id CourseOutline::item_anchor() names: a lesson
+ * page's course outline links a quiz (which has no URL of its own) to it.
+ *
  * Theme override: anchor-courses/course.php
  *
  * @package Anchor\Courses
@@ -14,6 +17,7 @@
 use Anchor\Courses\Admin\CourseEditor;
 use Anchor\Courses\Frontend\Access;
 use Anchor\Courses\Frontend\Actions;
+use Anchor\Courses\Frontend\CourseOutline;
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -71,7 +75,7 @@ $notice = Actions::notice();
 						$available = $user_id > 0 && $service->is_item_available( $user_id, $course_id, (int) $item['id'], $item['type'] );
 						$done      = $progress && in_array( $item['type'] . ':' . $item['id'], $progress->completed_item_keys, true );
 						?>
-						<li class="anchor-course-item anchor-course-item--<?php echo esc_attr( $item['type'] ); ?><?php echo $done ? ' is-complete' : ''; ?><?php echo $available ? '' : ' is-locked'; ?>">
+						<li id="<?php echo esc_attr( CourseOutline::item_anchor( (string) $item['type'], (int) $item['id'] ) ); ?>" class="anchor-course-item anchor-course-item--<?php echo esc_attr( $item['type'] ); ?><?php echo $done ? ' is-complete' : ''; ?><?php echo $available ? '' : ' is-locked'; ?>">
 							<?php if ( $available && 'lesson' === $item['type'] ) : ?>
 								<a href="<?php echo esc_url( Access::lesson_url( (int) $item['id'], (int) $course_id ) ); ?>"><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></a>
 							<?php else : ?>

@@ -7,6 +7,7 @@ use Anchor\Courses\Admin\CourseEditor;
 use Anchor\Courses\Admin\LessonEditor;
 use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\Curriculum;
+use Anchor\Courses\Domain\CourseProgress;
 use Anchor\Courses\Integrations\Events;
 use Anchor\Courses\Module;
 use Anchor\Courses\Services\CertificateService;
@@ -115,10 +116,16 @@ final class Shortcodes {
 			return '';
 		}
 
-		$progress = $this->progress->get_course_progress( $user_id, $course_id );
+		return self::progress_html( $this->progress->get_course_progress( $user_id, $course_id ) );
+	}
 
-		\ob_start();
-		\printf(
+	/**
+	 * The progress bar markup: the one renderer behind [anchor_course_progress]
+	 * and the lesson page's course outline (templates/course-outline.php), so
+	 * both draw the same numbers from one get_course_progress() result.
+	 */
+	public static function progress_html( CourseProgress $progress ): string {
+		return \sprintf(
 			'<div class="anchor-courses-progress"><div class="anchor-courses-bar"><span style="width:%1$s%%"></span></div>'
 			. '<p class="anchor-courses-progress-label">%2$s</p></div>',
 			\esc_attr( (string) $progress->percent ),
@@ -132,7 +139,6 @@ final class Shortcodes {
 				)
 			)
 		);
-		return (string) \ob_get_clean();
 	}
 
 	public function my_courses(): string {
@@ -249,26 +255,17 @@ final class Shortcodes {
 			return $this->render_live_session( $lesson_id, $course_id );
 		}
 
-		// Next/Prev walk LESSONS only: a quiz has no URL of its own (it
-		// renders inside the course page), so linking to one would 404.
-		$lessons  = \array_values(
-			\array_map(
-				static fn( array $item ): int => (int) $item['id'],
-				\array_filter( Curriculum::items( $course_id ), static fn( array $item ): bool => 'lesson' === $item['type'] )
-			)
-		);
-		$position = (int) \array_search( $lesson_id, $lessons, true );
-		$previous = $position > 0 ? $lessons[ $position - 1 ] : 0;
-		$next     = $lessons[ $position + 1 ] ?? 0;
-
 		$available = $user_id > 0 && $this->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' );
 		if ( $available ) {
 			$this->progress->start_lesson( $user_id, $course_id, $lesson_id );
 		}
 
+		// After start_lesson(): a `view`-completion lesson has just completed,
+		// and the outline and the Next button must already say so.
 		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
+		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $lesson_id, $course_progress );
 
-		return Templates::render(
+		$body = Templates::render(
 			'lesson',
 			[
 				'lesson_id' => $lesson_id,
@@ -276,8 +273,27 @@ final class Shortcodes {
 				'user_id'   => $user_id,
 				'available' => $available,
 				'complete'  => $course_progress && \in_array( 'lesson:' . $lesson_id, $course_progress->completed_item_keys, true ),
-				'previous'  => $previous,
-				'next'      => $next,
+				// The neighbouring LESSON ids (quizzes have no URL), kept for
+				// theme overrides written before $outline existed.
+				'previous'  => (int) ( $outline['previous']['id'] ?? 0 ),
+				'next'      => (int) ( $outline['next']['id'] ?? 0 ),
+				'outline'   => $outline,
+			]
+		);
+
+		return $this->lesson_layout( $body, $outline );
+	}
+
+	/**
+	 * The lesson page frame both lesson types share: the course outline
+	 * beside (on phones, above) the lesson body. templates/lesson-layout.php.
+	 */
+	private function lesson_layout( string $body, array $outline ): string {
+		return Templates::render(
+			'lesson-layout',
+			[
+				'outline' => $outline,
+				'content' => $body,
 			]
 		);
 	}
@@ -317,6 +333,7 @@ final class Shortcodes {
 
 		$is_enrolled     = $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id );
 		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
+		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $lesson_id, $course_progress );
 
 		// The stream veto's own decision (Events::prework_block(), the same
 		// call veto_stream_access() makes), so this page never offers a Join
@@ -324,7 +341,7 @@ final class Shortcodes {
 		$block          = ( $ready && $is_enrolled ) ? Events::prework_block( $event_id, (int) LessonEditor::setting( $lesson_id, 'session_index' ), $user_id ) : null;
 		$prework_notice = null === $block ? '' : Events::prework_notice( $block );
 
-		return Templates::render(
+		$body = Templates::render(
 			'live-session',
 			[
 				'lesson_id'      => $lesson_id,
@@ -340,8 +357,11 @@ final class Shortcodes {
 				'state'          => $ready ? Events::stream_state( $event_id ) : [ 'state' => 'unknown' ],
 				'item_available' => $item_available,
 				'complete'       => $course_progress && \in_array( 'lesson:' . $lesson_id, $course_progress->completed_item_keys, true ),
+				'outline'        => $outline,
 			]
 		);
+
+		return $this->lesson_layout( $body, $outline );
 	}
 
 	/**

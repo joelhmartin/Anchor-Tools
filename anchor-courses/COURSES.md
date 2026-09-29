@@ -882,8 +882,59 @@ keys are silently accepted and ignored if passed.
 | `[anchor_my_certificates]` | - | the learner's certificates, linking to their verification pages |
 
 Templates (`single-course`, `single-lesson`, `course`, `lesson`,
-`live-session`, `quiz`, `dashboard`, `certificate`) are overridable from the
-theme at `anchor-courses/{name}.php`.
+`live-session`, `lesson-layout`, `course-outline`, `lesson-nav`, `quiz`,
+`dashboard`, `certificate`) are overridable from the theme at
+`anchor-courses/{name}.php`.
+
+### The lesson page and its course navigation
+
+`single-course` and `single-lesson` are complete page shells on any theme:
+the theme's header and footer around `main.anchor-courses-single >
+.anchor-courses-container` (a centred, padded, readable-width box). A lesson
+page is `Shortcodes::render_lesson()`, which draws both lesson types
+(`lesson`, `live-session`) inside one frame, `lesson-layout`: the course
+outline in a sticky sidebar on wide screens (60rem and up) and, on phones, a
+collapsed "Course outline" `<details>` above the lesson (rendered open, so it
+works without JavaScript; `frontend.js` collapses it on narrow screens).
+
+- **Outline** (`course-outline`, a `<nav aria-label="Course outline">`): the
+  course title, the learner's progress (`Shortcodes::progress_html()`, the
+  same renderer as `[anchor_course_progress]`, fed the one
+  `get_course_progress()` result the page already has), then every module and
+  item. Each item's state is `current`, `done`, `available` or `locked`
+  (`is-{state}` class; a completed item also gets `is-complete`), announced as
+  visually hidden text; the current lesson carries `aria-current="page"`. A
+  locked item is not linked. A quiz has no URL of its own, so it links to its
+  item on the course page (`course.php` gives each item the id
+  `CourseOutline::item_anchor()` names). Unpublished items are left out (the
+  lesson on screen stays, for an editor's preview).
+- **Previous / next bar** (`lesson-nav`, a `<nav aria-label="Lesson
+  navigation">` in the lesson footer): "Previous: {title}" and, as the primary
+  `.anchor-courses-button`, "Next: {title}". The walk is lessons only (a quiz
+  has no URL). A neighbour the learner cannot open yet (sequential
+  progression) is shown but not linked (`is-locked`, `aria-disabled`). After
+  the last lesson the primary action is "Back to course".
+- **After Mark complete** the form returns to the lesson footer
+  (`#anchor-lesson-footer`, `CourseOutline::FOOTER_ID`), which holds the
+  notice, the "Completed" line and the bar, so the learner lands on Next.
+
+The data is `Frontend\CourseOutline::build( $course_id, $user_id,
+$lesson_id, ?CourseProgress )`, availability from
+`ProgressService::is_item_available()`; templates get it as `$outline`.
+`lesson` still receives `$previous` / `$next` lesson ids for older overrides.
+
+`frontend.css` is structure only and inherits the theme's typography and
+colours: no `font-family`, relative sizes, every rule inside `:where()` so any
+theme selector wins. A theme re-skins the module by setting custom
+properties: `--anchor-courses-accent`, `--anchor-courses-accent-ink`,
+`--anchor-courses-border`, `--anchor-courses-surface`,
+`--anchor-courses-radius`, `--anchor-courses-max-width` (lesson page, 76rem),
+`--anchor-courses-course-width` (course page, 48rem),
+`--anchor-courses-gutter`, `--anchor-courses-space`,
+`--anchor-courses-sidebar-width` (19rem) and `--anchor-courses-sticky-top`
+(the outline's offset under a sticky site header). The accent falls back to a
+block theme's `--wp--preset--color--contrast` / `--base`, else near-black on
+white.
 
 ---
 
@@ -1282,6 +1333,11 @@ longer names a real `event` post, including one deleted AFTER the lesson
 saved it), the template falls back to "Live session unavailable." rather
 than the "will appear here before the session starts" wording, which
 implies the event still exists.
+
+Like a content lesson it sits in the `lesson-layout` frame with the course
+outline, and its footer carries the same previous/next bar (see "The lesson
+page and its course navigation"); "Mark attended" returns there, with the
+course context on the URL.
 
 The schedule table renders each session's clock time in the same zone the
 room does: `Events::sessions()` attaches the zone name

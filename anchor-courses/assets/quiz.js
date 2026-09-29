@@ -106,7 +106,7 @@
     function questionMarkup(q, index) {
         var input = q.type === 'multiple_choice' ? 'checkbox' : 'radio';
         var answers = (q.answers || []).map(function (a) {
-            return '<li><label><input type="' + input + '" name="q_' + esc(q.id) + '" value="' + esc(a.id) + '" /> ' +
+            return '<li><label class="anchor-quiz-answer"><input type="' + input + '" name="q_' + esc(q.id) + '" value="' + esc(a.id) + '" /> ' +
                 esc(a.text) + '</label></li>';
         }).join('');
 
@@ -117,7 +117,7 @@
         // question). Everything else here (ids, answer text) is untrusted-as-HTML
         // and goes through esc().
         return '<fieldset class="anchor-quiz-question" data-question="' + esc(q.id) + '">' +
-            '<legend>' + (index + 1) + '. ' + q.prompt + '</legend>' +
+            '<legend class="anchor-quiz-prompt">' + (index + 1) + '. ' + q.prompt + '</legend>' +
             '<ul class="anchor-quiz-answers">' + answers + '</ul>' +
             '</fieldset>';
     }
@@ -205,6 +205,35 @@
             $root.find('.anchor-quiz-timer').prop('hidden', true);
             $root.find('.anchor-quiz-result').prop('hidden', false).text(text);
             if (timerHandle) { window.clearInterval(timerHandle); }
+            refreshStep();
+        }
+
+        /**
+         * On a quiz step (templates/quiz-step.php) the result is shown in
+         * place: there is no redirect, the learner stays on the step. What a
+         * graded attempt changes around it - the outline's states and
+         * progress, the Next button a pass may unlock, the "Passed" line,
+         * the best score -
+         * is re-read from the server's own render of this same page and
+         * swapped in, so nothing here decides progression. A failed fetch
+         * just leaves the page as it was (a reload shows the same thing).
+         */
+        function refreshStep() {
+            var $step = $root.closest('.anchor-quiz-step');
+            if (!$step.length) { return; }
+            $.get(window.location.href).done(function (html) {
+                var $fresh = $('<div/>').append($.parseHTML(html));
+                $.each(['.anchor-course-outline', '.anchor-lesson-footer'], function (i, sel) {
+                    var $new = $fresh.find(sel).first();
+                    if ($new.length) { $(sel).first().replaceWith($new); }
+                });
+                // The quiz box's own "Best score" line, which this attempt may have changed.
+                var $best = $fresh.find('.anchor-quiz-best').first();
+                if ($best.length) {
+                    var $old = $root.find('.anchor-quiz-best');
+                    if ($old.length) { $old.replaceWith($best); } else { $root.prepend($best); }
+                }
+            });
         }
 
         $root.on('click', '.anchor-quiz-start', function () {
@@ -214,7 +243,7 @@
                 .done(function (data) {
                     attemptId = data.attempt.id;
                     var html = (data.questions || []).map(questionMarkup).join('') +
-                        '<p><button type="submit" class="anchor-courses-button">' + esc(S.submit) + '</button></p>';
+                        '<p class="anchor-quiz-actions"><button type="submit" class="anchor-courses-button anchor-quiz-submit">' + esc(S.submit) + '</button></p>';
                     $root.find('.anchor-quiz-form').html(html).prop('hidden', false);
                     $btn.prop('hidden', true);
                     preCheckSavedAnswers(data.attempt.answers);

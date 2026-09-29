@@ -82,37 +82,71 @@ final class Access {
 	}
 
 	/**
+	 * A quiz's step inside a course: /courses/{course}/quiz/{quiz}/ (with
+	 * plain permalinks, the course URL plus ?anchor_quiz_step={quiz}). A quiz
+	 * has no URL outside a course (QuizPostType is not publicly queryable),
+	 * so the course is part of the path, and a quiz shared by two courses
+	 * has one step in each. QuizStep routes it.
+	 */
+	public static function quiz_url( int $quiz_id, int $course_id ): string {
+		$course_url = (string) \get_permalink( $course_id );
+		if ( '' === $course_url || $course_id <= 0 ) {
+			return '';
+		}
+		$slug = QuizStep::slug( $quiz_id );
+		if ( '' === (string) \get_option( 'permalink_structure' ) || \str_contains( $course_url, '?' ) ) {
+			return \add_query_arg( QuizStep::QUERY_VAR, $slug, $course_url );
+		}
+		return \trailingslashit( $course_url ) . QuizStep::PATH . '/' . \rawurlencode( $slug ) . '/';
+	}
+
+	/** Where a curriculum item opens: a lesson's page or a quiz's step, in this course. */
+	public static function item_url( string $type, int $item_id, int $course_id ): string {
+		return 'quiz' === $type ? self::quiz_url( $item_id, $course_id ) : self::lesson_url( $item_id, $course_id );
+	}
+
+	/**
 	 * Which course a learner is reading this lesson in, or 0 when no
+	 * published course lists it. The course on the URL is the COURSE_ARG
+	 * query arg; course_for_item() has the rules.
+	 */
+	public static function course_for_lesson( int $lesson_id, int $user_id = 0 ): int {
+		// phpcs:ignore WordPress.Security.NonceVerification -- a read that only selects among courses already listing this lesson.
+		$requested = \absint( \wp_unslash( $_GET[ self::COURSE_ARG ] ?? 0 ) );
+		return self::course_for_item( $lesson_id, 'lesson', $user_id, $requested );
+	}
+
+	/**
+	 * Which course a learner is in for this lesson or quiz, or 0 when no
 	 * published course lists it.
 	 *
-	 * The ONE resolver every lesson surface uses (ContentGuard, render_lesson,
-	 * can_view_lesson), in this order (final review I2 - reverses the T7
-	 * "lowest id wins" rule for access decisions):
+	 * The ONE resolver every lesson and quiz step surface uses (ContentGuard,
+	 * render_lesson, can_view_lesson, QuizStep), in this order (final review
+	 * I2 - reverses the T7 "lowest id wins" rule for access decisions):
 	 *
-	 *   1. the explicit course on the URL (COURSE_ARG), if that published
-	 *      course really lists the lesson - a value naming anything else is
-	 *      ignored, never trusted;
+	 *   1. $requested, the course the link named, if that published course
+	 *      really lists the item and the visitor is enrolled in it (or is
+	 *      nobody in particular) - a value naming anything else is ignored,
+	 *      never trusted;
 	 *   2. the lowest-id published course the user is enrolled in;
 	 *   3. the lowest-id published course.
 	 *
 	 * Draft/pending/private courses are never candidates
 	 * (Curriculum::courses_for_item()).
 	 */
-	public static function course_for_lesson( int $lesson_id, int $user_id = 0 ): int {
-		$courses = Curriculum::courses_for_item( $lesson_id, 'lesson' );
+	public static function course_for_item( int $item_id, string $type, int $user_id = 0, int $requested = 0 ): int {
+		$courses = Curriculum::courses_for_item( $item_id, $type );
 		if ( [] === $courses ) {
 			return 0;
 		}
 
-		// phpcs:ignore WordPress.Security.NonceVerification -- a read that only selects among courses already listing this lesson.
-		$requested = \absint( \wp_unslash( $_GET[ self::COURSE_ARG ] ?? 0 ) );
-		$user_id   = $user_id > 0 ? $user_id : (int) \get_current_user_id();
-		$module    = Module::instance();
-		$enrolled  = static fn( int $course_id ): bool => $user_id > 0
+		$user_id  = $user_id > 0 ? $user_id : (int) \get_current_user_id();
+		$module   = Module::instance();
+		$enrolled = static fn( int $course_id ): bool => $user_id > 0
 			&& $module instanceof Module
 			&& $module->enrollments->is_enrolled( $user_id, $course_id );
 
-		// The link's course wins when it lists the lesson AND the visitor is
+		// The link's course wins when it lists the item AND the visitor is
 		// enrolled in it (or is nobody in particular); a learner who is only
 		// enrolled elsewhere falls through to their own course rather than
 		// being shown another course's call to action.
@@ -148,37 +182,79 @@ final class Access {
 
 	/**
 	 * Why $user_id may NOT see a lesson's body: '' (they may),
-	 * DENIED_NOT_ENROLLED or DENIED_LOCKED.
-	 *
-	 * Anyone who can edit the lesson (its author, an editor, an admin)
-	 * always may - that is the preview (final review I4). Everyone else goes
-	 * through `ProgressService::is_item_available()` against the course
-	 * course_for_lesson() resolves, the same authority the templates and
-	 * `Shortcodes::render_lesson()` consult, including its
-	 * `anchor_courses_can_access_lesson` filter. A refusal is "locked" only
-	 * for somebody actually enrolled in that course; for anyone else it is
-	 * "not enrolled", so nobody is told to finish lessons they cannot open.
+	 * DENIED_NOT_ENROLLED or DENIED_LOCKED, in the course
+	 * course_for_lesson() resolves. item_denial() has the rules.
 	 */
 	public static function lesson_denial( int $lesson_id, int $user_id = 0 ): string {
 		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
 		if ( $user_id <= 0 ) {
 			return self::DENIED_NOT_ENROLLED;
 		}
+		return self::item_denial( self::course_for_lesson( $lesson_id, $user_id ), $lesson_id, 'lesson', $user_id );
+	}
 
-		if ( \user_can( $user_id, 'edit_post', $lesson_id ) ) {
+	/**
+	 * Why $user_id may NOT open this lesson or quiz in this course: ''
+	 * (they may), DENIED_NOT_ENROLLED or DENIED_LOCKED.
+	 *
+	 * Anyone who can edit the item (its author, an editor, an admin)
+	 * always may - that is the preview (final review I4). Everyone else goes
+	 * through `ProgressService::is_item_available()`, the same authority the
+	 * templates, `Shortcodes::render_lesson()` and the quiz service consult,
+	 * including its `anchor_courses_can_access_lesson` filter. A refusal is
+	 * "locked" only for somebody actually enrolled in that course; for anyone
+	 * else it is "not enrolled", so nobody is told to finish lessons they
+	 * cannot open.
+	 */
+	public static function item_denial( int $course_id, int $item_id, string $type, int $user_id = 0 ): string {
+		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
+		if ( $user_id <= 0 ) {
+			return self::DENIED_NOT_ENROLLED;
+		}
+
+		if ( \user_can( $user_id, 'edit_post', $item_id ) ) {
 			return '';
 		}
 
-		$module    = Module::instance();
-		$course_id = self::course_for_lesson( $lesson_id, $user_id );
+		$module = Module::instance();
 		if ( ! $module instanceof Module || $course_id <= 0 ) {
 			return self::DENIED_NOT_ENROLLED;
 		}
 
-		if ( $module->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' ) ) {
+		if ( $module->progress->is_item_available( $user_id, $course_id, $item_id, $type ) ) {
 			return '';
 		}
 
 		return $module->enrollments->is_enrolled( $user_id, $course_id ) ? self::DENIED_LOCKED : self::DENIED_NOT_ENROLLED;
+	}
+
+	/**
+	 * What a learner sees instead of a lesson body or a quiz they may not
+	 * open (final review I4): somebody enrolled but not there yet is told to
+	 * finish the earlier lessons; anybody else is told they are not
+	 * enrolled, followed by the course's access call to action (cta()).
+	 * Escaped HTML.
+	 */
+	public static function denial_notice( string $denial, int $course_id, int $user_id = 0 ): string {
+		if ( self::DENIED_LOCKED === $denial ) {
+			return '<p class="anchor-courses-notice">'
+				. \esc_html__( 'Finish the earlier lessons to unlock this one.', 'anchor-schema' )
+				. '</p>';
+		}
+
+		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
+		$cta     = $course_id > 0 ? self::cta( $course_id, $user_id ) : [ 'url' => '', 'label' => '', 'message' => '' ];
+
+		$follow = '';
+		if ( '' !== $cta['url'] ) {
+			$follow = ' <a class="anchor-courses-button" href="' . \esc_url( $cta['url'] ) . '">' . \esc_html( $cta['label'] ) . '</a>';
+		} elseif ( '' !== $cta['message'] ) {
+			$follow = ' ' . \esc_html( $cta['message'] );
+		}
+
+		return '<p class="anchor-courses-notice">'
+			. \esc_html__( 'You are not enrolled in this course.', 'anchor-schema' )
+			. $follow
+			. '</p>';
 	}
 }

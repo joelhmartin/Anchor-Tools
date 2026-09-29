@@ -4,7 +4,15 @@
  *
  * Variables: $course_id, $user_id, $modules, $progress (CourseProgress|null),
  * $is_enrolled (bool - true only for an ACTIVE enrolment; a cancelled or
- * expired row reads false, same as no row at all), $service (ProgressService).
+ * expired row reads false, same as no row at all), $availability
+ * (array<string,bool> - ProgressService::availability(), keyed "type:id"),
+ * $in_progress (int[] - quizzes still open after QuizService::settle_open_attempts()),
+ * $service (ProgressService, for overrides written before $availability).
+ *
+ * Every item an enrolled learner may open links to its step: a lesson to its
+ * page, a quiz to its quiz step (/courses/{course}/quiz/{quiz}/), where it is
+ * taken inside the course outline. The quiz itself is never rendered here.
+ * Each item carries the id CourseOutline::item_anchor() names.
  *
  * Theme override: anchor-courses/course.php
  *
@@ -14,6 +22,7 @@
 use Anchor\Courses\Admin\CourseEditor;
 use Anchor\Courses\Frontend\Access;
 use Anchor\Courses\Frontend\Actions;
+use Anchor\Courses\Frontend\CourseOutline;
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -68,32 +77,24 @@ $notice = Actions::notice();
 				<ul class="anchor-course-items">
 					<?php foreach ( $module['items'] as $item ) : ?>
 						<?php
-						$available = $user_id > 0 && $service->is_item_available( $user_id, $course_id, (int) $item['id'], $item['type'] );
+						$available = isset( $availability ) ? ( $availability[ $item['type'] . ':' . $item['id'] ] ?? false ) : ( $user_id > 0 && $service->is_item_available( $user_id, $course_id, (int) $item['id'], $item['type'] ) );
 						$done      = $progress && in_array( $item['type'] . ':' . $item['id'], $progress->completed_item_keys, true );
+						$started   = ! $done && 'quiz' === $item['type'] && in_array( (int) $item['id'], $in_progress ?? [], true );
 						?>
-						<li class="anchor-course-item anchor-course-item--<?php echo esc_attr( $item['type'] ); ?><?php echo $done ? ' is-complete' : ''; ?><?php echo $available ? '' : ' is-locked'; ?>">
-							<?php if ( $available && 'lesson' === $item['type'] ) : ?>
-								<a href="<?php echo esc_url( Access::lesson_url( (int) $item['id'], (int) $course_id ) ); ?>"><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></a>
+						<li id="<?php echo esc_attr( CourseOutline::item_anchor( (string) $item['type'], (int) $item['id'] ) ); ?>" class="anchor-course-item anchor-course-item--<?php echo esc_attr( $item['type'] ); ?><?php echo $done ? ' is-complete' : ''; ?><?php echo $available ? '' : ' is-locked'; ?><?php echo $started ? ' is-started' : ''; ?>">
+							<?php if ( $available ) : ?>
+								<a href="<?php echo esc_url( Access::item_url( (string) $item['type'], (int) $item['id'], (int) $course_id ) ); ?>"><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></a>
 							<?php else : ?>
 								<span><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></span>
 							<?php endif; ?>
+							<?php if ( 'quiz' === $item['type'] ) : ?>
+								<em class="anchor-course-item-type"><?php esc_html_e( 'Quiz', 'anchor-schema' ); ?></em>
+							<?php endif; ?>
+							<?php if ( $started ) : ?>
+								<em class="anchor-course-item-status"><?php esc_html_e( 'In progress', 'anchor-schema' ); ?></em>
+							<?php endif; ?>
 							<?php if ( ! $item['required'] ) : ?>
 								<em class="anchor-course-optional"><?php esc_html_e( 'Optional', 'anchor-schema' ); ?></em>
-							<?php endif; ?>
-							<?php if ( 'quiz' === $item['type'] && $available ) : ?>
-								<?php
-								// $available already required enrolment + progression
-								// (ProgressService::is_item_available(), the same
-								// authority Frontend\Access delegates to for a lesson)
-								// - a non-enrolled or locked learner never reaches this
-								// branch at all. render_quiz() escapes its own output.
-								// $course_id is passed explicitly (Task 26 review, IMPORTANT):
-								// a quiz shared by more than one course must be evaluated
-								// against THIS course, not whichever one
-								// Curriculum::course_for_item() would guess.
-								$anchor_courses_module = \Anchor\Courses\Module::instance();
-								echo $anchor_courses_module ? $anchor_courses_module->shortcodes->render_quiz( (int) $item['id'], (int) $course_id ) : ''; // phpcs:ignore WordPress.Security.EscapeOutput -- render_quiz() escapes internally.
-								?>
 							<?php endif; ?>
 						</li>
 					<?php endforeach; ?>

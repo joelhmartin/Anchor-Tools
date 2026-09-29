@@ -10,10 +10,11 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /**
  * The `anchor_quiz` post type (brief section 6.1).
  *
- * public => false on purpose: a quiz is never a standalone URL - it renders
- * inside a lesson or course through the quiz service, which enforces enrolment
- * and progression. A publicly queryable quiz post would be a way to read quiz
- * content around those checks.
+ * public => false on purpose: a quiz is never a standalone URL - it is taken
+ * as a step inside a course (/courses/{course}/quiz/{quiz}/, Frontend\QuizStep,
+ * whose main query is the COURSE), through the quiz service, which enforces
+ * enrolment and progression. A publicly queryable quiz post would be a way to
+ * read quiz content around those checks.
  */
 final class QuizPostType {
 

@@ -19,7 +19,7 @@ require_once __DIR__ . '/api.php';
 
 class Module {
 
-	const VERSION = '1.0.0';
+	const VERSION = '1.2.0';
 
 	private static ?Module $instance = null;
 
@@ -120,7 +120,10 @@ class Module {
 		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments, $this->credits, $this->certificates );
 
 		// /certificate/{token}/ - the public verification route (Task 30).
+		// Its flush_if_needed() flushes for every module rule, QuizStep's too.
 		new Frontend\CertificatePage( $this->certificates );
+		// /courses/{course}/quiz/{quiz}/ - a quiz as a step inside its course.
+		new Frontend\QuizStep();
 
 		// dataLayer events for GTM/GA4 across the learner lifecycle (Task 35).
 		// Unconditional like every other frontend/* wiring above: it listens

@@ -16,7 +16,13 @@
  * template gates its "Mark complete" form on), $complete (bool),
  * $prework_notice (string - '' unless the pre-work veto,
  * Integrations\Events::prework_block(), would refuse this learner the room;
- * an escaped HTML fragment from Events::prework_notice() otherwise).
+ * an escaped HTML fragment from Events::prework_notice() otherwise),
+ * $outline (array - Frontend\CourseOutline::build(); lesson-nav.php draws the
+ * previous/next bar from it, lesson-layout.php the course outline).
+ *
+ * Same footer as templates/lesson.php: the notice, the "Mark attended" form
+ * and the previous/next bar under the id CourseOutline::FOOTER_ID, which the
+ * form returns to.
  *
  * The body goes through the_content exactly like templates/lesson.php:
  * Frontend\ContentGuard hooks that filter and substitutes the access notice
@@ -28,7 +34,10 @@
  * @package Anchor\Courses
  */
 
+use Anchor\Courses\Frontend\Access;
 use Anchor\Courses\Frontend\Actions;
+use Anchor\Courses\Frontend\CourseOutline;
+use Anchor\Courses\Frontend\Templates;
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -36,17 +45,13 @@ $notice = Actions::notice();
 ?>
 <div class="anchor-lesson anchor-live-session" data-lesson="<?php echo esc_attr( (string) $lesson_id ); ?>" data-event="<?php echo esc_attr( (string) $event_id ); ?>">
 
-	<?php if ( '' !== $notice ) : ?>
-		<p class="anchor-courses-notice"><?php echo esc_html( Actions::notice_text( $notice ) ); ?></p>
-	<?php endif; ?>
-
-	<nav class="anchor-lesson-breadcrumb">
+	<nav class="anchor-lesson-breadcrumb" aria-label="<?php esc_attr_e( 'Breadcrumb', 'anchor-schema' ); ?>">
 		<a href="<?php echo esc_url( (string) get_permalink( $course_id ) ); ?>"><?php echo esc_html( get_the_title( $course_id ) ); ?></a>
 		<span class="anchor-lesson-breadcrumb-sep">/</span>
-		<span><?php echo esc_html( get_the_title( $lesson_id ) ); ?></span>
+		<span aria-current="page"><?php echo esc_html( get_the_title( $lesson_id ) ); ?></span>
 	</nav>
 
-	<h2 class="anchor-live-session-title"><?php echo esc_html( get_the_title( $lesson_id ) ); ?></h2>
+	<h1 class="anchor-lesson-title anchor-live-session-title"><?php echo esc_html( get_the_title( $lesson_id ) ); ?></h1>
 
 	<div class="anchor-lesson-content"><?php echo apply_filters( 'the_content', get_post_field( 'post_content', $lesson_id ) ); // phpcs:ignore WordPress.Security.EscapeOutput -- the_content output, gated by ContentGuard. ?></div>
 
@@ -113,19 +118,25 @@ $notice = Actions::notice();
 
 	<?php endif; ?>
 
-	<?php if ( $item_available ) : ?>
-		<?php if ( ! $complete ) : ?>
-			<form class="anchor-lesson-complete" method="post" action="<?php echo esc_url( Actions::complete_url( $course_id, $lesson_id ) ); ?>">
-				<?php wp_nonce_field( Actions::NONCE_COMPLETE . '_' . $lesson_id ); ?>
-				<input type="hidden" name="course_id" value="<?php echo esc_attr( (string) $course_id ); ?>" />
-				<input type="hidden" name="lesson_id" value="<?php echo esc_attr( (string) $lesson_id ); ?>" />
-				<input type="hidden" name="_redirect" value="<?php echo esc_url( (string) get_permalink( $lesson_id ) ); ?>" />
-				<button type="submit" class="anchor-courses-button"><?php esc_html_e( 'Mark attended', 'anchor-schema' ); ?></button>
-			</form>
-		<?php else : ?>
-			<p class="anchor-lesson-done"><?php esc_html_e( 'Completed', 'anchor-schema' ); ?></p>
+	<div class="anchor-lesson-footer" id="<?php echo esc_attr( CourseOutline::FOOTER_ID ); ?>">
+		<?php if ( '' !== $notice ) : ?>
+			<p class="anchor-courses-notice" role="status"><?php echo esc_html( Actions::notice_text( $notice ) ); ?></p>
 		<?php endif; ?>
-	<?php endif; ?>
 
-	<?php echo do_shortcode( '[anchor_course_progress course_id="' . (int) $course_id . '"]' ); ?>
+		<?php if ( $item_available ) : ?>
+			<?php if ( ! $complete ) : ?>
+				<form class="anchor-lesson-complete" method="post" action="<?php echo esc_url( Actions::complete_url( $course_id, $lesson_id ) ); ?>">
+					<?php wp_nonce_field( Actions::NONCE_COMPLETE . '_' . $lesson_id ); ?>
+					<input type="hidden" name="course_id" value="<?php echo esc_attr( (string) $course_id ); ?>" />
+					<input type="hidden" name="lesson_id" value="<?php echo esc_attr( (string) $lesson_id ); ?>" />
+					<input type="hidden" name="_redirect" value="<?php echo esc_url( Access::lesson_url( $lesson_id, $course_id ) . '#' . CourseOutline::FOOTER_ID ); ?>" />
+					<button type="submit" class="anchor-courses-button"><?php esc_html_e( 'Mark attended', 'anchor-schema' ); ?></button>
+				</form>
+			<?php else : ?>
+				<p class="anchor-lesson-done"><?php esc_html_e( 'Completed', 'anchor-schema' ); ?></p>
+			<?php endif; ?>
+		<?php endif; ?>
+
+		<?php echo Templates::render( 'lesson-nav', [ 'outline' => $outline ] ); // phpcs:ignore WordPress.Security.EscapeOutput -- the template escapes its own output. ?>
+	</div>
 </div>

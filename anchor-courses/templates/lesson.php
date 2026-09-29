@@ -3,9 +3,16 @@
  * Lesson page body.
  *
  * Variables: $lesson_id, $course_id, $user_id, $available (bool),
- * $complete (bool), $previous (int), $next (int) - the neighbouring LESSON
- * ids (quizzes are skipped: they have no URL), 0 when there is none.
+ * $complete (bool), $outline (array - Frontend\CourseOutline::build(), drawn
+ * by lesson-nav.php here and by course-outline.php in lesson-layout.php),
+ * $previous (int), $next (int) - the neighbouring step's id when it is a
+ * LESSON, 0 when there is none or it is a quiz; kept for older overrides
+ * (the bar itself now walks quizzes too).
  * Every lesson link carries the course context (Access::lesson_url()).
+ *
+ * The footer (the completion form, its notice and the previous/next bar) has
+ * the id CourseOutline::FOOTER_ID, and "Mark complete" returns there, so
+ * after completing a lesson the learner lands on the Next button.
  *
  * Theme override: anchor-courses/lesson.php
  *
@@ -14,6 +21,8 @@
 
 use Anchor\Courses\Frontend\Access;
 use Anchor\Courses\Frontend\Actions;
+use Anchor\Courses\Frontend\CourseOutline;
+use Anchor\Courses\Frontend\Templates;
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -21,15 +30,13 @@ $notice = Actions::notice();
 ?>
 <div class="anchor-lesson" data-lesson="<?php echo esc_attr( (string) $lesson_id ); ?>" data-course="<?php echo esc_attr( (string) $course_id ); ?>">
 
-	<?php if ( '' !== $notice ) : ?>
-		<p class="anchor-courses-notice"><?php echo esc_html( Actions::notice_text( $notice ) ); ?></p>
-	<?php endif; ?>
-
-	<nav class="anchor-lesson-breadcrumb">
+	<nav class="anchor-lesson-breadcrumb" aria-label="<?php esc_attr_e( 'Breadcrumb', 'anchor-schema' ); ?>">
 		<a href="<?php echo esc_url( (string) get_permalink( $course_id ) ); ?>"><?php echo esc_html( get_the_title( $course_id ) ); ?></a>
 		<span class="anchor-lesson-breadcrumb-sep">/</span>
-		<span><?php echo esc_html( get_the_title( $lesson_id ) ); ?></span>
+		<span aria-current="page"><?php echo esc_html( get_the_title( $lesson_id ) ); ?></span>
 	</nav>
+
+	<h1 class="anchor-lesson-title"><?php echo esc_html( get_the_title( $lesson_id ) ); ?></h1>
 
 	<?php
 	/*
@@ -49,28 +56,25 @@ $notice = Actions::notice();
 	?>
 	<div class="anchor-lesson-content"><?php echo apply_filters( 'the_content', get_post_field( 'post_content', $lesson_id ) ); // phpcs:ignore WordPress.Security.EscapeOutput -- the_content output, gated by ContentGuard. ?></div>
 
-	<?php if ( $available ) : ?>
-		<?php if ( ! $complete ) : ?>
-			<form class="anchor-lesson-complete" method="post" action="<?php echo esc_url( Actions::complete_url( $course_id, $lesson_id ) ); ?>">
-				<?php wp_nonce_field( Actions::NONCE_COMPLETE . '_' . $lesson_id ); ?>
-				<input type="hidden" name="course_id" value="<?php echo esc_attr( (string) $course_id ); ?>" />
-				<input type="hidden" name="lesson_id" value="<?php echo esc_attr( (string) $lesson_id ); ?>" />
-				<input type="hidden" name="_redirect" value="<?php echo esc_url( Access::lesson_url( $lesson_id, $course_id ) ); ?>" />
-				<button type="submit" class="anchor-courses-button"><?php esc_html_e( 'Mark complete', 'anchor-schema' ); ?></button>
-			</form>
-		<?php else : ?>
-			<p class="anchor-lesson-done"><?php esc_html_e( 'Completed', 'anchor-schema' ); ?></p>
+	<div class="anchor-lesson-footer" id="<?php echo esc_attr( CourseOutline::FOOTER_ID ); ?>">
+		<?php if ( '' !== $notice ) : ?>
+			<p class="anchor-courses-notice" role="status"><?php echo esc_html( Actions::notice_text( $notice ) ); ?></p>
 		<?php endif; ?>
-	<?php endif; ?>
 
-	<nav class="anchor-lesson-nav">
-		<?php if ( $previous > 0 ) : ?>
-			<a class="anchor-lesson-prev" href="<?php echo esc_url( Access::lesson_url( $previous, $course_id ) ); ?>"><?php esc_html_e( 'Previous', 'anchor-schema' ); ?></a>
+		<?php if ( $available ) : ?>
+			<?php if ( ! $complete ) : ?>
+				<form class="anchor-lesson-complete" method="post" action="<?php echo esc_url( Actions::complete_url( $course_id, $lesson_id ) ); ?>">
+					<?php wp_nonce_field( Actions::NONCE_COMPLETE . '_' . $lesson_id ); ?>
+					<input type="hidden" name="course_id" value="<?php echo esc_attr( (string) $course_id ); ?>" />
+					<input type="hidden" name="lesson_id" value="<?php echo esc_attr( (string) $lesson_id ); ?>" />
+					<input type="hidden" name="_redirect" value="<?php echo esc_url( Access::lesson_url( $lesson_id, $course_id ) . '#' . CourseOutline::FOOTER_ID ); ?>" />
+					<button type="submit" class="anchor-courses-button"><?php esc_html_e( 'Mark complete', 'anchor-schema' ); ?></button>
+				</form>
+			<?php else : ?>
+				<p class="anchor-lesson-done"><?php esc_html_e( 'Completed', 'anchor-schema' ); ?></p>
+			<?php endif; ?>
 		<?php endif; ?>
-		<?php if ( $next > 0 ) : ?>
-			<a class="anchor-lesson-next" href="<?php echo esc_url( Access::lesson_url( $next, $course_id ) ); ?>"><?php esc_html_e( 'Next', 'anchor-schema' ); ?></a>
-		<?php endif; ?>
-	</nav>
 
-	<?php echo do_shortcode( '[anchor_course_progress course_id="' . (int) $course_id . '"]' ); ?>
+		<?php echo Templates::render( 'lesson-nav', [ 'outline' => $outline ] ); // phpcs:ignore WordPress.Security.EscapeOutput -- the template escapes its own output. ?>
+	</div>
 </div>

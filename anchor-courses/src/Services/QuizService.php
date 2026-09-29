@@ -256,6 +256,56 @@ final class QuizService {
 	}
 
 	/** Attempts counted against max_attempts in THIS course (audit F05). */
+	/**
+	 * The attempt this learner would resume at this quiz in this course, or
+	 * null: the open (in_progress) attempt, once the module's own timer rule
+	 * has had its say. enforce_timer() is the same call the REST read route
+	 * makes, so an attempt past its pinned deadline is closed by its pinned
+	 * on_timer_expiry policy (auto_submit grades the saved answers, expire
+	 * closes it) rather than offered for resuming.
+	 *
+	 * start_attempt() already resumes rather than creates while an attempt is
+	 * open, under the per-learner lock; this only lets a page say so first.
+	 */
+	public function resumable_attempt( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {
+		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
+		if ( ! $open instanceof QuizAttempt ) {
+			return null;
+		}
+		$current = $this->enforce_timer( $open );
+		return $current instanceof QuizAttempt && $current->is_open() ? $current : null;
+	}
+
+	/**
+	 * Resolve this learner's lapsed attempts in this course, then list the
+	 * quizzes still open: one pass per page, before it reads progress,
+	 * availability or builds the outline (PR #40 review, CodeRabbit).
+	 *
+	 * One query finds every open attempt in the course
+	 * (QuizAttemptRepository::open_for_course()); each goes through
+	 * enforce_timer(), the same call resumable_attempt() and the REST read
+	 * route make, so an attempt past its pinned deadline is closed by its
+	 * pinned on_timer_expiry policy (and its grade or failure recorded)
+	 * before the page shows progress or "In progress". An attempt still in
+	 * time costs nothing more. One whose resolution could not be read back
+	 * (read_failed) stays listed: it is not known to be closed.
+	 *
+	 * @return int[] Quiz ids with an open attempt after resolution.
+	 */
+	public function settle_open_attempts( int $user_id, int $course_id ): array {
+		if ( $user_id <= 0 || $course_id <= 0 ) {
+			return [];
+		}
+		$open = [];
+		foreach ( QuizAttemptRepository::open_for_course( $user_id, $course_id ) as $attempt ) {
+			$current = $this->enforce_timer( $attempt );
+			if ( ! $current instanceof QuizAttempt || $current->is_open() ) {
+				$open[] = $attempt->quiz_id;
+			}
+		}
+		return \array_values( \array_unique( $open ) );
+	}
+
 	public function attempts_used( int $user_id, int $quiz_id, int $course_id ): int {
 		return QuizAttemptRepository::count_for_quiz( $user_id, $quiz_id, $course_id );
 	}

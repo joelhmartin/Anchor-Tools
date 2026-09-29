@@ -131,18 +131,84 @@ final class ProgressService {
 	 * REST routes map to 404, rather than this method's generic `false`.
 	 */
 	public function is_item_available( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
-		$allowed = true;
+		$allowed = self::decide(
+			$course_id,
+			$item_id,
+			$item_type,
+			$this->enrollments->is_enrolled( $user_id, $course_id ),
+			self::is_sequential( $course_id ),
+			fn(): ?array => $this->first_incomplete_prior_item( $user_id, $course_id, $item_id, $item_type )
+		);
 
-		if ( ! $this->enrollments->is_enrolled( $user_id, $course_id ) ) {
-			$allowed = false;
-		} elseif ( 'publish' !== \get_post_status( $item_id ) ) {
-			$allowed = false;
-		} elseif ( ! Curriculum::contains( $course_id, $item_id, $item_type ) ) {
-			$allowed = false;
-		} elseif ( 'sequential' === (string) CourseEditor::setting( $course_id, 'progression_mode' ) ) {
-			$allowed = $this->prior_required_items_complete( $user_id, $course_id, $item_id, $item_type );
+		return self::filter_access( $allowed, $user_id, $course_id, $item_id, $item_type );
+	}
+
+	/**
+	 * is_item_available() for every item in a course's curriculum at once,
+	 * keyed "{type}:{id}".
+	 *
+	 * The same decision (decide(), the same prior-items loop, the same
+	 * `anchor_courses_can_access_lesson` filter per item), but the enrolment
+	 * and the learner's completed items are read ONCE, not once per item
+	 * (PR #40 review, Codex P2 / CodeRabbit): a page that shows every item's
+	 * state (the course page, the lesson and quiz step outline) used to cost
+	 * one to two queries per item.
+	 *
+	 * @return array<string,bool>
+	 */
+	public function availability( int $user_id, int $course_id ): array {
+		$items      = Curriculum::items( $course_id );
+		$enrolled   = $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id );
+		$sequential = self::is_sequential( $course_id );
+		$completed  = null; // Read on first need, then shared by every item.
+
+		$map = [];
+		foreach ( $items as $item ) {
+			$item_id   = (int) $item['id'];
+			$item_type = (string) $item['type'];
+			$allowed   = self::decide(
+				$course_id,
+				$item_id,
+				$item_type,
+				$enrolled,
+				$sequential,
+				static function () use ( &$completed, $user_id, $course_id, $items, $item, $item_id, $item_type ): ?array {
+					$completed ??= ProgressRepository::completed_keys( $user_id, $course_id );
+					return self::first_incomplete_in( \array_slice( $items, 0, (int) $item['index'] ), $completed, $item_id, $item_type );
+				}
+			);
+
+			$map[ $item_type . ':' . $item_id ] = self::filter_access( $allowed, $user_id, $course_id, $item_id, $item_type );
 		}
+		return $map;
+	}
 
+	/**
+	 * The one availability rule, before the filter: enrolled, the item's own
+	 * post published, the item in this course, and (sequential courses only)
+	 * no earlier required item left undone. $prior_blocker returns that
+	 * first undone item, or null; it is only called when it matters.
+	 *
+	 * @param callable():(array{type:string,id:int}|null) $prior_blocker
+	 */
+	private static function decide( int $course_id, int $item_id, string $item_type, bool $enrolled, bool $sequential, callable $prior_blocker ): bool {
+		if ( ! $enrolled ) {
+			return false;
+		}
+		if ( 'publish' !== \get_post_status( $item_id ) ) {
+			return false;
+		}
+		if ( ! Curriculum::contains( $course_id, $item_id, $item_type ) ) {
+			return false;
+		}
+		return ! $sequential || null === $prior_blocker();
+	}
+
+	private static function is_sequential( int $course_id ): bool {
+		return 'sequential' === (string) CourseEditor::setting( $course_id, 'progression_mode' );
+	}
+
+	private static function filter_access( bool $allowed, int $user_id, int $course_id, int $item_id, string $item_type ): bool {
 		/**
 		 * Filter access to one curriculum item.
 		 *
@@ -186,22 +252,39 @@ final class ProgressService {
 	 * @return array{type:string,id:int}|null
 	 */
 	public function first_incomplete_prior_item( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): ?array {
-		$completed = ProgressRepository::completed_keys( $user_id, $course_id );
+		return self::first_incomplete_in(
+			Curriculum::items_before( $course_id, $item_id, $item_type ),
+			ProgressRepository::completed_keys( $user_id, $course_id ),
+			$item_id,
+			$item_type
+		);
+	}
+
+	/**
+	 * The prior-items loop itself, over items the caller already has: the
+	 * first required, published item in $earlier that is not in $completed,
+	 * skipping a quiz's own parent lesson.
+	 *
+	 * @param array<int,array{type:string,id:int,required:bool}> $earlier   The items ordered before the target.
+	 * @param string[]                                           $completed "{type}:{id}" keys.
+	 * @return array{type:string,id:int}|null
+	 */
+	private static function first_incomplete_in( array $earlier, array $completed, int $item_id, string $item_type ): ?array {
 		// An unpublished item never gates progression (PR36 finding e): a
 		// draft/pending/private lesson or quiz cannot be reached or
 		// completed through any public route, so requiring it first would
 		// lock the course - and, through this exact loop, the live-session
 		// veto (Integrations\Events::prework_block()) - permanently on
 		// content nobody can act on.
-		foreach ( self::published_only( Curriculum::items_before( $course_id, $item_id, $item_type ) ) as $earlier ) {
-			if ( ! $earlier['required'] ) {
+		foreach ( self::published_only( $earlier ) as $prior ) {
+			if ( ! $prior['required'] ) {
 				continue;
 			}
-			if ( 'quiz' === $item_type && 'lesson' === $earlier['type'] && self::lesson_completes_by_quiz( (int) $earlier['id'], $item_id ) ) {
-				continue; // The quiz's own parent lesson (see docblock above).
+			if ( 'quiz' === $item_type && 'lesson' === $prior['type'] && self::lesson_completes_by_quiz( (int) $prior['id'], $item_id ) ) {
+				continue; // The quiz's own parent lesson (see is_item_available()).
 			}
-			if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
-				return [ 'type' => (string) $earlier['type'], 'id' => (int) $earlier['id'] ];
+			if ( ! \in_array( $prior['type'] . ':' . $prior['id'], $completed, true ) ) {
+				return [ 'type' => (string) $prior['type'], 'id' => (int) $prior['id'] ];
 			}
 		}
 		return null;

@@ -32,7 +32,11 @@ final class CertificatePage {
 
 	public const QUERY_VAR       = 'anchor_certificate';
 	public const REWRITE_OPTION  = 'anchor_courses_rewrite_version';
-	public const REWRITE_VERSION = '1';
+	/**
+	 * The module's rewrite rules as a whole, not only this one: bump it
+	 * whenever any rule changes (2: QuizStep's /courses/{course}/quiz/{quiz}/).
+	 */
+	public const REWRITE_VERSION = '2';
 
 	public function __construct( private CertificateService $certificates ) {
 		\add_action( 'init', [ $this, 'add_rewrite' ] );

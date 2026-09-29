@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.32.1
+Stable tag: 3.33.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,24 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.33.0 =
+
+Courses: navigation inside a course.
+
+* Lesson pages show a course outline sidebar (modules, done, current and locked
+  steps, and course progress) and a previous/next bar with the neighbouring
+  step titles. On phones the outline is a collapsible section above the lesson.
+* Quizzes are steps inside their course, at /courses/<course>/quiz/<quiz>/,
+  in the same layout as lessons, with the same access and progression rules.
+  The course page links to each quiz step instead of rendering the quiz inline.
+* An unfinished attempt offers "Resume quiz" with its saved answers and timer;
+  starting again returns the open attempt instead of a second one. The outline
+  and the course page mark such a quiz "In progress", after closing any attempt
+  that ran past its time limit under the quiz's own expiry rule.
+* The default course and lesson templates are complete pages on any theme and
+  inherit the theme's fonts and colours; themes re-skin them through the
+  --anchor-courses-* custom properties (COURSES.md).
 
 = 3.32.1 =
 

@@ -26,6 +26,8 @@
  *   --anchor-courses-space          top and bottom padding of the page shell (2.5rem)
  *   --anchor-courses-sidebar-width  lesson outline column (19rem)
  *   --anchor-courses-sticky-top     outline offset under a sticky site header (1.5rem)
+ *   --anchor-courses-question-surface  a quiz question's and the result's panel,
+ *                                   inside the quiz box (transparent)
  */
 
 /* --- page shell (single-course.php, single-lesson.php) ------------------------------- */
@@ -74,7 +76,8 @@
 .anchor-course-item:where(:target) { background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent)); }
 .anchor-course-item:where(.is-complete)::before { content: "\2713"; margin-right: .5rem; }
 .anchor-course-item:where(.is-locked) { opacity: .5; }
-.anchor-course-optional { margin-left: .5rem; font-size: .8em; opacity: .7; }
+.anchor-course-optional,
+.anchor-course-item-type { margin-left: .5rem; font-size: .8em; opacity: .7; }
 .anchor-course-cta--ask { margin: 1rem 0; opacity: .85; }
 
 /* --- progress ------------------------------------------------------------------------- */
@@ -179,10 +182,69 @@
 .anchor-lesson-nav__link--prev:where(.is-locked) { opacity: .5; }
 .anchor-lesson-nav__link--next { align-items: flex-end; margin-left: auto; text-align: right; }
 .anchor-lesson-nav__label { font-size: .8em; opacity: .8; }
+.anchor-lesson-nav__tag { margin-left: .35em; font-size: .75em; font-weight: 400; opacity: .8; }
 .anchor-lesson-nav__title { font-weight: 600; }
 @media (max-width: 36rem) {
 	.anchor-lesson-nav__link { flex: 1 1 100%; }
 	.anchor-lesson-nav__link--next { order: -1; align-items: center; margin-left: 0; text-align: center; }
+}
+
+/* --- quiz (templates/quiz.php, on the quiz step) --------------------------------------- *
+ * The box, its questions, the answer choices and the buttons. The step's H1 names the
+ * quiz, so the box has no title of its own there. quiz.js builds the questions as
+ * fieldset.anchor-quiz-question > legend + ul.anchor-quiz-answers > li > label > input. */
+.anchor-quiz {
+	display: grid; gap: 1.25rem;
+	padding: clamp(1.25rem, 4vw, 2rem);
+	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+	border-radius: var(--anchor-courses-radius, .5rem);
+	background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent));
+}
+:where(.anchor-quiz) > * { margin: 0; }
+:where(.anchor-quiz) [hidden] { display: none; }
+.anchor-quiz-title { margin: 0; }
+.anchor-quiz-best,
+.anchor-quiz-remaining { font-size: .9em; opacity: .8; }
+.anchor-quiz-passed { margin-left: .5em; font-weight: 600; opacity: 1; }
+.anchor-quiz-actions { margin: 0; }
+.anchor-quiz-timer {
+	justify-self: start; padding: .35rem .85rem; border-radius: 999px;
+	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+	font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.anchor-quiz-form { display: grid; gap: 1.25rem; }
+:where(.anchor-quiz-form) > p { margin: .25rem 0 0; }
+.anchor-quiz-question {
+	min-width: 0; margin: 0; padding: 1.25rem;
+	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+	border-radius: var(--anchor-courses-radius, .5rem);
+	background: var(--anchor-courses-question-surface, transparent);
+}
+/* Floated, so the prompt sits inside the box instead of on its border. */
+:where(.anchor-quiz-question) > legend { float: left; width: 100%; margin: 0 0 1rem; padding: 0; font-weight: 600; line-height: 1.45; }
+:where(.anchor-quiz-question legend) p { margin: 0; }
+.anchor-quiz-answers { clear: both; display: grid; gap: .6rem; list-style: none; margin: 0; padding: 0; }
+:where(.anchor-quiz-answers) li { margin: 0; padding: 0; }
+:where(.anchor-quiz-answers) label {
+	display: flex; gap: .75rem; align-items: flex-start;
+	padding: .8rem 1rem; line-height: 1.4; cursor: pointer;
+	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
+	border-radius: var(--anchor-courses-radius, .5rem);
+}
+:where(.anchor-quiz-answers) label:where(:hover) { background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent)); }
+:where(.anchor-quiz-answers) label:where(:has(input:checked)) { border-color: var(--anchor-courses-accent, currentColor); }
+:where(.anchor-quiz-answers) input { flex: 0 0 auto; width: 1.1em; height: 1.1em; margin: .15em 0 0; accent-color: var(--anchor-courses-accent, currentColor); }
+:where(.anchor-quiz) select {
+	box-sizing: border-box; max-width: 100%; min-height: 2.75rem; padding: .6rem 2.5rem .6rem .9rem;
+	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 30%, transparent));
+	border-radius: var(--anchor-courses-radius, .5rem); font: inherit; color: inherit;
+}
+.anchor-quiz-save-status { font-size: .9em; }
+.anchor-quiz-result {
+	padding: .85rem 1rem; font-weight: 600;
+	border-left: 3px solid var(--anchor-courses-accent, currentColor);
+	border-radius: var(--anchor-courses-radius, .5rem);
+	background: var(--anchor-courses-question-surface, transparent);
 }
 
 /* --- learner dashboard ---------------------------------------------------------------- */

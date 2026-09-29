@@ -1,6 +1,6 @@
 <?php
 /**
- * The course outline on a lesson page: course title, the learner's progress,
+ * The course outline on a lesson page or a quiz step: course title, the learner's progress,
  * and every module with its items, each marked done, current, available or
  * locked.
  *
@@ -10,7 +10,7 @@
  * learner cannot open it), required, current, complete, available and
  * state), previous, next).
  *
- * A quiz links to its place on the course page: it has no URL of its own.
+ * A quiz links to its step in this course (/courses/{course}/quiz/{quiz}/).
  *
  * Theme override: anchor-courses/course-outline.php
  *
@@ -22,7 +22,7 @@ use Anchor\Courses\Frontend\Shortcodes;
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 $anchor_courses_states = [
-	'current'   => __( 'Current lesson', 'anchor-schema' ),
+	'current'   => __( 'Current step', 'anchor-schema' ),
 	'done'      => __( 'Completed', 'anchor-schema' ),
 	'available' => __( 'Not started', 'anchor-schema' ),
 	'locked'    => __( 'Locked', 'anchor-schema' ),

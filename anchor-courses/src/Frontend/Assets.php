@@ -13,13 +13,13 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * Front-end enqueues. Source files only; CI minifies.
  *
  * jQuery only (brief rule), and only on the screens that need it: a course or
- * lesson singular, the course archive, or any page carrying one of the Phase 1
- * shortcodes. Task 26 enqueues quiz.js behind the same gate - unconditionally
- * once that gate passes, since a quiz is never reached through its own
- * shortcode (there isn't one; QuizPostType::CPT has no public URL and
- * `render_quiz()` is called from templates/course.php's item loop, not from
- * do_shortcode()) so there is no `[anchor_quiz]` tag for is_courses_screen()
- * to look for.
+ * lesson singular (a quiz step is the course singular too), the course archive,
+ * or any page carrying one of the Phase 1 shortcodes. Task 26 enqueues quiz.js
+ * behind the same gate - unconditionally once that gate passes, since a quiz
+ * is never reached through its own shortcode (there isn't one; QuizPostType::CPT
+ * has no public URL and `render_quiz()` is called by the quiz step,
+ * Shortcodes::render_quiz_step(), not from do_shortcode()) so there is no
+ * `[anchor_quiz]` tag for is_courses_screen() to look for.
  */
 final class Assets {
 

@@ -1,14 +1,14 @@
 <?php
 /**
- * The previous / next lesson bar under a lesson.
+ * The previous / next bar under a lesson or a quiz step.
  *
- * Lessons only (a quiz has no URL of its own; it renders on the course
- * page, which the outline links to). Next is the primary action; after the
- * last lesson it becomes "Back to course". A neighbour this learner cannot
- * open yet (sequential progression) is shown but not linked.
+ * It walks every step, lessons and quizzes, in curriculum order; a quiz
+ * neighbour is tagged "Quiz". Next is the primary action; after the last
+ * step it becomes "Back to course". A neighbour this learner cannot open yet
+ * (sequential progression) is shown but not linked.
  *
  * Variables: $outline (array - Frontend\CourseOutline::build(); this reads
- * previous, next and course_url).
+ * previous, next (each with type, title, url, available) and course_url).
  *
  * Theme override: anchor-courses/lesson-nav.php
  *
@@ -28,7 +28,7 @@ $anchor_courses_next = $outline['next'];
 			<span class="anchor-lesson-nav__link anchor-lesson-nav__link--prev anchor-lesson-prev is-locked" aria-disabled="true">
 		<?php endif; ?>
 			<span class="anchor-lesson-nav__label"><?php esc_html_e( 'Previous:', 'anchor-schema' ); ?></span>
-			<span class="anchor-lesson-nav__title"><?php echo esc_html( $anchor_courses_prev['title'] ); ?></span>
+			<span class="anchor-lesson-nav__title"><?php echo esc_html( $anchor_courses_prev['title'] ); ?><?php echo 'quiz' === ( $anchor_courses_prev['type'] ?? '' ) ? ' <span class="anchor-lesson-nav__tag">' . esc_html__( 'Quiz', 'anchor-schema' ) . '</span>' : ''; ?></span>
 		<?php if ( $anchor_courses_prev['available'] ) : ?>
 			</a>
 		<?php else : ?>
@@ -43,7 +43,7 @@ $anchor_courses_next = $outline['next'];
 			<span class="anchor-courses-button anchor-lesson-nav__link anchor-lesson-nav__link--next anchor-lesson-next is-locked" aria-disabled="true">
 		<?php endif; ?>
 			<span class="anchor-lesson-nav__label"><?php esc_html_e( 'Next:', 'anchor-schema' ); ?></span>
-			<span class="anchor-lesson-nav__title"><?php echo esc_html( $anchor_courses_next['title'] ); ?></span>
+			<span class="anchor-lesson-nav__title"><?php echo esc_html( $anchor_courses_next['title'] ); ?><?php echo 'quiz' === ( $anchor_courses_next['type'] ?? '' ) ? ' <span class="anchor-lesson-nav__tag">' . esc_html__( 'Quiz', 'anchor-schema' ) . '</span>' : ''; ?></span>
 		<?php if ( $anchor_courses_next['available'] ) : ?>
 			</a>
 		<?php else : ?>

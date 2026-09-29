@@ -48,7 +48,9 @@ final class Templates {
 	/** Use the plugin's single templates unless the theme already has one. */
 	public function template_include( string $template ): string {
 		if ( \is_singular( CoursePostType::CPT ) ) {
-			$file = self::locate( 'single-course' );
+			// A quiz step (/courses/{course}/quiz/{quiz}/) is the course
+			// singular too; QuizStep has already 404ed a quiz it does not list.
+			$file = self::locate( QuizStep::current_quiz() > 0 ? 'single-quiz' : 'single-course' );
 			return \file_exists( $file ) ? $file : $template;
 		}
 		if ( \is_singular( LessonPostType::CPT ) ) {

@@ -5,8 +5,9 @@
  * Variables: $lesson_id, $course_id, $user_id, $available (bool),
  * $complete (bool), $outline (array - Frontend\CourseOutline::build(), drawn
  * by lesson-nav.php here and by course-outline.php in lesson-layout.php),
- * $previous (int), $next (int) - the neighbouring LESSON ids (quizzes are
- * skipped: they have no URL), 0 when there is none; kept for older overrides.
+ * $previous (int), $next (int) - the neighbouring step's id when it is a
+ * LESSON, 0 when there is none or it is a quiz; kept for older overrides
+ * (the bar itself now walks quizzes too).
  * Every lesson link carries the course context (Access::lesson_url()).
  *
  * The footer (the completion form, its notice and the previous/next bar) has

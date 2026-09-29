@@ -75,35 +75,10 @@ final class ContentGuard {
 		return $notice;
 	}
 
-	/**
-	 * Two honest messages (final review I4): somebody enrolled but not there
-	 * yet is told to finish the earlier lessons; anybody else is told they
-	 * are not enrolled, followed by the course's access call to action
-	 * (Access::cta() - the `anchor_courses_no_access_message` text, or the
-	 * link an integration supplied through `anchor_courses_access_cta`).
-	 */
+	/** Access::denial_notice(), in the course the lesson is being read in. */
 	private static function notice( int $lesson_id, string $denial ): string {
-		if ( Access::DENIED_LOCKED === $denial ) {
-			return '<p class="anchor-courses-notice">'
-				. \esc_html__( 'Finish the earlier lessons to unlock this one.', 'anchor-schema' )
-				. '</p>';
-		}
-
-		$user_id   = (int) \get_current_user_id();
-		$course_id = Access::course_for_lesson( $lesson_id, $user_id );
-		$cta       = $course_id > 0 ? Access::cta( $course_id, $user_id ) : [ 'url' => '', 'label' => '', 'message' => '' ];
-
-		$follow = '';
-		if ( '' !== $cta['url'] ) {
-			$follow = ' <a class="anchor-courses-button" href="' . \esc_url( $cta['url'] ) . '">' . \esc_html( $cta['label'] ) . '</a>';
-		} elseif ( '' !== $cta['message'] ) {
-			$follow = ' ' . \esc_html( $cta['message'] );
-		}
-
-		return '<p class="anchor-courses-notice">'
-			. \esc_html__( 'You are not enrolled in this course.', 'anchor-schema' )
-			. $follow
-			. '</p>';
+		$user_id = (int) \get_current_user_id();
+		return Access::denial_notice( $denial, Access::course_for_lesson( $lesson_id, $user_id ), $user_id );
 	}
 
 	/**

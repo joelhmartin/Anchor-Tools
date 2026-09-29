@@ -205,6 +205,28 @@
             $root.find('.anchor-quiz-timer').prop('hidden', true);
             $root.find('.anchor-quiz-result').prop('hidden', false).text(text);
             if (timerHandle) { window.clearInterval(timerHandle); }
+            refreshStep();
+        }
+
+        /**
+         * On a quiz step (templates/quiz-step.php) the result is shown in
+         * place: there is no redirect, the learner stays on the step. What a
+         * graded attempt changes around it - the outline's states and
+         * progress, the Next button a pass may unlock, the "Passed" line -
+         * is re-read from the server's own render of this same page and
+         * swapped in, so nothing here decides progression. A failed fetch
+         * just leaves the page as it was (a reload shows the same thing).
+         */
+        function refreshStep() {
+            var $step = $root.closest('.anchor-quiz-step');
+            if (!$step.length) { return; }
+            $.get(window.location.href).done(function (html) {
+                var $fresh = $('<div/>').append($.parseHTML(html));
+                $.each(['.anchor-course-outline', '.anchor-lesson-footer'], function (i, sel) {
+                    var $new = $fresh.find(sel).first();
+                    if ($new.length) { $(sel).first().replaceWith($new); }
+                });
+            });
         }
 
         $root.on('click', '.anchor-quiz-start', function () {

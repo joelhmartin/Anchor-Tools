@@ -117,28 +117,29 @@ class Test_Courses_Lesson_Outline extends Anchor_Courses_TestCase {
 		$this->assertSame( Access::lesson_url( $this->one, $this->course ), $items[ 'lesson:' . $this->one ]['url'] );
 	}
 
-	public function test_a_quiz_links_to_its_item_on_the_course_page() {
+	public function test_a_quiz_links_to_its_step_in_this_course() {
 		$this->progress()->complete_lesson( $this->user, $this->course, $this->one );
 
 		$items = $this->items( $this->build( $this->two ) );
 		$url   = $items[ 'quiz:' . $this->quiz ]['url'];
 
-		$this->assertSame( get_permalink( $this->course ) . '#anchor-course-item-quiz-' . $this->quiz, $url );
-		$this->assertStringNotContainsString( (string) get_permalink( $this->quiz ), $url );
+		$this->assertSame( Access::quiz_url( $this->quiz, $this->course ), $url );
+		$this->assertStringContainsString( 'checkpoint-quiz', $url );
 
-		// The course page carries that anchor.
+		// The course page still gives each item its anchor.
 		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
 		$this->assertStringContainsString( 'id="' . CourseOutline::item_anchor( 'quiz', $this->quiz ) . '"', $html );
 	}
 
-	public function test_previous_and_next_walk_lessons_only_skipping_the_quiz() {
+	public function test_previous_and_next_walk_every_step_including_the_quiz() {
 		$outline = $this->build( $this->one );
 		$this->assertNull( $outline['previous'] );
-		$this->assertSame( $this->two, $outline['next']['id'], 'The quiz between them is skipped.' );
-		$this->assertSame( 'Lesson Two', $outline['next']['title'] );
+		$this->assertSame( [ 'quiz', $this->quiz ], [ $outline['next']['type'], $outline['next']['id'] ] );
+		$this->assertSame( 'Checkpoint Quiz', $outline['next']['title'] );
+		$this->assertSame( Access::quiz_url( $this->quiz, $this->course ), $outline['next']['url'] );
 
 		$outline = $this->build( $this->two );
-		$this->assertSame( $this->one, $outline['previous']['id'] );
+		$this->assertSame( [ 'quiz', $this->quiz ], [ $outline['previous']['type'], $outline['previous']['id'] ] );
 		$this->assertSame( $this->three, $outline['next']['id'] );
 
 		$outline = $this->build( $this->three );
@@ -160,7 +161,10 @@ class Test_Courses_Lesson_Outline extends Anchor_Courses_TestCase {
 		$outline = $this->build( $this->one );
 
 		$this->assertArrayNotHasKey( 'lesson:' . $this->two, $this->items( $outline ) );
-		$this->assertSame( $this->three, $outline['next']['id'] );
+		$this->assertSame( $this->quiz, $outline['next']['id'] );
+
+		$after_quiz = ( new CourseOutline( $this->progress() ) )->build( $this->course, $this->user, $this->quiz, null, 'quiz' );
+		$this->assertSame( $this->three, $after_quiz['next']['id'], 'The draft lesson is skipped.' );
 	}
 
 	public function test_a_visitor_sees_every_item_locked_and_no_progress() {
@@ -202,7 +206,8 @@ class Test_Courses_Lesson_Outline extends Anchor_Courses_TestCase {
 
 		$html = $this->render( $this->two );
 
-		$this->assertMatchesRegularExpression( '/<a class="anchor-lesson-nav__link anchor-lesson-nav__link--prev[^"]*" href="[^"]+" rel="prev">\s*<span class="anchor-lesson-nav__label">Previous:<\/span>\s*<span class="anchor-lesson-nav__title">Lesson One<\/span>/', $html );
+		// The quiz between lesson one and lesson two is a step of its own.
+		$this->assertMatchesRegularExpression( '/<a class="anchor-lesson-nav__link anchor-lesson-nav__link--prev[^"]*" href="[^"]+" rel="prev">\s*<span class="anchor-lesson-nav__label">Previous:<\/span>\s*<span class="anchor-lesson-nav__title">Checkpoint Quiz <span class="anchor-lesson-nav__tag">Quiz<\/span><\/span>/', $html );
 		$this->assertMatchesRegularExpression( '/<a class="anchor-courses-button anchor-lesson-nav__link anchor-lesson-nav__link--next[^"]*" href="[^"]+" rel="next">\s*<span class="anchor-lesson-nav__label">Next:<\/span>\s*<span class="anchor-lesson-nav__title">Lesson Three<\/span>/', $html );
 	}
 

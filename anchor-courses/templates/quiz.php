@@ -6,7 +6,8 @@
  * Variables: $quiz_id, $course_id, $user_id, $can_start (true|WP_Error),
  * $attempts_remaining (int), $best (QuizAttempt|null), $show_score (bool -
  * the quiz's own show_score setting; the "Best score" line is not printed
- * when it is off).
+ * when it is off), $show_title (bool - false on the quiz step, whose H1 is
+ * already the quiz title; absent means true).
  *
  * Theme override: anchor-courses/quiz.php
  *
@@ -16,7 +17,9 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 ?>
 <div class="anchor-quiz" data-quiz="<?php echo esc_attr( (string) $quiz_id ); ?>" data-course="<?php echo esc_attr( (string) $course_id ); ?>">
-	<h3 class="anchor-quiz-title"><?php echo esc_html( get_the_title( $quiz_id ) ); ?></h3>
+	<?php if ( $show_title ?? true ) : ?>
+		<h3 class="anchor-quiz-title"><?php echo esc_html( get_the_title( $quiz_id ) ); ?></h3>
+	<?php endif; ?>
 
 	<?php if ( $best && $best->is_graded() && $show_score ) : ?>
 		<p class="anchor-quiz-best">
@@ -47,12 +50,12 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 				?>
 			</p>
 		<?php endif; ?>
-		<button type="button" class="anchor-courses-button anchor-quiz-start"><?php esc_html_e( 'Start quiz', 'anchor-schema' ); ?></button>
+		<p class="anchor-quiz-actions"><button type="button" class="anchor-courses-button anchor-quiz-start"><?php esc_html_e( 'Start quiz', 'anchor-schema' ); ?></button></p>
 	<?php endif; ?>
 
 	<div class="anchor-quiz-timer" hidden></div>
 	<form class="anchor-quiz-form" hidden></form>
 	<div class="anchor-quiz-save-status" role="status" aria-live="polite" hidden></div>
 	<div class="anchor-quiz-result" hidden></div>
-	<noscript><p><?php esc_html_e( 'This quiz needs JavaScript.', 'anchor-schema' ); ?></p></noscript>
+	<noscript><p class="anchor-courses-notice"><?php esc_html_e( 'This quiz needs JavaScript.', 'anchor-schema' ); ?></p></noscript>
 </div>

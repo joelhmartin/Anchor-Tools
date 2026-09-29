@@ -92,17 +92,19 @@ final class Shortcodes {
 		return Templates::render(
 			'course',
 			[
-				'course_id'   => $course_id,
-				'user_id'     => $user_id,
-				'modules'     => Curriculum::get( $course_id ),
-				'progress'    => $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null,
+				'course_id'    => $course_id,
+				'user_id'      => $user_id,
+				'modules'      => Curriculum::get( $course_id ),
+				'progress'     => $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null,
 				// EnrollmentService::get() returns a cancelled/expired row too
 				// (it is still "the" row for this user/course) - the template
 				// must not treat that as access. is_enrolled() is the boolean
 				// authority for "does this learner currently have access"
 				// (Task 18 review fix round, ruling (c)).
-				'is_enrolled' => $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id ),
-				'service'     => $this->progress,
+				'is_enrolled'  => $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id ),
+				// is_item_available() for every item, read once (PR #40 review).
+				'availability' => $user_id > 0 ? $this->progress->availability( $user_id, $course_id ) : [],
+				'service'      => $this->progress,
 			]
 		);
 	}
@@ -273,10 +275,58 @@ final class Shortcodes {
 				'user_id'   => $user_id,
 				'available' => $available,
 				'complete'  => $course_progress && \in_array( 'lesson:' . $lesson_id, $course_progress->completed_item_keys, true ),
-				// The neighbouring LESSON ids (quizzes have no URL), kept for
-				// theme overrides written before $outline existed.
-				'previous'  => (int) ( $outline['previous']['id'] ?? 0 ),
-				'next'      => (int) ( $outline['next']['id'] ?? 0 ),
+				// The neighbouring step's id when it is a LESSON (else 0), kept
+				// for theme overrides written before $outline existed, which
+				// link it as a lesson.
+				'previous'  => self::neighbour_lesson( $outline['previous'] ),
+				'next'      => self::neighbour_lesson( $outline['next'] ),
+				'outline'   => $outline,
+			]
+		);
+
+		return $this->lesson_layout( $body, $outline );
+	}
+
+	/** A previous/next step's id when it is a lesson, else 0. */
+	private static function neighbour_lesson( ?array $step ): int {
+		return null !== $step && 'lesson' === ( $step['type'] ?? '' ) ? (int) $step['id'] : 0;
+	}
+
+	/**
+	 * The quiz step: a quiz inside its course, in the same frame as a lesson
+	 * (the course outline beside it, the previous/next bar under it).
+	 * Rendered by templates/single-quiz.php for /courses/{course}/quiz/{quiz}/
+	 * (QuizStep); not a public shortcode.
+	 *
+	 * $course_id is the course in the URL (QuizStep has already checked it
+	 * lists the quiz, and sent a learner enrolled only elsewhere to their
+	 * own course's step). Access is a lesson's: Access::item_denial(), so a
+	 * visitor or a learner not enrolled sees "not enrolled" plus the call to
+	 * action, and an enrolled learner locked by progression sees the same
+	 * "finish the earlier lessons" notice a locked lesson shows, in place of
+	 * the quiz. The page's H1 is the quiz title, so the quiz box does not
+	 * repeat it.
+	 */
+	public function render_quiz_step( int $quiz_id, int $course_id ): string {
+		if ( $course_id <= 0 || ! Curriculum::contains( $course_id, $quiz_id, 'quiz' ) ) {
+			return '';
+		}
+
+		$user_id         = \get_current_user_id();
+		$denial          = Access::item_denial( $course_id, $quiz_id, 'quiz', $user_id );
+		$course_progress = $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null;
+		$outline         = ( new CourseOutline( $this->progress ) )->build( $course_id, $user_id, $quiz_id, $course_progress, 'quiz' );
+
+		$body = Templates::render(
+			'quiz-step',
+			[
+				'quiz_id'   => $quiz_id,
+				'course_id' => $course_id,
+				'user_id'   => $user_id,
+				'denial'    => $denial,
+				'notice'    => '' === $denial ? '' : Access::denial_notice( $denial, $course_id, $user_id ),
+				'quiz'      => '' === $denial ? $this->render_quiz( $quiz_id, $course_id, false ) : '',
+				'complete'  => $course_progress && \in_array( 'quiz:' . $quiz_id, $course_progress->completed_item_keys, true ),
 				'outline'   => $outline,
 			]
 		);
@@ -365,19 +415,22 @@ final class Shortcodes {
 	}
 
 	/**
-	 * Rendered inside a course's curriculum item loop, never as a public
-	 * shortcode (QuizPostType::CPT is not publicly_queryable - a quiz has no
-	 * URL of its own; see QuizPostType.php).
+	 * The quiz box (templates/quiz.php): rendered by the quiz step
+	 * (render_quiz_step()), never as a public shortcode (QuizPostType::CPT is
+	 * not publicly_queryable - a quiz has no URL outside its course; see
+	 * QuizPostType.php and QuizStep).
 	 *
-	 * `templates/course.php` only calls this once its own $available check
-	 * (ProgressService::is_item_available() - the same authority
-	 * Frontend\Access delegates to for a lesson) is true, so a non-enrolled or
-	 * sequentially-locked learner never reaches this method at all. can_start()
-	 * below is a second, independent check on top of that: it also covers
-	 * exhausted attempts and an active retry delay, and it self-gates a
-	 * theme/integration that calls render_quiz() directly without checking
-	 * $available first - either way, a learner who may not start sees the
-	 * notice from can_start()'s WP_Error message, never the quiz.
+	 * render_quiz_step() only calls this once Access::item_denial() allows
+	 * it (ProgressService::is_item_available() - the same authority a lesson
+	 * uses), so a non-enrolled or sequentially-locked learner never reaches
+	 * this method there. can_start() below is a second, independent check on
+	 * top of that: it also covers exhausted attempts and an active retry
+	 * delay, and it self-gates a theme/integration that calls render_quiz()
+	 * directly - either way, a learner who may not start sees the notice from
+	 * can_start()'s WP_Error message, never the quiz.
+	 *
+	 * $show_title: false where the page already names the quiz (the step's
+	 * H1), so the title is printed once.
 	 *
 	 * $course_id is the course this quiz is being rendered FOR (Task 26
 	 * review, IMPORTANT): a quiz may be shared by more than one course
@@ -389,7 +442,7 @@ final class Shortcodes {
 	 * course_for_item() exactly as before, for any caller that genuinely has
 	 * no course context of its own.
 	 */
-	public function render_quiz( int $quiz_id, int $course_id = 0 ): string {
+	public function render_quiz( int $quiz_id, int $course_id = 0, bool $show_title = true ): string {
 		$course_id = $course_id > 0 ? $course_id : Curriculum::course_for_item( $quiz_id, 'quiz' );
 		$user_id   = \get_current_user_id();
 
@@ -414,6 +467,7 @@ final class Shortcodes {
 				// Gate the "Best score" line the same way the REST payload
 				// gates score/points_earned/passed (Task 26 review, MINOR).
 				'show_score'         => 1 === (int) $module->quizzes->settings( $quiz_id )['show_score'],
+				'show_title'         => $show_title,
 			]
 		);
 	}

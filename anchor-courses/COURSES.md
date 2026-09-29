@@ -158,7 +158,7 @@ taken away, and they compose:
 |---|---|---|
 | `anchor_course` | `/courses/{slug}/` | `_anchor_course_` |
 | `anchor_lesson` | `/lessons/{slug}/` (not in REST, search or `wp-sitemap.xml`) | `_anchor_lesson_` |
-| `anchor_quiz` | none - renders inside its course | `_anchor_quiz_` |
+| `anchor_quiz` | none of its own - a step inside each course that lists it, `/courses/{course}/quiz/{quiz-slug}/` (`Frontend\QuizStep`) | `_anchor_quiz_` |
 
 Modules are **not** posts. The curriculum lives on the course as
 `_anchor_course_curriculum`:
@@ -242,24 +242,31 @@ part of these settings at all (a pre-fix quiz's stray `required` key inside
 the stored `settings` array is harmless if read directly - `coerce()` simply
 does not touch it).
 
-### Which course a lesson is read in
+### Which course a lesson or quiz is taken in
 
-A lesson may appear in several courses. `Frontend\Access::course_for_lesson()`
-resolves, in order: the `course` query arg (only if that published course
-lists the lesson) > the lowest-id published course the user is enrolled in >
-the lowest-id published course. Draft/pending/private courses never own an
-item. Every lesson link the templates emit carries `?course={id}`
-(`Access::lesson_url()`). `Curriculum::course_for_item()` (lowest-id published
-course, no user) is used only where there is no learner context.
+A lesson or quiz may appear in several courses. `Frontend\Access::course_for_item()`
+resolves, in order: the course the link named (only if that published course
+lists the item and the visitor is enrolled in it, or is logged out) > the
+lowest-id published course the user is enrolled in > the lowest-id published
+course. Draft/pending/private courses never own an item. For a lesson the
+link's course is the `course` query arg (`Access::course_for_lesson()`; every
+lesson link carries `?course={id}`, `Access::lesson_url()`); for a quiz it is
+the course in the step's path (`Access::quiz_url()`), and a learner enrolled
+only in another course that lists the quiz is redirected to that course's
+step. `Access::item_url()` is the one "where does this item open" answer the
+templates use. `Curriculum::course_for_item()` (lowest-id published course, no
+user) is used only where there is no learner context.
 
-### Who sees a lesson body
+### Who sees a lesson body or a quiz
 
 `Frontend\ContentGuard` filters `the_content`, `the_excerpt` and
-`get_the_excerpt` for `anchor_lesson`. `Access::lesson_denial()` allows anyone
-who can `edit_post` the lesson (preview), otherwise defers to
-`ProgressService::is_item_available()`. A refusal renders "You are not
-enrolled in this course." plus the access CTA, or "Finish the earlier lessons
-to unlock this one." for an enrolled learner locked by progression.
+`get_the_excerpt` for `anchor_lesson`. `Access::item_denial()` (for a lesson,
+through `Access::lesson_denial()`) allows anyone who can `edit_post` the item
+(preview), otherwise defers to `ProgressService::is_item_available()`. A
+refusal renders `Access::denial_notice()`: "You are not enrolled in this
+course." plus the access CTA, or "Finish the earlier lessons to unlock this
+one." for an enrolled learner locked by progression. The quiz step asks the
+same question and shows the same notice in place of the quiz.
 
 ---
 
@@ -269,7 +276,10 @@ Progression is governed by the course's `progression_mode`: `sequential`
 (each item unlocks only once every earlier required item is done) or `free`
 (everything is open once enrolled). `ProgressService::is_item_available()` is
 the single authority both the lesson gate (`ContentGuard`) and the curriculum
-template consult.
+template consult. `ProgressService::availability( $user, $course )`
+is the same decision for every item of a course at once (keyed `type:id`,
+the filter still applied per item), reading the enrolment and the completed
+items once: the course page and the step outline use it (PR #40 review).
 
 **An item is never available for ITSELF unless its own post is `publish`**
 (PR36 round 3, Codex) - independent of the "unpublished item never gates
@@ -881,9 +891,9 @@ keys are silently accepted and ignored if passed.
 | `[anchor_my_credits]` | - | the learner's CE credits and total |
 | `[anchor_my_certificates]` | - | the learner's certificates, linking to their verification pages |
 
-Templates (`single-course`, `single-lesson`, `course`, `lesson`,
-`live-session`, `lesson-layout`, `course-outline`, `lesson-nav`, `quiz`,
-`dashboard`, `certificate`) are overridable from the theme at
+Templates (`single-course`, `single-lesson`, `single-quiz`, `course`,
+`lesson`, `live-session`, `quiz-step`, `lesson-layout`, `course-outline`,
+`lesson-nav`, `quiz`, `dashboard`, `certificate`) are overridable from the theme at
 `anchor-courses/{name}.php`.
 
 ### The lesson page and its course navigation
@@ -903,25 +913,57 @@ works without JavaScript; `frontend.js` collapses it on narrow screens).
   `get_course_progress()` result the page already has), then every module and
   item. Each item's state is `current`, `done`, `available` or `locked`
   (`is-{state}` class; a completed item also gets `is-complete`), announced as
-  visually hidden text; the current lesson carries `aria-current="page"`. A
-  locked item is not linked. A quiz has no URL of its own, so it links to its
-  item on the course page (`course.php` gives each item the id
-  `CourseOutline::item_anchor()` names). Unpublished items are left out (the
-  lesson on screen stays, for an editor's preview).
+  visually hidden text; the current step carries `aria-current="page"`. A
+  locked item is not linked. A quiz links to its quiz step (below).
+  Unpublished items are left out (the step on screen stays, for an editor's
+  preview).
 - **Previous / next bar** (`lesson-nav`, a `<nav aria-label="Lesson
   navigation">` in the lesson footer): "Previous: {title}" and, as the primary
-  `.anchor-courses-button`, "Next: {title}". The walk is lessons only (a quiz
-  has no URL). A neighbour the learner cannot open yet (sequential
-  progression) is shown but not linked (`is-locked`, `aria-disabled`). After
-  the last lesson the primary action is "Back to course".
+  `.anchor-courses-button`, "Next: {title}". The walk is every step, lessons
+  and quizzes, in curriculum order (a quiz neighbour is tagged "Quiz"). A
+  neighbour the learner cannot open yet (sequential progression) is shown but
+  not linked (`is-locked`, `aria-disabled`). After the last step the primary
+  action is "Back to course".
 - **After Mark complete** the form returns to the lesson footer
   (`#anchor-lesson-footer`, `CourseOutline::FOOTER_ID`), which holds the
   notice, the "Completed" line and the bar, so the learner lands on Next.
 
 The data is `Frontend\CourseOutline::build( $course_id, $user_id,
-$lesson_id, ?CourseProgress )`, availability from
-`ProgressService::is_item_available()`; templates get it as `$outline`.
-`lesson` still receives `$previous` / `$next` lesson ids for older overrides.
+$item_id, ?CourseProgress, $item_type = 'lesson' )`, availability from
+`ProgressService::availability()`; templates get it as `$outline`.
+`lesson` still receives `$previous` / `$next` ids for older overrides, set
+only when that neighbour is a lesson (0 for a quiz).
+
+### The quiz step
+
+A quiz is taken inside its course, as a step like a lesson:
+`/courses/{course-slug}/quiz/{quiz-slug}/` (with plain permalinks the course
+URL plus `?anchor_quiz_step={quiz-slug}`; a quiz without a slug yet uses its
+id). `Frontend\QuizStep` owns the route: the rewrite rule (the course type's
+own rewrite slug, flushed by `CertificatePage::flush_if_needed()`, whose
+`REWRITE_VERSION` covers every module rule), the query var, a 404 for a quiz
+the course does not list, and the redirect for a learner enrolled only in
+another course that lists the quiz. The main query stays the course, so the
+course context is in the path: a quiz shared by two courses has a step in
+each, evaluated against that course (attempts are per course already).
+
+`Templates` draws `single-quiz` (the lesson page shell) for it, and
+`Shortcodes::render_quiz_step()` renders `quiz-step` inside `lesson-layout`:
+the outline beside it, a breadcrumb, the quiz title as the page's only H1,
+the quiz box (`render_quiz( $quiz_id, $course_id, false )`, so the box does
+not repeat the title), and the lesson footer with the previous/next bar and
+"Passed" once the quiz is passed. Access is a lesson's (`Access::item_denial()`),
+so a visitor, a learner not enrolled or one locked by progression sees the
+same notice a lesson shows, never the quiz box. Submitting is unchanged
+(`quiz.js` over the `anchor-courses/v1` quiz routes): the result appears in
+place, with no redirect, and on a step `quiz.js` then re-reads the page and
+swaps in the server's fresh outline and footer, so a pass shows its done
+state and opens Next.
+
+The course page no longer renders any quiz inline: an item the learner may
+open links to its step (a lesson to its page, a quiz to its quiz step,
+tagged "Quiz"); a locked item, or any item for a visitor, is listed but not
+linked.
 
 `frontend.css` is structure only and inherits the theme's typography and
 colours: no `font-family`, relative sizes, every rule inside `:where()` so any
@@ -931,8 +973,11 @@ properties: `--anchor-courses-accent`, `--anchor-courses-accent-ink`,
 `--anchor-courses-radius`, `--anchor-courses-max-width` (lesson page, 76rem),
 `--anchor-courses-course-width` (course page, 48rem),
 `--anchor-courses-gutter`, `--anchor-courses-space`,
-`--anchor-courses-sidebar-width` (19rem) and `--anchor-courses-sticky-top`
-(the outline's offset under a sticky site header). The accent falls back to a
+`--anchor-courses-sidebar-width` (19rem), `--anchor-courses-sticky-top`
+(the outline's offset under a sticky site header) and
+`--anchor-courses-question-surface` (a quiz question's panel inside the quiz
+box, transparent). The quiz box, its questions, answer choices, selects and
+buttons have their own padding and spacing in `frontend.css`. The accent falls back to a
 block theme's `--wp--preset--color--contrast` / `--base`, else near-black on
 white.
 
@@ -1053,6 +1098,7 @@ status themselves.
 | `admin-post.php?action=anchor_courses_delete_role` | `Admin\CourseEditor` (cap `manage`) |
 | `admin-ajax.php?action=anchor_courses_search_items` / `anchor_courses_create_item` | curriculum builder |
 | `/certificate/{token}/` | `Frontend\CertificatePage` - public verification page (query var `anchor_certificate`, noindex) |
+| `/courses/{course}/quiz/{quiz}/` | `Frontend\QuizStep` - a quiz as a step inside its course (query var `anchor_quiz_step`); see "The quiz step" |
 
 ---
 

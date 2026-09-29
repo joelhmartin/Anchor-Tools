@@ -192,7 +192,10 @@
 /* --- quiz (templates/quiz.php, on the quiz step) --------------------------------------- *
  * The box, its questions, the answer choices and the buttons. The step's H1 names the
  * quiz, so the box has no title of its own there. quiz.js builds the questions as
- * fieldset.anchor-quiz-question > legend + ul.anchor-quiz-answers > li > label > input. */
+ * fieldset.anchor-quiz-question > legend.anchor-quiz-prompt + ul.anchor-quiz-answers >
+ * li > label.anchor-quiz-answer > input, and the submit button in p.anchor-quiz-actions.
+ * The prompt and answer rules are classes, so a theme's bare legend/label rule cannot
+ * undo them. */
 .anchor-quiz {
 	display: grid; gap: 1.25rem;
 	padding: clamp(1.25rem, 4vw, 2rem);
@@ -213,7 +216,6 @@
 	font-weight: 600; font-variant-numeric: tabular-nums;
 }
 .anchor-quiz-form { display: grid; gap: 1.25rem; }
-:where(.anchor-quiz-form) > p { margin: .25rem 0 0; }
 .anchor-quiz-question {
 	min-width: 0; margin: 0; padding: 1.25rem;
 	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
@@ -221,19 +223,19 @@
 	background: var(--anchor-courses-question-surface, transparent);
 }
 /* Floated, so the prompt sits inside the box instead of on its border. */
-:where(.anchor-quiz-question) > legend { float: left; width: 100%; margin: 0 0 1rem; padding: 0; font-weight: 600; line-height: 1.45; }
-:where(.anchor-quiz-question legend) p { margin: 0; }
+.anchor-quiz-prompt { float: left; width: 100%; margin: 0 0 1rem; padding: 0; font-size: 1.05em; font-weight: 600; line-height: 1.45; }
+:where(.anchor-quiz-prompt) p { margin: 0; }
 .anchor-quiz-answers { clear: both; display: grid; gap: .6rem; list-style: none; margin: 0; padding: 0; }
 :where(.anchor-quiz-answers) li { margin: 0; padding: 0; }
-:where(.anchor-quiz-answers) label {
-	display: flex; gap: .75rem; align-items: flex-start;
+.anchor-quiz-answer {
+	box-sizing: border-box; display: flex; gap: .75rem; align-items: flex-start; width: 100%; margin: 0;
 	padding: .8rem 1rem; line-height: 1.4; cursor: pointer;
 	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 15%, transparent));
 	border-radius: var(--anchor-courses-radius, .5rem);
 }
-:where(.anchor-quiz-answers) label:where(:hover) { background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent)); }
-:where(.anchor-quiz-answers) label:where(:has(input:checked)) { border-color: var(--anchor-courses-accent, currentColor); }
-:where(.anchor-quiz-answers) input { flex: 0 0 auto; width: 1.1em; height: 1.1em; margin: .15em 0 0; accent-color: var(--anchor-courses-accent, currentColor); }
+.anchor-quiz-answer:where(:hover) { background: var(--anchor-courses-surface, color-mix(in srgb, currentColor 5%, transparent)); }
+.anchor-quiz-answer:where(:has(input:checked)) { border-color: var(--anchor-courses-accent, currentColor); }
+:where(.anchor-quiz-answer) input { flex: 0 0 auto; width: 1.1em; height: 1.1em; margin: .15em 0 0; accent-color: var(--anchor-courses-accent, currentColor); }
 :where(.anchor-quiz) select {
 	box-sizing: border-box; max-width: 100%; min-height: 2.75rem; padding: .6rem 2.5rem .6rem .9rem;
 	border: 1px solid var(--anchor-courses-border, color-mix(in srgb, currentColor 30%, transparent));

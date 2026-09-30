@@ -68,4 +68,19 @@ class Test_Email_Kit extends WP_UnitTestCase {
 		$html = Anchor_Email_Shell::render( [ 'body' => 'x', 'brand_color' => 'red;background:url(x)' ] );
 		$this->assertStringNotContainsString( 'url(x)', $html );
 	}
+
+	public function test_builder_markup_carries_fields_and_tokens() {
+		Anchor_Email_Tokens::reset();
+		Anchor_Email_Tokens::register( 'first_name', 'First name', 'Recipient' );
+		$html = Anchor_Email_Kit::builder_markup(
+			[ 'id' => 'aa', 'name' => 'anchor_announcement', 'subject' => 'S & T', 'preheader' => 'P', 'body' => '<p>B</p>' ]
+		);
+		$this->assertStringContainsString( 'data-anchor-email-builder', $html );
+		$this->assertStringContainsString( 'name="anchor_announcement[subject]" value="S &amp; T"', $html );
+		$this->assertStringContainsString( 'name="anchor_announcement[preheader]"', $html );
+		$this->assertStringContainsString( 'name="anchor_announcement[body]"', $html );
+		$this->assertStringContainsString( '&lt;p&gt;B&lt;/p&gt;', $html ); // textarea content is escaped
+		$this->assertStringContainsString( 'data-token="{first_name}"', $html );
+		$this->assertStringContainsString( 'anchor-email-builder__frame', $html );
+	}
 }

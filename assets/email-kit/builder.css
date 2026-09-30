@@ -1,0 +1,12 @@
+.anchor-email-builder{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:1100px){.anchor-email-builder{grid-template-columns:minmax(0,1fr)}}
+.anchor-email-builder__tabs{display:flex;gap:4px;margin:12px 0 0;border-bottom:1px solid #c3c4c7}
+.anchor-email-builder__tab{background:none;border:1px solid transparent;border-bottom:0;padding:6px 14px;cursor:pointer;margin-bottom:-1px;border-radius:3px 3px 0 0}
+.anchor-email-builder__tab.is-active{background:#fff;border-color:#c3c4c7}
+.anchor-email-builder__palette{display:flex;flex-wrap:wrap;gap:10px 16px;padding:10px 0}
+.anchor-email-builder__token-group{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.anchor-email-builder__token-heading{font-weight:600;margin-right:4px;color:#50575e}
+.anchor-email-builder__html .anchor-monaco{min-height:420px}
+.anchor-email-builder__preview{position:sticky;top:40px}
+.anchor-email-builder__preview-head{display:flex;justify-content:space-between;margin-bottom:6px}
+.anchor-email-builder__frame{width:100%;height:640px;border:1px solid #c3c4c7;background:#f4f5f5;border-radius:4px}

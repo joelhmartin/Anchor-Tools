@@ -40,6 +40,14 @@ class Test_Email_Kit extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( '<input', $out );
 	}
 
+	public function test_sanitizer_keeps_only_the_inner_content_of_a_pasted_document() {
+		$out = Anchor_Email_Sanitizer::body( '<!doctype html><html><head><meta charset="utf-8"><title>T</title></head><body style="x:y"><p>Inner</p></body></html>' );
+		foreach ( [ '<html', '<head', '<meta', '<body', '</body>', '</html>' ] as $tag ) {
+			$this->assertStringNotContainsString( $tag, $out );
+		}
+		$this->assertStringContainsString( '<p>Inner</p>', $out );
+	}
+
 	public function test_sanitizer_strips_data_uri_hrefs() {
 		$out = Anchor_Email_Sanitizer::body( '<a href="data:text/html,x">x</a>' );
 		$this->assertStringNotContainsString( 'data:', $out );

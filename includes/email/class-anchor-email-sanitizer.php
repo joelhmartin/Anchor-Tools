@@ -33,11 +33,6 @@ class Anchor_Email_Sanitizer {
 	/** @return array wp_kses() allowed_html. */
 	public static function allowed_html() {
 		$allowed = array(
-			'html'   => array(),
-			'head'   => array(),
-			'meta'   => array( 'charset' => true, 'name' => true, 'content' => true ),
-			'title'  => array(),
-			'body'   => array( 'style' => true ),
 			'table'  => array( 'role' => true, 'width' => true, 'cellpadding' => true, 'cellspacing' => true, 'style' => true, 'align' => true, 'border' => true ),
 			'thead'  => array(),
 			'tbody'  => array(),

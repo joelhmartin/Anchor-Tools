@@ -37,6 +37,15 @@ class Test_Announcements_Render extends Anchor_Announcements_TestCase {
 		$this->assertStringContainsString( 'href="mailto:a@x.com"', $out );
 	}
 
+	public function test_a_pasted_full_document_renders_with_exactly_one_pixel() {
+		Settings::save( [ 'footer_address' => '1 Main St' ] );
+		$id   = $this->make_announcement();
+		$mail = Renderer::render( $id, [ 'email' => 'a@x.com', 'user_id' => 0, 'name' => 'A' ], str_repeat( 'a', 32 ), true, [ 'subject' => 'S', 'preheader' => '', 'body' => '<html><head><title>T</title></head><body><p>Hi</p></body></html>' ] );
+		$this->assertSame( 1, substr_count( $mail['html'], 'anchor_aa=o' ) );
+		$this->assertSame( 1, substr_count( $mail['html'], '</body>' ) );
+		$this->assertStringContainsString( '<p>Hi</p>', $mail['html'] );
+	}
+
 	public function test_render_expands_tokens_rewrites_links_and_adds_pixel_and_footer() {
 		Settings::save( [ 'footer_address' => "1 Main St\nTown", 'brand_color' => '#112233' ] );
 		$uid = $this->make_user( 'rita@x.com', [ 'first_name' => 'Rita', 'last_name' => 'Ray', 'display_name' => 'Rita Ray', 'user_login' => 'rita' ] );

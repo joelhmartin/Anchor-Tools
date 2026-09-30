@@ -104,7 +104,7 @@ Each is a class implementing `Audience\Condition` (`key()`, `label()`, `availabl
 | `course_completed` | Anchor Courses | courses, completed from, to |
 | `event_registered` | Anchor Events | events (any of), seat statuses (default confirmed), registered from, to |
 
-Dates are site-timezone calendar days, inclusive, either end optional. Each condition resolves with one or two SQL queries returning email, user_id and name (the WooCommerce ones through one `Audience\\WooOrders` query builder that owns the HPOS/legacy split); set algebra happens in PHP (fine to tens of thousands of rows; anything larger is out of scope and noted).
+Dates are site-timezone calendar days, inclusive, either end optional. Each condition resolves with one or two SQL queries returning email, user_id and name (the WooCommerce ones through one `Audience\WooOrders` query builder that owns the HPOS/legacy split); set algebra happens in PHP (fine to tens of thousands of rows; anything larger is out of scope and noted).
 
 ### 6.4 UI and preview
 

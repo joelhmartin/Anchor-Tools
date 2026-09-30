@@ -68,6 +68,7 @@ class Module {
 		\add_action( 'init', [ Content\AnnouncementPostType::class, 'register' ] );
 		\add_action( 'init', [ $this, 'register_tokens' ] );
 		\add_action( 'anchor_announcements_suppress', [ Suppression\Suppressions::class, 'add' ], 10, 3 );
+		new Tracking\Endpoints();
 		if ( \is_admin() ) {
 			new Admin\SettingsPage();
 		}

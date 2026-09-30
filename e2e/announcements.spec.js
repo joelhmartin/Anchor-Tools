@@ -15,6 +15,7 @@ const { test, expect } = require('@playwright/test');
 
 const MU = 'wp-content/mu-plugins/aa-e2e-mail.php';
 const RECIPIENT = 'e2e-recipient@example.com';
+const RECIPIENT_2 = 'e2e-second@example.com';
 
 function wpEnvCli(cmd) {
   return execSync(`npx wp-env run cli ${cmd}`, { encoding: 'utf8' });
@@ -66,19 +67,28 @@ test('compose, preview audience, test send, send, report', async ({ page: settin
 
   await page.click('.aa-add-group');
   await page.selectOption('.aa-cond-type', 'specific_people');
-  await page.fill('.aa-cond-fields textarea', RECIPIENT);
+  // Two addresses on separate lines: pins the save round trip (a double unslash used to corrupt the audience JSON).
+  await page.fill('.aa-cond-fields textarea', `${RECIPIENT}\n${RECIPIENT_2}`);
   await page.click('#aa-audience-preview');
-  await expect(page.locator('#aa-audience-count')).toContainText('1 recipients');
+  await expect(page.locator('#aa-audience-count')).toContainText('2 recipients');
+
+  await Promise.all([
+    page.waitForURL(/post\.php\?post=\d+/),
+    page.click('button[name="aa_action"][value="save"]'),
+  ]);
+  await page.click('#aa-audience-preview');
+  await expect(page.locator('#aa-audience-count')).toContainText('2 recipients');
 
   await page.click('#aa-test-send');
   await expect(page.locator('#aa-test-result')).toContainText('Test sent');
 
   page.on('dialog', (d) => d.accept());
   await page.click('#aa-send-now');
-  await expect(page.locator('.notice-success', { hasText: 'Sending to 1 people' })).toBeVisible();
+  await expect(page.locator('.notice-success', { hasText: 'Sending to 2 people' })).toBeVisible();
 
   // Run the queue now instead of waiting for WP-Cron, then check the report.
   wpEnvCli('wp cron event run anchor_announcements_tick');
   await page.reload();
   await expect(page.locator('#aa-report tr', { hasText: RECIPIENT })).toContainText(/sent/i);
+  await expect(page.locator('#aa-report tr', { hasText: RECIPIENT_2 })).toContainText(/sent/i);
 });

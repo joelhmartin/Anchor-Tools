@@ -51,6 +51,8 @@ A recipient is an email address. A user and a guest buyer with the same address 
 | Completed a course | Anchor Courses on | courses, completed from, to |
 | Registered for event | Anchor Events on | events (any of), seat statuses (default confirmed), registered from, to |
 
+A condition whose required value is missing is **ignored** when the audience is saved and resolved, so a half-filled condition can never widen or empty the audience: a role condition with no roles, specific people with no user and no valid address, a profile field with no key (or no value, unless the compare is "is set" / "is not set"), and order count or total spent without a number. A group left with no conditions disappears. Profile field keys are case-sensitive.
+
 Dates are calendar days in the site timezone, inclusive, and either end can be left open. WooCommerce conditions work with both HPOS and legacy order storage. **Preview audience** shows the count after unsubscribes and the first 25 people.
 
 The audience is a **snapshot taken when sending starts**. A scheduled announcement resolves when its time arrives, not when it was scheduled. After that the content and audience are locked.
@@ -59,9 +61,9 @@ The audience is a **snapshot taken when sending starts**. A scheduled announceme
 
 - **Send test**: see above.
 - **Send now**: re-checks the count, asks you to confirm, then queues one row per recipient. If nobody is left after removing unsubscribed addresses, it refuses with a message and creates nothing.
-- **Schedule**: pick a date and time (site timezone). **Unschedule** returns it to draft.
+- **Schedule**: pick a date and time (site timezone). Scheduling runs the same checks as sending (mailing address, subject and message, non-empty audience) and refuses with the same messages. **Unschedule** returns it to draft. If a check fails when the time arrives (for example the audience has emptied since), the announcement goes back to draft with the reason on the edit screen, and its author gets a plain-text email.
 - **Pause / Resume** while rows are still queued. **Cancel** marks the remaining queued rows skipped (reason `cancelled`).
-- Delivery runs on a one-minute WP-Cron event, `anchor_announcements_tick`, which sends up to the batch size per minute, oldest first, and releases due scheduled announcements. A MySQL lock stops overlapping ticks, and each row is claimed individually so no one is emailed twice.
+- Delivery runs on a one-minute WP-Cron event, `anchor_announcements_tick`, which sends up to the batch size per minute (stopping early after about 45 seconds; the rest stay queued for the next tick), oldest first, and releases due scheduled announcements. The event exists only while something is scheduled, sending or paused: it is created when you send, schedule or resume, and removed once nothing is left to do. Switching the module off or deactivating the plugin also removes it. A MySQL lock stops overlapping ticks, and each row is claimed individually so no one is emailed twice.
 - **At-most-once delivery.** A `wp_mail()` failure is retried on the next tick, up to 3 attempts, then the row is `failed` with the error. A send that was interrupted (a crash or timeout mid-send) is not retried: after 30 minutes it becomes `failed` ("interrupted") and is never resent automatically, because we cannot tell whether the mail already went out and a duplicate is worse than a miss. Resend to those people in a new announcement if you need to.
 - **Suppression is re-checked at send time**: someone who unsubscribes after the snapshot but before their row is sent is skipped (`suppressed`).
 - Sites with `DISABLE_WP_CRON` need a real server cron hitting `wp-cron.php`. The report shows the last queue run so a stalled cron is visible.
@@ -73,7 +75,7 @@ Three endpoints on the home URL (`?anchor_aa=o|c|u&t=<token>`) need no login and
 
 - **Open**: a 1x1 image. Opens are **estimated and over-counted**: Apple Mail Privacy Protection and some company mail filters load images for the reader, and some clients block images so real opens go uncounted.
 - **Click**: every `http(s)` link in the body is replaced with a redirect. The redirect target is read only from the link list stored when sending started, so it cannot be used as an open redirect; an unknown token or link goes to the home page. `mailto:`, `tel:`, `#` anchors and the unsubscribe link are left alone. Clicks are the reliable signal, but some security scanners pre-click links. A click within 10 seconds of the send, from a recipient who has not opened, is recorded but flagged "likely scanner" and kept out of the click rate.
-- **Unsubscribe**: the link shows a confirmation page; confirming (or a mail client's one-click POST) adds the address to the suppression list. There is no resubscribe link; remove the address on the Unsubscribed screen.
+- **Unsubscribe**: the link shows a confirmation page; confirming (or a mail client's one-click POST) adds the address to the suppression list. There is no resubscribe link; remove the address on the Unsubscribed screen. The open, click and unsubscribe endpoints keep working after the module is switched off (they are registered by the plugin core once the module has created its tables), so links in mail already sent do not break.
 - No IP address is stored; events keep the first 255 characters of the user agent.
 
 ## Reports and CSV
@@ -87,6 +89,10 @@ Announcements > **Unsubscribed** lists suppressed addresses with the reason (`un
 ## Privacy
 
 The module registers WordPress personal-data exporters and erasers (Tools > Export / Erase Personal Data), looked up by email. Export covers send, open and click data. Erase deletes the send and tracking rows but **keeps the suppression row** and reports it as retained ("kept so this address is never emailed again"), so an erased person is not emailed again.
+
+## Uninstall
+
+Deleting the plugin always removes the queue tick. The send history and the unsubscribe list are **kept by default**, because the list is the record of who asked not to be emailed. To remove everything, set `update_option( 'anchor_announcements_delete_data_on_uninstall', 1, false )` before deleting the plugin: the three `anchor_announce_*` tables, the `anchor_announcements_settings`, `anchor_announcements_db_version` and `anchor_announcements_last_tick` options and the `anchor_send_announcements` capability are then removed. Announcement posts and their post meta are left alone, like every other module.
 
 ## Extension points
 

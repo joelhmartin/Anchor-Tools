@@ -68,6 +68,7 @@ See `ADDING-MODULES.md` for the full module development guide.
 | `code_snippets` | `Anchor_Code_Snippets_Module` | CPT |
 | `blocks` | `Anchor_Blocks_Module` | CPT |
 | `courses` | `\Anchor\Courses\Module` | CPT (namespaced, PSR-4) |
+| `announcements` | `\Anchor\Announcements\Module` | CPT (namespaced, PSR-4) |
 
 ### Core Classes (`includes/`)
 
@@ -76,6 +77,7 @@ See `ADDING-MODULES.md` for the full module development guide.
 - `Anchor_Schema_Render` — Outputs JSON-LD on `wp_head`.
 - `Anchor_Reviews_Manager` — Google Reviews fetching/caching, `[anchor_reviews]` shortcode.
 - `Anchor_Schema_Logger` — Debug logging to PHP `error_log` (enabled in settings).
+- `includes/email/`: the shared email kit (tokens, sanitizer, shell, builder UI); Announcements uses it, events will.
 
 ### Constants
 

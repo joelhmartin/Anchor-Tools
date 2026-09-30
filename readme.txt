@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.33.0
+Stable tag: 3.34.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,26 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.34.0 =
+
+Announcements: a new module (off until enabled in Settings > Anchor Tools).
+
+* Compose a branded email with the shared email builder (Design and HTML tabs,
+  token palette, live preview) and send it from the site through wp_mail(), so
+  any mail provider works (Mailgun, Postmark, SES, plain SMTP).
+* Target recipients with AND/OR rules: user role, account created, profile
+  field, specific people or pasted addresses, WooCommerce purchases (date range,
+  order status, guests included), number of orders, total spent, course enrolled
+  or completed, event registered. Rules with an unavailable or unfilled
+  condition fail closed and sending refuses until they are fixed.
+* Send now, schedule, pause, resume or cancel; background batches every minute,
+  at-most-once delivery, unsubscribes re-checked at send time, and a mailing
+  address required before anything sends.
+* Self-hosted open and click tracking and one-click unsubscribe (List-Unsubscribe
+  headers), per-recipient and per-link reports with CSV export, an Unsubscribed
+  screen, and privacy export and erase.
+* New shared email kit in includes/email/ (tokens, sanitizer, shell, builder).
 
 = 3.33.0 =
 

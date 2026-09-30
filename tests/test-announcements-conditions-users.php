@@ -60,6 +60,29 @@ class Test_Announcements_Conditions_Users extends Anchor_Announcements_TestCase 
 		$this->assertSame( 0, $r->resolve( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'wc_total_spent', 'params' => [] ] ] ] ] ] )->count() );
 	}
 
+	public function test_group_with_only_dropped_positive_conditions_is_removed_not_widened() {
+		$r = $this->module()->resolver();
+		// Positive condition incomplete + a valid negated one: must not become "everyone except".
+		$rules = [ 'groups' => [ [ 'conditions' => [
+			[ 'type' => 'user_role', 'params' => [] ],
+			[ 'type' => 'specific_people', 'negate' => true, 'params' => [ 'emails' => 'x@x.com' ] ],
+		] ] ] ];
+		$this->assertSame( [], $r->sanitize( $rules )['groups'] );
+		$this->make_user( 'someone@x.com' );
+		$this->assertSame( 0, $r->resolve( $rules )->count() );
+	}
+
+	public function test_all_negated_group_by_choice_still_starts_from_everyone() {
+		$r = $this->module()->resolver();
+		$this->make_user( 'keep@x.com' );
+		$this->make_user( 'skip@x.com' );
+		$rules = [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'specific_people', 'negate' => true, 'params' => [ 'emails' => 'skip@x.com' ] ] ] ] ] ];
+		$this->assertCount( 1, $r->sanitize( $rules )['groups'] );
+		$set = $r->resolve( $rules );
+		$this->assertTrue( $set->has( 'keep@x.com' ) );
+		$this->assertFalse( $set->has( 'skip@x.com' ) );
+	}
+
 	public function test_specific_people_users_and_pasted_addresses() {
 		$u   = $this->make_user( 'user@x.com', [ 'display_name' => 'Uma User' ] );
 		$set = ( new SpecificPeople() )->match( [ 'users' => [ $u ], 'emails' => "Pasted@X.com, second@x.com\nnot-an-email" ] );

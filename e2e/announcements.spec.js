@@ -87,7 +87,26 @@ test('compose, preview audience, test send, send, report', async ({ page: settin
   await page.click('#aa-test-send');
   await expect(page.locator('#aa-test-result')).toContainText('Test sent');
 
+  let dialogs = 0;
+  page.on('dialog', (d) => { dialogs += 1; d.accept(); });
+
+  // A blocked Send now must not leave a stray aa_action behind: a later Save draft stays a save.
+  await page.evaluate(() => document.querySelector('#aa-test-email').setCustomValidity('blocked'));
+  await page.click('#aa-send-now');
+  await expect.poll(() => dialogs).toBe(1); // the confirm was accepted, then validation blocked the submit
+  await page.waitForTimeout(500);
+  await page.evaluate(() => document.querySelector('#aa-test-email').setCustomValidity(''));
+  await Promise.all([
+    page.waitForURL(/post\.php\?post=\d+/),
+    page.click('button[name="aa_action"][value="save"]'),
+  ]);
+  await expect(page.locator('.notice-success', { hasText: 'Sending to' })).toHaveCount(0);
+  await expect(page.locator('#aa-send-now')).toBeVisible(); // still a draft
+  const draftUrl = page.url();
+  await page.close();
+  page = await context.newPage();
   page.on('dialog', (d) => d.accept());
+  await page.goto(draftUrl);
   await page.click('#aa-send-now');
   await expect(page.locator('.notice-success', { hasText: 'Sending to 2 people' })).toBeVisible();
 

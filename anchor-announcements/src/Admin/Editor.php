@@ -153,7 +153,7 @@ final class Editor {
 			<p><button type="submit" class="button button-secondary widefat" name="aa_action" value="save"><?php \esc_html_e( 'Save draft', 'anchor-schema' ); ?></button></p>
 			<hr />
 			<p><label for="aa-test-email"><?php \esc_html_e( 'Send a test to', 'anchor-schema' ); ?></label>
-			<input type="email" class="widefat" id="aa-test-email" value="<?php echo \esc_attr( $me->user_email ); ?>" /></p>
+			<input type="text" inputmode="email" autocomplete="email" class="widefat" id="aa-test-email" value="<?php echo \esc_attr( $me->user_email ); ?>" /></p>
 			<p><button type="button" class="button widefat" id="aa-test-send"><?php \esc_html_e( 'Send test', 'anchor-schema' ); ?></button> <span id="aa-test-result" aria-live="polite"></span></p>
 			<hr />
 			<?php if ( PT::STATE_SCHEDULED === $state ) : ?>

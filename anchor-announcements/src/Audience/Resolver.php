@@ -18,13 +18,16 @@ final class Resolver {
 		$out = [ 'groups' => [] ];
 		foreach ( (array) ( \is_array( $raw ) ? ( $raw['groups'] ?? [] ) : [] ) as $group ) {
 			$conditions = [];
+			$dropped    = false;
 			foreach ( (array) ( $group['conditions'] ?? [] ) as $c ) {
 				$type = \sanitize_key( (string) ( $c['type'] ?? '' ) );
 				if ( null === $this->registry->get( $type ) ) {
+					$dropped = true;
 					continue;
 				}
 				$params = \is_array( $c['params'] ?? null ) ? $c['params'] : [];
 				if ( ! self::configured( $this->registry->get( $type ), $params ) ) {
+					$dropped = true;
 					continue; // An unconfigured condition must never widen or empty an audience.
 				}
 				$conditions[] = [
@@ -32,6 +35,10 @@ final class Resolver {
 					'negate' => ! empty( $c['negate'] ),
 					'params' => $params,
 				];
+			}
+			// A group that lost a condition and has no positive one left would fall back to "everyone": drop it.
+			if ( $dropped && ! \array_filter( $conditions, static fn( $c ) => ! $c['negate'] ) ) {
+				continue;
 			}
 			if ( $conditions ) {
 				$out['groups'][] = [ 'conditions' => $conditions ];

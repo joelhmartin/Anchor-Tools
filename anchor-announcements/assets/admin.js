@@ -81,7 +81,7 @@
       case 'search':
         return searchField(f, c, $wrap);
       default:
-        $el = $('<input/>').attr('type', f.type === 'number' ? 'number' : (f.type === 'date' ? 'date' : 'text')).val(val === undefined ? '' : val)
+        $el = $('<input/>').attr('type', f.type === 'number' ? 'number' : (f.type === 'date' ? 'date' : 'text')).attr('step', f.type === 'number' ? 'any' : null).val(val === undefined ? '' : val)
           .on('input change', function () {
             var v = $(this).val();
             if (f.type !== 'number') { set(v); return; }
@@ -243,12 +243,19 @@
       e.preventDefault();
       previewAudience().then(function (count) {
         if (count && window.confirm(fmt(t.confirmSend, count))) {
-          $btn.data('confirmed', true);
           var form = $btn.closest('form')[0];
           syncBuilders();
-          $('<input type="hidden" name="aa_action" value="send_now"/>').appendTo(form);
-          // requestSubmit() fires the native submit event so every listener (builder sync, WordPress) runs.
-          if (form.requestSubmit) { form.requestSubmit(); } else { syncBuilders(); form.submit(); }
+          if (form.requestSubmit) {
+            // Never leave a stray aa_action input behind: a blocked submit must not turn a later Save into a send.
+            if (!form.checkValidity()) { form.reportValidity(); return; }
+            $btn.data('confirmed', true);
+            // The button is the submitter, so it carries aa_action=send_now itself.
+            form.requestSubmit($btn[0]);
+            $btn.data('confirmed', false);
+          } else {
+            $('<input type="hidden" name="aa_action" value="send_now"/>').appendTo(form);
+            form.submit();
+          }
         }
       });
     });

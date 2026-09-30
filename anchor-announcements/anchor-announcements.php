@@ -66,8 +66,29 @@ class Module {
 			}
 		);
 		\add_action( 'init', [ Content\AnnouncementPostType::class, 'register' ] );
+		\add_action( 'init', [ $this, 'register_tokens' ] );
+		\add_action( 'anchor_announcements_suppress', [ Suppression\Suppressions::class, 'add' ], 10, 3 );
 		if ( \is_admin() ) {
 			new Admin\SettingsPage();
+		}
+	}
+
+	public function register_tokens(): void {
+		$recipient = \__( 'Recipient', 'anchor-schema' );
+		$site      = \__( 'Site', 'anchor-schema' );
+		foreach ( [
+			'first_name' => [ \__( 'First name', 'anchor-schema' ), $recipient ],
+			'last_name' => [ \__( 'Last name', 'anchor-schema' ), $recipient ],
+			'display_name' => [ \__( 'Display name', 'anchor-schema' ), $recipient ],
+			'username' => [ \__( 'Username', 'anchor-schema' ), $recipient ],
+			'email' => [ \__( 'Email', 'anchor-schema' ), $recipient ],
+			'site_name' => [ \__( 'Site name', 'anchor-schema' ), $site ],
+			'site_url' => [ \__( 'Site link', 'anchor-schema' ), $site ],
+			'login_url' => [ \__( 'Login link', 'anchor-schema' ), $site ],
+			'account_url' => [ \__( 'Account link', 'anchor-schema' ), $site ],
+			'unsubscribe_url' => [ \__( 'Unsubscribe link', 'anchor-schema' ), $site ],
+		] as $key => $t ) {
+			\Anchor_Email_Tokens::register( $key, $t[0], $t[1] );
 		}
 	}
 }

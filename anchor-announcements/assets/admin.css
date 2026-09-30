@@ -24,3 +24,4 @@
 .aa-stats strong{display:block;font-size:20px}
 .aa-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .aa-filters a.current{font-weight:700;text-decoration:none;color:#1d2327}
+.aa-audience-problems{margin:6px 0 0 1.2em;color:#b32d2e;list-style:disc}.aa-audience-problems:empty{display:none}

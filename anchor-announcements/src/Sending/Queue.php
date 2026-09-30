@@ -42,6 +42,28 @@ final class Queue {
 		// The tick exists only while something is scheduled, sending or paused (ensure_scheduled /
 		// clear_if_idle). This admin-side self-heal covers a hook cleared while the module was off.
 		\add_action( 'admin_init', [ self::class, 'heal' ] );
+		// Trashing or deleting an announcement must not leave rows queued for a post nobody can see.
+		\add_action( 'wp_trash_post', [ self::class, 'on_trash' ] );
+		\add_action( 'before_delete_post', [ self::class, 'on_delete' ] );
+	}
+
+	public static function on_trash( $post_id ): void {
+		if ( PT::CPT === \get_post_type( (int) $post_id ) ) {
+			self::cancel( (int) $post_id );
+		}
+	}
+
+	/** Cancel what is still queued, then remove the announcement's send and event rows for good. */
+	public static function on_delete( $post_id ): void {
+		$id = (int) $post_id;
+		if ( PT::CPT !== \get_post_type( $id ) ) {
+			return;
+		}
+		self::cancel( $id );
+		global $wpdb;
+		$events = Migrations::table( 'events' );
+		$wpdb->query( $wpdb->prepare( "DELETE e FROM {$events} e INNER JOIN " . self::table() . ' s ON s.id = e.send_id WHERE s.announcement_id = %d', $id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->delete( self::table(), [ 'announcement_id' => $id ] );
 	}
 
 	private const TIME_BUDGET = 45; // seconds of wall time per tick before we stop taking new rows
@@ -99,7 +121,7 @@ final class Queue {
 		return \is_wp_error( $res ) ? $res : true;
 	}
 
-	/** @return list<array>|\WP_Error All resolved recipients (suppressed ones included), or the first problem. */
+	/** @return array{recipients:list<array>,suppressed:array<string,true>}|\WP_Error Resolved recipients (suppressed ones included) and the suppressed set, or the first problem. */
 	private static function checked_recipients( int $id ) {
 		if ( '' === \trim( (string) Settings::get()['footer_address'] ) ) {
 			return new \WP_Error( 'missing_address', \__( 'Add your mailing address in Announcements > Settings before sending.', 'anchor-schema' ) );
@@ -108,13 +130,21 @@ final class Queue {
 		if ( '' === \trim( (string) \get_post_meta( $id, PT::META_SUBJECT, true ) ) || '' === \trim( \wp_strip_all_tags( $body ) ) ) {
 			return new \WP_Error( 'empty_content', \__( 'Add a subject and a message before sending.', 'anchor-schema' ) );
 		}
-		$rules      = \json_decode( (string) \get_post_meta( $id, PT::META_AUDIENCE, true ), true );
-		$recipients = Module::instance()->resolver()->resolve( \is_array( $rules ) ? $rules : [] )->all();
-		$sendable   = \array_filter( $recipients, static fn( $r ) => ! Suppressions::is_suppressed( $r['email'] ) );
+		$rules    = \json_decode( (string) \get_post_meta( $id, PT::META_AUDIENCE, true ), true );
+		$rules    = \is_array( $rules ) ? $rules : [];
+		$resolver = Module::instance()->resolver();
+		$problems = $resolver->problems( $rules );
+		if ( $problems ) {
+			// Fail closed: a rule that cannot be evaluated must never quietly widen the audience.
+			return new \WP_Error( 'audience_problem', \implode( ' ', $problems ) );
+		}
+		$recipients = $resolver->resolve( $rules )->all();
+		$suppressed = Suppressions::suppressed_among( \array_column( $recipients, 'email' ) );
+		$sendable   = \array_filter( $recipients, static fn( $r ) => ! isset( $suppressed[ \strtolower( $r['email'] ) ] ) );
 		if ( ! $sendable ) {
 			return new \WP_Error( 'empty_audience', \__( 'Nobody matches this audience (after removing unsubscribed addresses).', 'anchor-schema' ) );
 		}
-		return $recipients;
+		return [ 'recipients' => $recipients, 'suppressed' => $suppressed ];
 	}
 
 	/** @return int|\WP_Error */
@@ -123,17 +153,18 @@ final class Queue {
 		if ( ! \in_array( $state, [ PT::STATE_DRAFT, PT::STATE_SCHEDULED ], true ) ) {
 			return new \WP_Error( 'wrong_state', \__( 'This announcement has already been sent.', 'anchor-schema' ) );
 		}
-		$recipients = self::checked_recipients( $id );
-		if ( \is_wp_error( $recipients ) ) {
-			return $recipients;
+		$checked = self::checked_recipients( $id );
+		if ( \is_wp_error( $checked ) ) {
+			return $checked;
 		}
+		$recipients = $checked['recipients'];
 		$body = (string) \get_post_meta( $id, PT::META_BODY, true );
 
 		global $wpdb;
 		$now    = \current_time( 'mysql', true );
 		$queued = 0;
 		foreach ( $recipients as $r ) {
-			$suppressed = Suppressions::is_suppressed( $r['email'] );
+			$suppressed = isset( $checked['suppressed'][ \strtolower( $r['email'] ) ] );
 			// user_id is a literal int or NULL: prepare() would turn a null into '' for a BIGINT column.
 			$user_sql = $r['user_id'] > 0 ? (string) (int) $r['user_id'] : 'NULL';
 			$wpdb->query(

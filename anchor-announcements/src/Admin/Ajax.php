@@ -47,11 +47,13 @@ final class Ajax {
 		$resolver = Module::instance()->resolver();
 		$rules    = $resolver->sanitize( (string) \wp_unslash( $_POST['rules'] ?? '' ) ); // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput -- sanitize() validates the structure.
 		$all      = $resolver->resolve( $rules )->all();
-		$keep     = \array_values( \array_filter( $all, static fn( $r ) => ! Suppressions::is_suppressed( $r['email'] ) ) );
+		$gone     = Suppressions::suppressed_among( \array_column( $all, 'email' ) );
+		$keep     = \array_values( \array_filter( $all, static fn( $r ) => ! isset( $gone[ \strtolower( $r['email'] ) ] ) ) );
 		\wp_send_json_success(
 			[
 				'count'      => \count( $keep ),
 				'suppressed' => \count( $all ) - \count( $keep ),
+				'problems'   => $resolver->problems( $rules ),
 				'sample'     => \array_map( static fn( $r ) => [ 'email' => $r['email'], 'name' => $r['name'] ], \array_slice( $keep, 0, 25 ) ),
 			]
 		);

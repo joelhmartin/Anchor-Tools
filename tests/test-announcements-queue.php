@@ -184,7 +184,7 @@ class Test_Announcements_Queue extends Anchor_Announcements_TestCase {
 		$id     = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
 		wp_update_post( [ 'ID' => $id, 'post_author' => $author ] );
 		$this->assertTrue( Queue::schedule( $id, time() + 3600 ) );
-		update_post_meta( $id, PT::META_AUDIENCE, $this->audience( [] ) ); // audience empties before release.
+		Suppressions::add( 'a@x.com', 'unsubscribed' ); // audience empties before release.
 		update_post_meta( $id, PT::META_SCHEDULED, time() - 1 );
 		Queue::tick();
 		$this->assertSame( PT::STATE_DRAFT, PT::state( $id ) );
@@ -238,5 +238,98 @@ class Test_Announcements_Queue extends Anchor_Announcements_TestCase {
 		$this->assertSame( 'failed', $row->status );
 		$this->assertNotEmpty( $row->error );
 		$this->assertCount( 0, $this->mails );
+	}
+
+	private function rules_with_missing_condition(): string {
+		return wp_json_encode( [ 'groups' => [
+			[ 'conditions' => [
+				[ 'type' => 'specific_people', 'negate' => false, 'params' => [ 'emails' => 'all@x.com,subs@x.com' ] ],
+				[ 'type' => 'wc_gone_away', 'negate' => false, 'params' => [ 'products' => [ 9 ] ] ],
+			] ],
+			[ 'conditions' => [ [ 'type' => 'specific_people', 'negate' => false, 'params' => [ 'emails' => 'valid@x.com' ] ] ] ],
+		] ] );
+	}
+
+	public function test_unavailable_condition_fails_closed_on_send_and_schedule() {
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->rules_with_missing_condition() ] );
+		$res = Queue::start( $id );
+		$this->assertWPError( $res );
+		$this->assertSame( 'audience_problem', $res->get_error_code() );
+		$this->assertStringContainsString( 'Group 1: "wc_gone_away" is not available on this site.', $res->get_error_message() );
+		$this->assertSame( [], $this->rows( $id ) );
+		$this->assertSame( PT::STATE_DRAFT, PT::state( $id ) );
+		$sched = Queue::schedule( $id, time() + 3600 );
+		$this->assertWPError( $sched );
+		$this->assertSame( 'audience_problem', $sched->get_error_code() );
+		$this->assertSame( PT::STATE_DRAFT, PT::state( $id ) );
+		$this->assertSame( 'audience_problem', Queue::preflight( $id )->get_error_code() );
+	}
+
+	public function test_scheduled_release_with_a_problem_reverts_to_draft_and_sends_nothing_to_the_group() {
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		$this->assertTrue( Queue::schedule( $id, time() + 3600 ) );
+		update_post_meta( $id, PT::META_AUDIENCE, $this->rules_with_missing_condition() ); // e.g. WooCommerce switched off since.
+		update_post_meta( $id, PT::META_SCHEDULED, time() - 1 );
+		Queue::tick();
+		$this->assertSame( PT::STATE_DRAFT, PT::state( $id ) );
+		$this->assertSame( [], $this->rows( $id ) );
+		$this->assertStringContainsString( 'not available', (string) get_post_meta( $id, '_aa_last_error', true ) );
+	}
+
+	public function test_trashing_a_sending_announcement_cancels_its_queue() {
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com', 'b@x.com', 'c@x.com' ] ) ] );
+		Queue::start( $id );
+		wp_trash_post( $id );
+		$this->assertSame( PT::STATE_CANCELLED, PT::state( $id ) );
+		$this->assertNotContains( 'queued', array_column( $this->rows( $id ), 'status' ) );
+		Queue::tick();
+		$this->assertCount( 0, $this->mails );
+	}
+
+	public function test_trashing_a_scheduled_announcement_cancels_it() {
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		$this->assertTrue( Queue::schedule( $id, time() + 3600 ) );
+		wp_trash_post( $id );
+		$this->assertSame( PT::STATE_CANCELLED, PT::state( $id ) );
+		$this->assertFalse( wp_next_scheduled( Queue::HOOK ) );
+	}
+
+	public function test_force_deleting_removes_send_and_event_rows() {
+		global $wpdb;
+		$id    = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com', 'b@x.com' ] ) ] );
+		$other = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'z@x.com' ] ) ] );
+		Queue::start( $id );
+		Queue::start( $other );
+		$send_id = (int) $this->rows( $id )[0]->id;
+		$keep_id = (int) $this->rows( $other )[0]->id;
+		foreach ( [ $send_id, $keep_id ] as $sid ) {
+			$wpdb->insert( Migrations::table( 'events' ), [ 'send_id' => $sid, 'type' => 'open', 'created_at' => current_time( 'mysql', true ) ] );
+		}
+		wp_delete_post( $id, true );
+		$this->assertSame( [], $this->rows( $id ) );
+		$events = Migrations::table( 'events' );
+		$this->assertSame( 0, (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$events} WHERE send_id = %d", $send_id ) ) );
+		$this->assertSame( 1, (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$events} WHERE send_id = %d", $keep_id ) ) );
+		$this->assertCount( 1, $this->rows( $other ), 'other announcements are untouched' );
+		Queue::tick();
+		$this->assertCount( 1, $this->mails );
+		$this->assertSame( 'z@x.com', $this->mails[0]['to'] );
+	}
+
+	public function test_suppressed_among_handles_more_than_one_chunk() {
+		$emails = [];
+		for ( $i = 0; $i < 1203; $i++ ) {
+			$emails[] = "user{$i}@x.com";
+		}
+		Suppressions::add( 'user3@x.com', 'unsubscribed' );
+		Suppressions::add( 'user999@x.com', 'bounced' );
+		Suppressions::add( 'user1202@x.com', 'manual' );
+		Suppressions::add( 'other@x.com', 'manual' );
+		$emails[] = ' USER3@X.com ';
+		$got = Suppressions::suppressed_among( $emails );
+		$keys = array_keys( $got );
+		sort( $keys );
+		$this->assertSame( [ 'user1202@x.com', 'user3@x.com', 'user999@x.com' ], $keys );
+		$this->assertSame( [], Suppressions::suppressed_among( [] ) );
 	}
 }

@@ -189,6 +189,8 @@
       var d = res.data || { count: 0, suppressed: 0, sample: [] };
       $('#aa-audience-count').text(d.count ? fmt(t.recipients, d.count, d.suppressed) : t.nobody);
       var $list = $('#aa-audience-sample').empty();
+      var $problems = $('#aa-audience-problems').empty();
+      (d.problems || []).forEach(function (m) { $('<li/>').text(m).appendTo($problems); });
       d.sample.forEach(function (r) { $('<li/>').text(r.name ? r.name + ' <' + r.email + '>' : r.email).appendTo($list); });
       return d.count;
     }, failed);

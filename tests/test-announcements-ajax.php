@@ -48,6 +48,18 @@ class Test_Announcements_Ajax extends WP_Ajax_UnitTestCase {
 		$this->assertSame( 'a@x.com', $res['data']['sample'][0]['email'] );
 	}
 
+	public function test_audience_reports_problems() {
+		$this->as_admin();
+		$rules = wp_json_encode( [ 'groups' => [ [ 'conditions' => [
+			[ 'type' => 'specific_people', 'negate' => false, 'params' => [ 'emails' => 'a@x.com' ] ],
+			[ 'type' => 'wc_gone_away', 'negate' => false, 'params' => [ 'products' => [ 7 ] ] ],
+		] ] ] ] );
+		$res = $this->call( 'anchor_announcements_audience', [ 'rules' => $rules ] );
+		$this->assertTrue( $res['success'] );
+		$this->assertSame( 0, $res['data']['count'] );
+		$this->assertSame( [ 'Group 1: "wc_gone_away" is not available on this site.' ], $res['data']['problems'] );
+	}
+
 	public function test_preview_renders_unsaved_content() {
 		$this->as_admin();
 		$id  = self::factory()->post->create( [ 'post_type' => 'anchor_announcement' ] );

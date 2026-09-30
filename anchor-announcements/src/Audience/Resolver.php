@@ -10,7 +10,13 @@ final class Resolver {
 
 	public function __construct( private Registry $registry ) {}
 
-	/** @param mixed $raw JSON string or array. */
+	/**
+	 * Structural clean-up only: keeps every condition that names a type (known or not,
+	 * available or not, filled in or not) so an author never loses a rule on save. Whether
+	 * a condition can actually be used is problems()' job, and resolve() fails closed on it.
+	 *
+	 * @param mixed $raw JSON string or array.
+	 */
 	public function sanitize( $raw ): array {
 		if ( \is_string( $raw ) ) {
 			$raw = \json_decode( $raw, true );
@@ -18,30 +24,52 @@ final class Resolver {
 		$out = [ 'groups' => [] ];
 		foreach ( (array) ( \is_array( $raw ) ? ( $raw['groups'] ?? [] ) : [] ) as $group ) {
 			$conditions = [];
-			$dropped    = false;
-			foreach ( (array) ( $group['conditions'] ?? [] ) as $c ) {
-				$type = \sanitize_key( (string) ( $c['type'] ?? '' ) );
-				if ( null === $this->registry->get( $type ) ) {
-					$dropped = true;
+			foreach ( (array) ( \is_array( $group ) ? ( $group['conditions'] ?? [] ) : [] ) as $c ) {
+				$type = \is_array( $c ) && \is_string( $c['type'] ?? null ) ? \sanitize_key( $c['type'] ) : '';
+				if ( '' === $type ) {
 					continue;
-				}
-				$params = \is_array( $c['params'] ?? null ) ? $c['params'] : [];
-				if ( ! self::configured( $this->registry->get( $type ), $params ) ) {
-					$dropped = true;
-					continue; // An unconfigured condition must never widen or empty an audience.
 				}
 				$conditions[] = [
 					'type'   => $type,
 					'negate' => ! empty( $c['negate'] ),
-					'params' => $params,
+					'params' => \is_array( $c['params'] ?? null ) ? $c['params'] : [],
 				];
-			}
-			// A group that lost a condition and has no positive one left would fall back to "everyone": drop it.
-			if ( $dropped && ! \array_filter( $conditions, static fn( $c ) => ! $c['negate'] ) ) {
-				continue;
 			}
 			if ( $conditions ) {
 				$out['groups'][] = [ 'conditions' => $conditions ];
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * Human-readable reasons the rules cannot be used as written: a condition that is not
+	 * available on this site (unknown type, WooCommerce off) or not filled in. Sending
+	 * refuses while any exist, and resolve() gives such a group no recipients.
+	 *
+	 * @return list<string>
+	 */
+	public function problems( array $rules ): array {
+		$out = [];
+		foreach ( $this->sanitize( $rules )['groups'] as $gi => $group ) {
+			foreach ( $this->group_problems( $group, $gi + 1 ) as $msg ) {
+				$out[] = $msg;
+			}
+		}
+		return $out;
+	}
+
+	/** @return list<string> */
+	private function group_problems( array $group, int $number ): array {
+		$out = [];
+		foreach ( $group['conditions'] as $c ) {
+			$cond = $this->registry->get( $c['type'] );
+			if ( null === $cond ) {
+				/* translators: 1: group number, 2: condition type */
+				$out[] = \sprintf( \__( 'Group %1$d: "%2$s" is not available on this site.', 'anchor-schema' ), $number, $c['type'] );
+			} elseif ( ! self::configured( $cond, $c['params'] ) ) {
+				/* translators: 1: group number, 2: condition label */
+				$out[] = \sprintf( \__( 'Group %1$d: "%2$s" is not filled in.', 'anchor-schema' ), $number, $cond->label() );
 			}
 		}
 		return $out;
@@ -75,7 +103,10 @@ final class Resolver {
 	public function resolve( array $rules ): RecipientSet {
 		$result   = new RecipientSet();
 		$universe = null;
-		foreach ( $this->sanitize( $rules )['groups'] as $group ) {
+		foreach ( $this->sanitize( $rules )['groups'] as $gi => $group ) {
+			if ( $this->group_problems( $group, $gi + 1 ) ) {
+				continue; // Fail closed: a group with an unusable condition contributes nobody.
+			}
 			$set      = null;
 			$negated  = [];
 			foreach ( $group['conditions'] as $c ) {

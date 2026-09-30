@@ -41,7 +41,7 @@ class Test_Announcements_Conditions_Users extends Anchor_Announcements_TestCase 
 		$this->assertTrue( ( new UserField() )->match( [ 'key' => 'MyField', 'compare' => '=', 'value' => 'yes' ] )->has( 'a@x.com' ) );
 	}
 
-	public function test_unconfigured_conditions_are_dropped_on_sanitize() {
+	public function test_unconfigured_conditions_are_kept_on_save_but_reported_as_problems() {
 		$r   = $this->module()->resolver();
 		$raw = [ 'groups' => [ [ 'conditions' => [
 			[ 'type' => 'user_role', 'params' => [ 'roles' => [] ] ],
@@ -54,21 +54,36 @@ class Test_Announcements_Conditions_Users extends Anchor_Announcements_TestCase 
 			[ 'type' => 'user_role', 'params' => [ 'roles' => [ 'subscriber' ] ] ],
 		] ] ] ];
 		$kept = $r->sanitize( $raw )['groups'][0]['conditions'];
-		$this->assertSame( [ 'user_field', 'user_role' ], array_column( $kept, 'type' ) );
-		// A group with only unconfigured conditions disappears, so it cannot match everyone.
-		$this->assertSame( [], $r->sanitize( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'user_role', 'params' => [] ] ] ] ] ] )['groups'] );
+		$this->assertCount( 8, $kept, 'the author never loses a rule on save' );
+		// Only the two complete ones (user_field exists, user_role subscriber) are not problems.
+		$problems = $r->problems( $raw );
+		$this->assertGreaterThanOrEqual( 4, count( $problems ) );
+		$this->assertStringContainsString( 'Group 1:', $problems[0] );
+		$this->assertStringContainsString( 'not filled in', $problems[0] );
+		$this->assertSame( 0, $r->resolve( $raw )->count() );
 		$this->assertSame( 0, $r->resolve( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'wc_total_spent', 'params' => [] ] ] ] ] ] )->count() );
 	}
 
-	public function test_group_with_only_dropped_positive_conditions_is_removed_not_widened() {
+	public function test_incomplete_condition_next_to_a_valid_positive_one_empties_the_group() {
 		$r = $this->module()->resolver();
-		// Positive condition incomplete + a valid negated one: must not become "everyone except".
+		$this->make_user( 'sub@x.com' );
+		$rules = [ 'groups' => [ [ 'conditions' => [
+			[ 'type' => 'user_role', 'params' => [] ],
+			[ 'type' => 'specific_people', 'params' => [ 'emails' => 'sub@x.com' ] ],
+		] ] ] ];
+		$this->assertSame( [ 'Group 1: "User role" is not filled in.' ], $r->problems( $rules ) );
+		$this->assertSame( 0, $r->resolve( $rules )->count(), 'the valid condition must not stand in for the incomplete one' );
+	}
+
+	public function test_group_with_an_incomplete_positive_condition_is_not_widened_by_a_negated_one() {
+		$r = $this->module()->resolver();
 		$rules = [ 'groups' => [ [ 'conditions' => [
 			[ 'type' => 'user_role', 'params' => [] ],
 			[ 'type' => 'specific_people', 'negate' => true, 'params' => [ 'emails' => 'x@x.com' ] ],
 		] ] ] ];
-		$this->assertSame( [], $r->sanitize( $rules )['groups'] );
 		$this->make_user( 'someone@x.com' );
+		$this->assertCount( 1, $r->sanitize( $rules )['groups'] );
+		$this->assertNotSame( [], $r->problems( $rules ) );
 		$this->assertSame( 0, $r->resolve( $rules )->count() );
 	}
 

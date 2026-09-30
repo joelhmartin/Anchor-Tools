@@ -84,11 +84,34 @@ class Test_Announcements_Audience extends Anchor_Announcements_TestCase {
 		$this->assertFalse( $set->has( 'u2@x.com' ) );
 	}
 
-	public function test_sanitize_drops_unknown_types_and_empty_groups() {
+	public function test_sanitize_is_structural_and_keeps_unknown_types() {
 		$r   = $this->resolver( [ new AA_Fixed_Condition( 'a', [] ) ] );
-		$out = $r->sanitize( wp_json_encode( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'nope' ] ] ], [ 'conditions' => [ [ 'type' => 'a', 'negate' => '1', 'params' => [ 'x' => 1 ] ] ] ] ] ] ) );
-		$this->assertSame( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'a', 'negate' => true, 'params' => [ 'x' => 1 ] ] ] ] ] ], $out );
+		$out = $r->sanitize( wp_json_encode( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'nope' ] ] ], [ 'conditions' => [ [ 'type' => 'a', 'negate' => '1', 'params' => [ 'x' => 1 ] ], [ 'type' => '' ], [ 'params' => [] ] ] ], [ 'conditions' => [] ] ] ] ) );
+		$this->assertSame(
+			[ 'groups' => [
+				[ 'conditions' => [ [ 'type' => 'nope', 'negate' => false, 'params' => [] ] ] ],
+				[ 'conditions' => [ [ 'type' => 'a', 'negate' => true, 'params' => [ 'x' => 1 ] ] ] ],
+			] ],
+			$out
+		);
 		$this->assertSame( [ 'groups' => [] ], $r->sanitize( 'garbage' ) );
+	}
+
+	public function test_a_group_with_an_unavailable_condition_contributes_nobody_but_other_groups_resolve() {
+		$r     = $this->resolver( [ new AA_Fixed_Condition( 'a', [ '1@x.com', '2@x.com' ] ), new AA_Fixed_Condition( 'c', [ '9@x.com' ] ) ] );
+		$rules = $this->rules( [
+			[ [ 'type' => 'a', 'negate' => false, 'params' => [] ], [ 'type' => 'wc_purchased', 'negate' => false, 'params' => [ 'products' => [ 5 ] ] ] ],
+			[ [ 'type' => 'c', 'negate' => false, 'params' => [] ] ],
+		] );
+		$this->assertCount( 2, $r->sanitize( $rules )['groups'] );
+		$this->assertCount( 2, $r->sanitize( $rules )['groups'][0]['conditions'] );
+		$this->assertSame( [ 'Group 1: "wc_purchased" is not available on this site.' ], $r->problems( $rules ) );
+		$this->assertSame( [ '9@x.com' ], array_column( $r->resolve( $rules )->all(), 'email' ) );
+	}
+
+	public function test_problems_is_empty_for_usable_rules() {
+		$r = $this->resolver( [ new AA_Fixed_Condition( 'a', [] ) ] );
+		$this->assertSame( [], $r->problems( $this->rules( [ [ [ 'type' => 'a', 'negate' => false, 'params' => [] ] ] ] ) ) );
 	}
 
 	public function test_empty_rules_resolve_to_nobody() {

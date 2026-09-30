@@ -133,6 +133,7 @@ final class Editor {
 		<input type="hidden" id="aa-audience-input" name="anchor_announcement[audience]" value="<?php echo \esc_attr( '' !== $raw ? $raw : '{"groups":[]}' ); ?>" />
 		<div id="aa-audience-builder"></div>
 		<p><button type="button" class="button" id="aa-audience-preview"><?php \esc_html_e( 'Preview audience', 'anchor-schema' ); ?></button> <span id="aa-audience-count" aria-live="polite"></span></p>
+		<ul id="aa-audience-problems" class="aa-audience-problems" role="alert"></ul>
 		<ol id="aa-audience-sample"></ol>
 		<?php
 	}

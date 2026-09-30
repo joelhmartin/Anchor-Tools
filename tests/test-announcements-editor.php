@@ -36,8 +36,26 @@ class Test_Announcements_Editor extends Anchor_Announcements_TestCase {
 		$this->assertSame( 'Hi {first_name}', get_post_meta( $id, PT::META_SUBJECT, true ) );
 		$this->assertSame( '<p>Hi</p>bad()', get_post_meta( $id, PT::META_BODY, true ) );
 		$saved = json_decode( get_post_meta( $id, PT::META_AUDIENCE, true ), true );
-		$this->assertSame( 'user_role', $saved['groups'][0]['conditions'][0]['type'] );
-		$this->assertCount( 1, $saved['groups'][0]['conditions'] );
+		$this->assertSame( [ 'nope', 'user_role' ], array_column( $saved['groups'][0]['conditions'], 'type' ) );
+	}
+
+	public function test_save_keeps_an_unavailable_condition_in_the_audience() {
+		$id = $this->make_announcement();
+		$this->post_save( $id, [
+			'subject'   => 'S',
+			'preheader' => '',
+			'body'      => '<p>B</p>',
+			'audience'  => wp_json_encode( [ 'groups' => [ [ 'conditions' => [
+				[ 'type' => 'specific_people', 'params' => [ 'emails' => 'a@x.com' ] ],
+				[ 'type' => 'wc_gone_away', 'negate' => true, 'params' => [ 'products' => [ 7 ] ] ],
+			] ] ] ] ),
+		] );
+		$saved = json_decode( get_post_meta( $id, PT::META_AUDIENCE, true ), true );
+		$this->assertSame( [ 'specific_people', 'wc_gone_away' ], array_column( $saved['groups'][0]['conditions'], 'type' ) );
+		$this->assertTrue( $saved['groups'][0]['conditions'][1]['negate'] );
+		$this->assertSame( [ 'products' => [ 7 ] ], $saved['groups'][0]['conditions'][1]['params'] );
+		$lines = Editor::describe( $saved );
+		$this->assertStringContainsString( 'wc_gone_away', implode( ' ', $lines ) );
 	}
 
 	public function test_save_preserves_newlines_quotes_unicode_and_backslashes() {

@@ -18,6 +18,26 @@ final class Suppressions {
 		return (bool) $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$t} WHERE email = %s", \strtolower( \trim( $email ) ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name.
 	}
 
+	/**
+	 * Which of these addresses are suppressed, in as few queries as possible (500 per IN list).
+	 *
+	 * @param list<string> $emails
+	 * @return array<string,true> Lowercased suppressed addresses as keys.
+	 */
+	public static function suppressed_among( array $emails ): array {
+		global $wpdb;
+		$t      = Migrations::table( 'suppressions' );
+		$emails = \array_values( \array_unique( \array_filter( \array_map( static fn( $e ) => \strtolower( \trim( (string) $e ) ), $emails ), static fn( $e ) => '' !== $e ) ) );
+		$found  = [];
+		foreach ( \array_chunk( $emails, 500 ) as $chunk ) {
+			$marks = \implode( ',', \array_fill( 0, \count( $chunk ), '%s' ) );
+			foreach ( (array) $wpdb->get_col( $wpdb->prepare( "SELECT email FROM {$t} WHERE email IN ({$marks})", $chunk ) ) as $e ) { // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- table name and generated placeholders.
+				$found[ \strtolower( (string) $e ) ] = true;
+			}
+		}
+		return $found;
+	}
+
 	public static function add( string $email, string $reason, int $announcement_id = 0 ): void {
 		global $wpdb;
 		$email = \strtolower( \trim( $email ) );

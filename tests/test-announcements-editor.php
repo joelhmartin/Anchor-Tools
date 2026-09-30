@@ -13,6 +13,7 @@ class Test_Announcements_Editor extends Anchor_Announcements_TestCase {
 			'aa_action'            => $action,
 			'aa_schedule_at'       => $schedule,
 		];
+		$_POST = wp_slash( $_POST ); // WordPress delivers superglobals slashed.
 		( new Editor() )->save( $id );
 		$_POST = [];
 	}
@@ -37,6 +38,21 @@ class Test_Announcements_Editor extends Anchor_Announcements_TestCase {
 		$saved = json_decode( get_post_meta( $id, PT::META_AUDIENCE, true ), true );
 		$this->assertSame( 'user_role', $saved['groups'][0]['conditions'][0]['type'] );
 		$this->assertCount( 1, $saved['groups'][0]['conditions'] );
+	}
+
+	public function test_save_preserves_newlines_quotes_unicode_and_backslashes() {
+		$id       = $this->make_announcement();
+		$emails   = "a@x.com\nb@y.com";
+		$audience = wp_json_encode( [ 'groups' => [ [ 'conditions' => [
+			[ 'type' => 'specific_people', 'negate' => false, 'params' => [ 'emails' => $emails ] ],
+			[ 'type' => 'user_field', 'negate' => true, 'params' => [ 'key' => 'city', 'compare' => '=', 'value' => "Caf\u{00e9} \"Noir\"" ] ],
+		] ] ] ] );
+		$this->post_save( $id, [ 'subject' => 'S', 'preheader' => '', 'body' => '<p>C:\\path\\file</p>', 'audience' => $audience ] );
+		$saved = json_decode( (string) get_post_meta( $id, PT::META_AUDIENCE, true ), true );
+		$this->assertIsArray( $saved, 'audience JSON must survive a save' );
+		$this->assertSame( $emails, $saved['groups'][0]['conditions'][0]['params']['emails'] );
+		$this->assertSame( "Caf\u{00e9} \"Noir\"", $saved['groups'][0]['conditions'][1]['params']['value'] );
+		$this->assertSame( '<p>C:\\path\\file</p>', get_post_meta( $id, PT::META_BODY, true ) );
 	}
 
 	public function test_empty_params_round_trip_as_object() {

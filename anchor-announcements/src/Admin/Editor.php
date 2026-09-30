@@ -188,10 +188,11 @@ final class Editor {
 		}
 		$fields = (array) \wp_unslash( $_POST['anchor_announcement'] ?? [] ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- sanitized per key below.
 		if ( self::editable( $post_id ) ) {
-			\update_post_meta( $post_id, PT::META_SUBJECT, \sanitize_text_field( (string) ( $fields['subject'] ?? '' ) ) );
-			\update_post_meta( $post_id, PT::META_PREHEADER, \sanitize_text_field( (string) ( $fields['preheader'] ?? '' ) ) );
-			\update_post_meta( $post_id, PT::META_BODY, \Anchor_Email_Sanitizer::body( (string) ( $fields['body'] ?? '' ) ) );
-			\update_post_meta( $post_id, PT::META_AUDIENCE, \wp_json_encode( self::encodable( Module::instance()->resolver()->sanitize( (string) ( $fields['audience'] ?? '' ) ) ) ) );
+			// $fields is already unslashed and update_post_meta() unslashes again, so wp_slash() every value.
+			\update_post_meta( $post_id, PT::META_SUBJECT, \wp_slash( \sanitize_text_field( (string) ( $fields['subject'] ?? '' ) ) ) );
+			\update_post_meta( $post_id, PT::META_PREHEADER, \wp_slash( \sanitize_text_field( (string) ( $fields['preheader'] ?? '' ) ) ) );
+			\update_post_meta( $post_id, PT::META_BODY, \wp_slash( \Anchor_Email_Sanitizer::body( (string) ( $fields['body'] ?? '' ) ) ) );
+			\update_post_meta( $post_id, PT::META_AUDIENCE, \wp_slash( \wp_json_encode( self::encodable( Module::instance()->resolver()->sanitize( (string) ( $fields['audience'] ?? '' ) ) ) ) ) );
 			\delete_post_meta( $post_id, '_aa_last_error' );
 		}
 

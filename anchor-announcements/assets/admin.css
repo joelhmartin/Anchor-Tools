@@ -19,3 +19,8 @@
 .aa-error{color:#b32d2e}
 .aa-sent-preview{width:100%;height:640px;border:1px solid #c3c4c7}
 #aa-audience-sample{max-height:240px;overflow:auto}
+.aa-stats{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 8px;padding:0;list-style:none}
+.aa-stats li{background:#f6f7f7;border-radius:6px;padding:10px 14px;min-width:110px}
+.aa-stats strong{display:block;font-size:20px}
+.aa-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.aa-filters a.current{font-weight:700;text-decoration:none;color:#1d2327}

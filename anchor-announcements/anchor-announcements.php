@@ -74,6 +74,9 @@ class Module {
 			new Admin\SettingsPage();
 			new Admin\Editor();
 			new Admin\Ajax();
+			new Admin\Reports();
+			new Admin\ListColumns();
+			new Admin\SuppressionsPage();
 		}
 	}
 

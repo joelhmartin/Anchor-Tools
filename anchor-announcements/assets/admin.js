@@ -23,7 +23,15 @@
 
   function load() {
     try { state = JSON.parse($input.val() || '{}'); } catch (e) { state = {}; }
-    if (!state.groups) { state.groups = []; }
+    if (!Array.isArray(state.groups)) { state.groups = []; }
+    // PHP encodes empty params as [], which would drop named properties on stringify.
+    state.groups.forEach(function (g) {
+      g.conditions = g.conditions || [];
+      g.conditions.forEach(function (c) {
+        if (!c.params || Array.isArray(c.params)) { c.params = {}; }
+        c.negate = !!c.negate;
+      });
+    });
   }
 
   function save() { $input.val(JSON.stringify(state)); }
@@ -163,19 +171,27 @@
   }
 
   function previewAudience() {
+    var $count = $('#aa-audience-count');
+    var failed = function (xhr) {
+      var body = xhr && (xhr.responseJSON || xhr);
+      var m = body && body.data && body.data.message;
+      $count.text(m || t.auditFailed || 'Could not check the audience. Please reload and try again.');
+      return $.Deferred().reject().promise();
+    };
     return post('audience', { rules: $input.val() }).then(function (res) {
-      var d = (res && res.data) || { count: 0, suppressed: 0, sample: [] };
+      if (!res || !res.success) { return failed(res); }
+      var d = res.data || { count: 0, suppressed: 0, sample: [] };
       $('#aa-audience-count').text(d.count ? fmt(t.recipients, d.count, d.suppressed) : t.nobody);
       var $list = $('#aa-audience-sample').empty();
       d.sample.forEach(function (r) { $('<li/>').text(r.name ? r.name + ' <' + r.email + '>' : r.email).appendTo($list); });
       return d.count;
-    });
+    }, failed);
   }
 
   function builderFields() {
     if (window.tinymce) { window.tinymce.triggerSave(); }
     return {
-      post_id: cfg.postId || $('#post_ID').val(),
+      post_id: cfg.postId,
       subject: $('.anchor-email-builder__subject').val() || '',
       preheader: $('.anchor-email-builder__preheader').val() || '',
       body: $('.anchor-email-builder__body').val() || ''
@@ -183,7 +199,7 @@
   }
 
   $(function () {
-    if (cfg.postId === 0) { cfg.postId = Number($('#post_ID').val()) || 0; }
+    cfg.postId = Number(cfg.postId) || Number($('#post_ID').val()) || 0;
     $input = $('#aa-audience-input');
     $root = $('#aa-audience-builder');
     if ($input.length && cfg.editable) { load(); render(); }

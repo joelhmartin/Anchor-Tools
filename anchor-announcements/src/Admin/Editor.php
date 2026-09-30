@@ -191,7 +191,7 @@ final class Editor {
 			\update_post_meta( $post_id, PT::META_SUBJECT, \sanitize_text_field( (string) ( $fields['subject'] ?? '' ) ) );
 			\update_post_meta( $post_id, PT::META_PREHEADER, \sanitize_text_field( (string) ( $fields['preheader'] ?? '' ) ) );
 			\update_post_meta( $post_id, PT::META_BODY, \Anchor_Email_Sanitizer::body( (string) ( $fields['body'] ?? '' ) ) );
-			\update_post_meta( $post_id, PT::META_AUDIENCE, \wp_json_encode( Module::instance()->resolver()->sanitize( (string) ( $fields['audience'] ?? '' ) ) ) );
+			\update_post_meta( $post_id, PT::META_AUDIENCE, \wp_json_encode( self::encodable( Module::instance()->resolver()->sanitize( (string) ( $fields['audience'] ?? '' ) ) ) ) );
 			\delete_post_meta( $post_id, '_aa_last_error' );
 		}
 
@@ -220,6 +220,16 @@ final class Editor {
 				Queue::cancel( $post_id );
 				break;
 		}
+	}
+
+	/** Cast each condition's params to an object so empty params serialize as {} (not []). */
+	private static function encodable( array $rules ): array {
+		foreach ( $rules['groups'] as $gi => $group ) {
+			foreach ( $group['conditions'] as $ci => $c ) {
+				$rules['groups'][ $gi ]['conditions'][ $ci ]['params'] = (object) $c['params'];
+			}
+		}
+		return $rules;
 	}
 
 	/** @return list<string> */

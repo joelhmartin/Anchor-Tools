@@ -152,4 +152,30 @@ class Test_Announcements_Queue extends Anchor_Announcements_TestCase {
 		$this->assertStringNotContainsString( 'anchor_aa=o', $this->mails[0]['message'] );
 		$this->assertSame( [], $this->rows( $id ) );
 	}
+
+	public function test_address_suppressed_after_start_is_skipped_at_send_time() {
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com', 'b@x.com' ] ) ] );
+		Queue::start( $id );
+		Suppressions::add( 'a@x.com', 'unsubscribed' );
+		Queue::tick();
+		$this->assertCount( 1, $this->mails );
+		$this->assertSame( 'b@x.com', $this->mails[0]['to'] );
+		$row = $this->rows( $id )[0];
+		$this->assertSame( 'skipped', $row->status );
+		$this->assertSame( 'suppressed', $row->skip_reason );
+	}
+
+	public function test_interrupted_claim_fails_instead_of_resending() {
+		global $wpdb;
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		Queue::start( $id );
+		$row = $this->rows( $id )[0];
+		Queue::claim( (int) $row->id );
+		$wpdb->update( Migrations::table( 'sends' ), [ 'claimed_at' => gmdate( 'Y-m-d H:i:s', time() - 31 * 60 ) ], [ 'id' => (int) $row->id ] );
+		Queue::tick();
+		$row = $this->rows( $id )[0];
+		$this->assertSame( 'failed', $row->status );
+		$this->assertNotEmpty( $row->error );
+		$this->assertCount( 0, $this->mails );
+	}
 }

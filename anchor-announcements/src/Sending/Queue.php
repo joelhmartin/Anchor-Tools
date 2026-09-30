@@ -17,6 +17,10 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * GET_LOCK keeps ticks from overlapping across connections; claim() keeps a row from
  * ever being sent twice even when the lock cannot (GET_LOCK is re-entrant for one
  * connection).
+ *
+ * Delivery is at-most-once: a row whose send was interrupted (crash, timeout) stays in
+ * 'sending' and is later marked failed, never requeued, because we cannot know whether
+ * wp_mail() already delivered it and a duplicate is worse than a missed email.
  */
 final class Queue {
 
@@ -24,7 +28,7 @@ final class Queue {
 	public const SCHEDULE        = 'anchor_announcements_minute';
 	public const LAST_RUN_OPTION = 'anchor_announcements_last_tick';
 	public const MAX_ATTEMPTS    = 3;
-	private const STALE_CLAIM    = 600; // seconds before a crashed claim is retried
+	private const STALE_CLAIM    = 1800; // seconds before an interrupted claim is marked failed
 
 	public static function register(): void {
 		\add_filter(
@@ -184,7 +188,7 @@ final class Queue {
 	private static function recover_stale_claims(): void {
 		global $wpdb;
 		$cutoff = \gmdate( 'Y-m-d H:i:s', \time() - self::STALE_CLAIM );
-		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::table() . " SET status = 'queued' WHERE status = 'sending' AND claimed_at < %s", $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::table() . " SET status = 'failed', error = %s WHERE status = 'sending' AND claimed_at < %s", \__( 'Sending was interrupted and was not retried, to avoid sending a duplicate.', 'anchor-schema' ), $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	}
 
 	private static function send_batch(): void {
@@ -206,15 +210,19 @@ final class Queue {
 		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . self::table() . " WHERE status = 'queued' AND announcement_id IN ({$in}) ORDER BY id ASC LIMIT %d", (int) Settings::get()['batch_size'] ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
 		foreach ( $rows as $row ) {
+			if ( Suppressions::is_suppressed( (string) $row->email ) ) {
+				$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::table() . " SET status = 'skipped', skip_reason = 'suppressed' WHERE id = %d AND status = 'queued'", (int) $row->id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+				continue;
+			}
 			if ( ! self::claim( (int) $row->id ) ) {
 				continue;
 			}
 			$result = Mailer::send( (int) $row->announcement_id, [ 'email' => (string) $row->email, 'user_id' => (int) $row->user_id, 'name' => (string) $row->name ], (string) $row->token, true );
 			$tries  = (int) $row->attempts + 1;
 			if ( true === $result ) {
-				$wpdb->update( self::table(), [ 'status' => 'sent', 'sent_at' => \current_time( 'mysql', true ), 'attempts' => $tries, 'error' => null ], [ 'id' => (int) $row->id ] );
+				$wpdb->update( self::table(), [ 'status' => 'sent', 'sent_at' => \current_time( 'mysql', true ), 'attempts' => $tries, 'error' => null ], [ 'id' => (int) $row->id, 'status' => 'sending' ] );
 			} else {
-				$wpdb->update( self::table(), [ 'status' => $tries >= self::MAX_ATTEMPTS ? 'failed' : 'queued', 'attempts' => $tries, 'error' => $result->get_error_message() ], [ 'id' => (int) $row->id ] );
+				$wpdb->update( self::table(), [ 'status' => $tries >= self::MAX_ATTEMPTS ? 'failed' : 'queued', 'attempts' => $tries, 'error' => $result->get_error_message() ], [ 'id' => (int) $row->id, 'status' => 'sending' ] );
 			}
 		}
 	}

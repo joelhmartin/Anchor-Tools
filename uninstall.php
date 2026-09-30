@@ -114,5 +114,39 @@ if ( get_option( 'anchor_courses_delete_data_on_uninstall' ) ) {
 }
 
 /*
+ * -- Anchor Announcements -------------------------------------------------
+ * The queue tick is always unscheduled. The send history and, above all, the
+ * unsubscribe list are a record of who asked not to be emailed, so - like
+ * Courses - they are NOT dropped by default, even on delete. A site that
+ * genuinely wants them gone sets the opt-in flag first:
+ *
+ *   update_option( 'anchor_announcements_delete_data_on_uninstall', 1, false );
+ *
+ * Literal names: no plugin classes are loaded here. Mirrors
+ * anchor-announcements/src/Database/Migrations.php (tables, caps, db option),
+ * Support\Settings and Sending\Queue (options, hook).
+ */
+wp_clear_scheduled_hook( 'anchor_announcements_tick' );
+
+if ( get_option( 'anchor_announcements_delete_data_on_uninstall' ) ) {
+	$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}anchor_announce_sends" );        // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}anchor_announce_events" );       // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}anchor_announce_suppressions" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	delete_option( 'anchor_announcements_settings' );
+	delete_option( 'anchor_announcements_db_version' );
+	delete_option( 'anchor_announcements_last_tick' );
+	delete_option( 'anchor_announcements_delete_data_on_uninstall' );
+	delete_transient( 'anchor_announcements_heal' );
+
+	foreach ( array_keys( wp_roles()->roles ) as $anchor_announcements_role_slug ) {
+		$anchor_announcements_role = get_role( $anchor_announcements_role_slug );
+		if ( $anchor_announcements_role instanceof WP_Role ) {
+			$anchor_announcements_role->remove_cap( 'anchor_send_announcements' );
+		}
+	}
+}
+
+/*
  * -- (next module with persistent artifacts goes here) -------------------
  */

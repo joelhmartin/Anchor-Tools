@@ -10,6 +10,22 @@ class Test_Announcements_Module extends Anchor_Announcements_TestCase {
 		$this->assertInstanceOf( Module::class, $this->module() );
 	}
 
+	public function test_switching_the_module_off_clears_the_tick() {
+		\Anchor\Announcements\Sending\Queue::ensure_scheduled();
+		$this->assertNotFalse( wp_next_scheduled( 'anchor_announcements_tick' ) );
+		$on  = [ 'modules' => [ 'announcements' => 1 ] ];
+		$off = [ 'modules' => [ 'announcements' => 0 ] ];
+		anchor_tools_announcements_maybe_clear_tick( $on, $on );
+		$this->assertNotFalse( wp_next_scheduled( 'anchor_announcements_tick' ), 'unchanged setting keeps the tick' );
+		do_action( 'update_option_' . Anchor_Schema_Admin::OPTION_KEY, $on, $off );
+		$this->assertFalse( wp_next_scheduled( 'anchor_announcements_tick' ) );
+	}
+
+	public function test_db_version_option_is_autoloaded() {
+		global $wpdb;
+		$this->assertContains( $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_name = %s", Migrations::OPTION ) ), [ 'yes', 'on', 'auto', 'auto-on' ] );
+	}
+
 	public function test_tables_exist() {
 		global $wpdb;
 		foreach ( [ 'sends', 'events', 'suppressions' ] as $t ) {

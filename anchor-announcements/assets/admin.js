@@ -82,7 +82,13 @@
         return searchField(f, c, $wrap);
       default:
         $el = $('<input/>').attr('type', f.type === 'number' ? 'number' : (f.type === 'date' ? 'date' : 'text')).val(val === undefined ? '' : val)
-          .on('input change', function () { set(f.type === 'number' ? Number($(this).val()) : $(this).val()); });
+          .on('input change', function () {
+            var v = $(this).val();
+            if (f.type !== 'number') { set(v); return; }
+            // An emptied number field has no value: drop the param (Number('') would save 0).
+            if (v === '' || isNaN(Number(v))) { delete c.params[f.key]; save(); return; }
+            set(Number(v));
+          });
     }
     return $wrap.append($el);
   }
@@ -188,8 +194,15 @@
     }, failed);
   }
 
+  // Ask each email builder to copy its active view (Design, HTML or TinyMCE) into the body textarea.
+  function syncBuilders() {
+    $('[data-anchor-email-builder]').each(function () {
+      if (this.anchorEmailBuilder && this.anchorEmailBuilder.sync) { this.anchorEmailBuilder.sync(); }
+    });
+  }
+
   function builderFields() {
-    if (window.tinymce) { window.tinymce.triggerSave(); }
+    syncBuilders();
     return {
       post_id: cfg.postId,
       subject: $('.anchor-email-builder__subject').val() || '',
@@ -231,8 +244,11 @@
       previewAudience().then(function (count) {
         if (count && window.confirm(fmt(t.confirmSend, count))) {
           $btn.data('confirmed', true);
-          $('<input type="hidden" name="aa_action" value="send_now"/>').appendTo($btn.closest('form'));
-          $btn.closest('form').trigger('submit');
+          var form = $btn.closest('form')[0];
+          syncBuilders();
+          $('<input type="hidden" name="aa_action" value="send_now"/>').appendTo(form);
+          // requestSubmit() fires the native submit event so every listener (builder sync, WordPress) runs.
+          if (form.requestSubmit) { form.requestSubmit(); } else { syncBuilders(); form.submit(); }
         }
       });
     });

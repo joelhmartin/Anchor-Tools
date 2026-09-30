@@ -47,6 +47,9 @@
       return ed ? ed.getContent() : body.value;
     }
 
+    // Lets a host page (Announcements) flush the active view into the body textarea before it reads or submits.
+    root.anchorEmailBuilder = { sync: function () { body.value = currentBody(); return body.value; } };
+
     function monacoValue() {
       var ed = monacoEditor();
       return ed ? ed.getValue() : source.value;

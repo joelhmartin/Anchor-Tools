@@ -38,6 +38,9 @@ class Module {
 		Migrations::maybe_migrate();
 		\add_action( 'admin_init', [ Migrations::class, 'maybe_migrate' ] );
 		$this->conditions = new Audience\Registry();
+		foreach ( [ new Audience\Conditions\UserRole(), new Audience\Conditions\UserRegistered(), new Audience\Conditions\UserField(), new Audience\Conditions\SpecificPeople() ] as $condition ) {
+			$this->conditions->register( $condition );
+		}
 		\add_action( 'init', [ Content\AnnouncementPostType::class, 'register' ] );
 		if ( \is_admin() ) {
 			new Admin\SettingsPage();

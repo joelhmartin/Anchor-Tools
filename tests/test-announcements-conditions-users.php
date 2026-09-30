@@ -1,0 +1,51 @@
+<?php
+use Anchor\Announcements\Audience\Conditions\SpecificPeople;
+use Anchor\Announcements\Audience\Conditions\UserField;
+use Anchor\Announcements\Audience\Conditions\UserRegistered;
+use Anchor\Announcements\Audience\Conditions\UserRole;
+
+class Test_Announcements_Conditions_Users extends Anchor_Announcements_TestCase {
+
+	public function test_user_role() {
+		$this->make_user( 'sub@x.com' );
+		$this->make_user( 'ed@x.com', [ 'role' => 'editor' ] );
+		$set = ( new UserRole() )->match( [ 'roles' => [ 'editor' ] ] );
+		$this->assertTrue( $set->has( 'ed@x.com' ) );
+		$this->assertFalse( $set->has( 'sub@x.com' ) );
+		$this->assertSame( 0, ( new UserRole() )->match( [ 'roles' => [] ] )->count() );
+	}
+
+	public function test_user_registered_range() {
+		$this->make_user( 'old@x.com', [ 'user_registered' => '2025-01-10 12:00:00' ] );
+		$this->make_user( 'new@x.com', [ 'user_registered' => '2026-02-10 12:00:00' ] );
+		$set = ( new UserRegistered() )->match( [ 'from' => '2026-01-01', 'to' => '' ] );
+		$this->assertTrue( $set->has( 'new@x.com' ) );
+		$this->assertFalse( $set->has( 'old@x.com' ) );
+	}
+
+	public function test_user_field_compares() {
+		$a = $this->make_user( 'a@x.com' );
+		$b = $this->make_user( 'b@x.com' );
+		update_user_meta( $a, 'practice_state', 'Texas' );
+		update_user_meta( $b, 'practice_state', 'Ohio' );
+		$c = new UserField();
+		$this->assertSame( [ 'a@x.com' ], array_column( $c->match( [ 'key' => 'practice_state', 'compare' => '=', 'value' => 'Texas' ] )->all(), 'email' ) );
+		$this->assertTrue( $c->match( [ 'key' => 'practice_state', 'compare' => 'contains', 'value' => 'hi' ] )->has( 'b@x.com' ) );
+		$this->assertSame( 2, $c->match( [ 'key' => 'practice_state', 'compare' => 'exists', 'value' => '' ] )->count() );
+		$this->assertSame( 0, $c->match( [ 'key' => '', 'compare' => '=', 'value' => 'x' ] )->count() );
+	}
+
+	public function test_specific_people_users_and_pasted_addresses() {
+		$u   = $this->make_user( 'user@x.com', [ 'display_name' => 'Uma User' ] );
+		$set = ( new SpecificPeople() )->match( [ 'users' => [ $u ], 'emails' => "Pasted@X.com, second@x.com\nnot-an-email" ] );
+		$this->assertSame( [ 'pasted@x.com', 'second@x.com', 'user@x.com' ], array_column( $set->all(), 'email' ) );
+		$this->assertSame( 'Uma User', $set->get( 'user@x.com' )['name'] );
+	}
+
+	public function test_all_four_are_registered() {
+		$keys = array_keys( $this->module()->conditions->all() );
+		foreach ( [ 'user_role', 'user_registered', 'user_field', 'specific_people' ] as $k ) {
+			$this->assertContains( $k, $keys );
+		}
+	}
+}

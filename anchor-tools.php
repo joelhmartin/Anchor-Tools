@@ -320,6 +320,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-courses/anchor-courses.php',
                 'class'       => '\\Anchor\\Courses\\Module',
             ],
+            'announcements' => [
+                'label'       => __( 'Anchor Announcements', 'anchor-schema' ),
+                'description' => __( 'Compose and send tracked email announcements to filtered audiences.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-announcements/anchor-announcements.php',
+                'class'       => '\\Anchor\\Announcements\\Module',
+            ],
         ];
     }
 }

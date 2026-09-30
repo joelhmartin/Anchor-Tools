@@ -13,4 +13,5 @@ return array(
     'GrahamCampbell\\ResultType\\' => array($vendorDir . '/graham-campbell/result-type/src'),
     'Dotenv\\' => array($vendorDir . '/vlucas/phpdotenv/src'),
     'Anchor\\Courses\\' => array($baseDir . '/anchor-courses/src'),
+    'Anchor\\Announcements\\' => array($baseDir . '/anchor-announcements/src'),
 );

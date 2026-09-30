@@ -63,7 +63,7 @@ tests_add_filter(
 	function () {
 		update_option(
 			'anchor_schema_settings',
-			[ 'modules' => [ 'events_manager' => true, 'locations' => true, 'compliance' => true, 'webinars' => true, 'courses' => true ] ],
+			[ 'modules' => [ 'events_manager' => true, 'locations' => true, 'compliance' => true, 'webinars' => true, 'courses' => true, 'announcements' => true ] ],
 			false
 		);
 	},
@@ -88,3 +88,4 @@ if ( class_exists( 'WooCommerce' ) && class_exists( 'WC_Install' ) ) {
 // Shared base test case.
 require __DIR__ . '/class-anchor-events-testcase.php';
 require __DIR__ . '/class-anchor-courses-testcase.php';
+require __DIR__ . '/class-anchor-announcements-testcase.php';

@@ -46,6 +46,8 @@ class Test_Announcements_Reports extends Anchor_Announcements_TestCase {
 		$this->assertSame( [ 'quiet@x.com' ], array_column( Reports::recipients( $id, 'not_opened' )['rows'], 'email' ) );
 		$this->assertSame( [ 'broken@x.com' ], array_column( Reports::recipients( $id, 'failed' )['rows'], 'email' ) );
 		$this->assertSame( 1, Reports::recipients( $id, 'all', 'quiet' )['total'] );
+		$this->row( $id, 'failedclick@x.com', 'failed', 0, 1 );
+		$this->assertSame( [], Reports::recipients( $id, 'clicked' )['rows'] );
 	}
 
 	public function test_links_exclude_scanner_clicks() {

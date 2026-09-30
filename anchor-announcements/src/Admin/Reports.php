@@ -13,6 +13,8 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /** Totals, per-recipient and per-link reporting for one announcement. */
 final class Reports {
 
+	public const PER_PAGE = 50;
+
 	public function __construct() {
 		\add_action( 'add_meta_boxes_' . PT::CPT, [ $this, 'box' ] );
 		\add_action( 'admin_post_anchor_announcements_csv', [ $this, 'csv' ] );
@@ -48,7 +50,7 @@ final class Reports {
 		return $out;
 	}
 
-	public static function recipients( int $id, string $filter = 'all', string $search = '', int $page = 1, int $per_page = 50 ): array {
+	public static function recipients( int $id, string $filter = 'all', string $search = '', int $page = 1, int $per_page = self::PER_PAGE ): array {
 		global $wpdb;
 		$s     = self::sends();
 		$e     = self::events();
@@ -56,7 +58,7 @@ final class Reports {
 		$map   = [
 			'opened'       => "status = 'sent' AND open_count > 0",
 			'not_opened'   => "status = 'sent' AND open_count = 0",
-			'clicked'      => 'click_count > 0',
+			'clicked'      => "status = 'sent' AND click_count > 0",
 			'failed'       => "status = 'failed'",
 			'skipped'      => "status = 'skipped'",
 			'unsubscribed' => "id IN (SELECT send_id FROM {$e} WHERE type = 'unsubscribe')",
@@ -109,7 +111,7 @@ final class Reports {
 		\header( 'Content-Disposition: attachment; filename="announcement-' . $id . '-recipients.csv"' );
 		$out = \fopen( 'php://output', 'w' );
 		foreach ( self::csv_rows( $id ) as $row ) {
-			\fputcsv( $out, $row );
+			\fputcsv( $out, $row, ',', '"', '\\' );
 		}
 		\fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 		exit;
@@ -130,10 +132,12 @@ final class Reports {
 		$search = \sanitize_text_field( \wp_unslash( $_GET['aa_s'] ?? '' ) );
 		$page   = \max( 1, \absint( $_GET['aa_page'] ?? 1 ) );
 		// phpcs:enable
-		$list   = self::recipients( $id, $filter, $search, $page );
+		$list   = self::recipients( $id, $filter, $search, $page, self::PER_PAGE );
 		$pct    = static fn( float $r ) => \number_format_i18n( $r * 100, 1 ) . '%';
 		$last   = (int) \get_option( Queue::LAST_RUN_OPTION );
-		$base   = \get_edit_post_link( $id, 'raw' );
+		$edit   = (string) \get_edit_post_link( $id, 'raw' );
+		$with_s = '' !== $search ? \add_query_arg( 'aa_s', \rawurlencode( $search ), $edit ) : $edit; // Filter links keep the search.
+		$base   = 'all' !== $filter ? \add_query_arg( 'aa_filter', $filter, $with_s ) : $with_s; // Pagination keeps filter and search.
 		?>
 		<div class="aa-report">
 			<ul class="aa-stats">
@@ -151,14 +155,14 @@ final class Reports {
 			<h3><?php \esc_html_e( 'Recipients', 'anchor-schema' ); ?></h3>
 			<p class="aa-filters">
 				<?php foreach ( [ 'all' => \__( 'All', 'anchor-schema' ), 'opened' => \__( 'Opened', 'anchor-schema' ), 'not_opened' => \__( 'Not opened', 'anchor-schema' ), 'clicked' => \__( 'Clicked', 'anchor-schema' ), 'unsubscribed' => \__( 'Unsubscribed', 'anchor-schema' ), 'failed' => \__( 'Failed', 'anchor-schema' ), 'skipped' => \__( 'Skipped', 'anchor-schema' ) ] as $key => $label ) : ?>
-					<a class="<?php echo $key === $filter ? 'current' : ''; ?>" href="<?php echo \esc_url( \add_query_arg( [ 'aa_filter' => $key, 'aa_page' => 1 ], $base ) . '#aa-report' ); ?>"><?php echo \esc_html( $label ); ?></a>
+					<a class="<?php echo $key === $filter ? 'current' : ''; ?>" href="<?php echo \esc_url( \add_query_arg( [ 'aa_filter' => $key, 'aa_page' => 1 ], $with_s ) . '#aa-report' ); ?>"><?php echo \esc_html( $label ); ?></a>
 				<?php endforeach; ?>
 				<a class="button" href="<?php echo \esc_url( \wp_nonce_url( \admin_url( 'admin-post.php?action=anchor_announcements_csv&post=' . $id ), 'aa_csv_' . $id ) ); ?>"><?php \esc_html_e( 'Export CSV', 'anchor-schema' ); ?></a>
 			</p>
 			<?php // The report box sits inside the post edit form: no nested <form>; admin.js navigates. ?>
 			<p class="aa-report-search">
 				<input type="search" id="aa-report-search" value="<?php echo \esc_attr( $search ); ?>" placeholder="<?php \esc_attr_e( 'Search name or email', 'anchor-schema' ); ?>" />
-				<button type="button" class="button" id="aa-report-search-go" data-base="<?php echo \esc_url( \add_query_arg( [ 'aa_filter' => $filter, 'aa_page' => 1 ], $base ) ); ?>"><?php \esc_html_e( 'Search', 'anchor-schema' ); ?></button>
+				<button type="button" class="button" id="aa-report-search-go" data-base="<?php echo \esc_url( \add_query_arg( [ 'aa_filter' => $filter, 'aa_page' => 1 ], $edit ) ); ?>"><?php \esc_html_e( 'Search', 'anchor-schema' ); ?></button>
 			</p>
 			<table class="widefat striped">
 				<thead><tr><th><?php \esc_html_e( 'Name', 'anchor-schema' ); ?></th><th><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></th><th><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></th><th><?php \esc_html_e( 'First opened', 'anchor-schema' ); ?></th><th><?php \esc_html_e( 'Opens', 'anchor-schema' ); ?></th><th><?php \esc_html_e( 'First clicked', 'anchor-schema' ); ?></th><th><?php \esc_html_e( 'Clicks', 'anchor-schema' ); ?></th></tr></thead>
@@ -176,8 +180,8 @@ final class Reports {
 				<?php endforeach; ?>
 				</tbody>
 			</table>
-			<?php if ( $list['total'] > 50 ) : ?>
-				<p><?php echo \wp_kses_post( \paginate_links( [ 'base' => \add_query_arg( 'aa_page', '%#%', $base ) . '#aa-report', 'format' => '', 'current' => $page, 'total' => (int) \ceil( $list['total'] / 50 ) ] ) ); ?></p>
+			<?php if ( $list['total'] > self::PER_PAGE ) : ?>
+				<p><?php echo \wp_kses_post( \paginate_links( [ 'base' => $base . ( false === \strpos( $base, '?' ) ? '?' : '&' ) . 'aa_page=%#%#aa-report', 'format' => '', 'current' => $page, 'total' => (int) \ceil( $list['total'] / self::PER_PAGE ) ] ) ); ?></p>
 			<?php endif; ?>
 
 			<h3><?php \esc_html_e( 'Links', 'anchor-schema' ); ?></h3>

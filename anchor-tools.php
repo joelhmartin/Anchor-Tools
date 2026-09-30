@@ -61,6 +61,11 @@ if ( ! class_exists( 'Anchor_Asset_Loader' ) ) {
 if ( ! class_exists( 'Anchor_Monaco' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-monaco.php';
 }
+if ( ! class_exists( 'Anchor_Email_Tokens' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-tokens.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-sanitizer.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-shell.php';
+}
 if ( ! class_exists( 'Anchor_Groups' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-groups.php';
 }

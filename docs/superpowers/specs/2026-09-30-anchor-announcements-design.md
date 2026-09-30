@@ -11,7 +11,7 @@ Date: 2026-09-30. Branch: `feat/anchor-announcements`. Owner request (verbatim i
 - Events sends with `wp_mail()`. That is the SMTP-agnostic seam: Mailgun, Postmark, SendGrid, SES or plain SMTP plug in underneath through whatever mail plugin the site runs.
 - `assets/anchor-monaco.js` + `includes/class-anchor-monaco.php` are already plugin-wide and shared.
 - Audience data sources:
-  - WooCommerce: `wc_order_product_lookup` (order_id, product_id, variation_id, customer_id, date_created) joined to `wc_customer_lookup` (customer_id, user_id, email, first_name, last_name) and `wc_order_stats` (status). These cover HPOS and legacy storage and include **guest buyers** (customer rows with `user_id` NULL).
+  - WooCommerce: the order line tables `woocommerce_order_items` + `woocommerce_order_itemmeta` (`_product_id`, `_variation_id`), identical in both storage modes, joined to the order record: HPOS `wc_orders` (status, `date_created_gmt`, `customer_id`, `billing_email`, `total_amount`) + `wc_order_addresses` (billing names), or legacy `posts` + `postmeta` (`_billing_email`, `_customer_user`, `_order_total`, billing names), chosen with `OrderUtil::custom_orders_table_usage_is_enabled()`. Guest buyers are included (customer id 0, billing email). The analytics lookup tables (`wc_order_product_lookup`, `wc_customer_lookup`) are deliberately **not** used: they stop updating when a site turns WooCommerce Analytics off and lag behind Action Scheduler on busy stores.
   - Anchor Courses: table `anchor_courses_enrollments` (user_id, course_id, status, enrolled_at, completed_at).
   - Anchor Events: `Registrations::query_seats()` over `anchor_event_reg` seats (`_anchor_event_email`, `_anchor_event_name`, `_anchor_event_user_id`, `_anchor_event_reg_status`).
 
@@ -104,7 +104,7 @@ Each is a class implementing `Audience\Condition` (`key()`, `label()`, `availabl
 | `course_completed` | Anchor Courses | courses, completed from, to |
 | `event_registered` | Anchor Events | events (any of), seat statuses (default confirmed), registered from, to |
 
-Dates are site-timezone calendar days, inclusive, either end optional. Each condition resolves with one or two SQL queries returning email, user_id and name; set algebra happens in PHP (fine to tens of thousands of rows; anything larger is out of scope and noted).
+Dates are site-timezone calendar days, inclusive, either end optional. Each condition resolves with one or two SQL queries returning email, user_id and name (the WooCommerce ones through one `Audience\\WooOrders` query builder that owns the HPOS/legacy split); set algebra happens in PHP (fine to tens of thousands of rows; anything larger is out of scope and noted).
 
 ### 6.4 UI and preview
 

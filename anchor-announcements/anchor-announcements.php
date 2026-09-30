@@ -56,6 +56,15 @@ class Module {
 				return $set;
 			}
 		);
+		foreach ( [ new Audience\Conditions\CourseEnrolled(), new Audience\Conditions\CourseCompleted(), new Audience\Conditions\EventRegistered() ] as $condition ) {
+			$this->conditions->register( $condition );
+		}
+		\add_filter(
+			'anchor_announcements_universe',
+			static function ( Audience\RecipientSet $set ) {
+				return \class_exists( '\Anchor\Events\Module' ) ? $set->union( Audience\Conditions\EventRegistered::seats( [], true ) ) : $set;
+			}
+		);
 		\add_action( 'init', [ Content\AnnouncementPostType::class, 'register' ] );
 		if ( \is_admin() ) {
 			new Admin\SettingsPage();

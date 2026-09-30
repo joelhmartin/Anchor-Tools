@@ -144,6 +144,67 @@ class Test_Announcements_Queue extends Anchor_Announcements_TestCase {
 		$this->assertCount( 1, $this->mails );
 	}
 
+	public function test_tick_is_scheduled_only_while_work_exists() {
+		wp_clear_scheduled_hook( Queue::HOOK );
+		$this->assertFalse( wp_next_scheduled( Queue::HOOK ) );
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		Queue::start( $id );
+		$this->assertNotFalse( wp_next_scheduled( Queue::HOOK ), 'start() schedules the tick' );
+		Queue::tick(); // sends the only row and finishes.
+		$this->assertSame( PT::STATE_SENT, PT::state( $id ) );
+		$this->assertFalse( wp_next_scheduled( Queue::HOOK ), 'idle tick is cleared' );
+	}
+
+	public function test_schedule_and_resume_arm_the_tick_and_cancel_clears_it() {
+		wp_clear_scheduled_hook( Queue::HOOK );
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		$this->assertTrue( Queue::schedule( $id, time() + 3600 ) );
+		$this->assertNotFalse( wp_next_scheduled( Queue::HOOK ) );
+		Queue::cancel( $id );
+		$this->assertFalse( wp_next_scheduled( Queue::HOOK ) );
+		$id2 = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		Queue::start( $id2 );
+		Queue::pause( $id2 );
+		wp_clear_scheduled_hook( Queue::HOOK );
+		Queue::resume( $id2 );
+		$this->assertNotFalse( wp_next_scheduled( Queue::HOOK ) );
+	}
+
+	public function test_schedule_runs_the_same_checks_as_send() {
+		Settings::save( [ 'footer_address' => '' ] );
+		$id  = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		$res = Queue::schedule( $id, time() + 3600 );
+		$this->assertWPError( $res );
+		$this->assertSame( 'missing_address', $res->get_error_code() );
+		$this->assertSame( PT::STATE_DRAFT, PT::state( $id ) );
+	}
+
+	public function test_scheduled_send_that_fails_at_release_reverts_and_emails_the_author() {
+		$author = self::factory()->user->create( [ 'role' => 'administrator', 'user_email' => 'author@x.com' ] );
+		$id     = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com' ] ) ] );
+		wp_update_post( [ 'ID' => $id, 'post_author' => $author ] );
+		$this->assertTrue( Queue::schedule( $id, time() + 3600 ) );
+		update_post_meta( $id, PT::META_AUDIENCE, $this->audience( [] ) ); // audience empties before release.
+		update_post_meta( $id, PT::META_SCHEDULED, time() - 1 );
+		Queue::tick();
+		$this->assertSame( PT::STATE_DRAFT, PT::state( $id ) );
+		$this->assertNotSame( '', (string) get_post_meta( $id, '_aa_last_error', true ) );
+		$this->assertCount( 1, $this->mails );
+		$this->assertSame( 'author@x.com', $this->mails[0]['to'] );
+		$this->assertStringContainsString( 'Nobody matches', $this->mails[0]['message'] );
+		$this->assertStringContainsString( 'post.php', $this->mails[0]['message'] );
+	}
+
+	public function test_time_budget_leaves_remaining_rows_queued() {
+		$id = $this->make_announcement( [ PT::META_AUDIENCE => $this->audience( [ 'a@x.com', 'b@x.com' ] ) ] );
+		Queue::start( $id );
+		$m = new ReflectionMethod( Queue::class, 'send_batch' );
+		$m->setAccessible( true );
+		$m->invoke( null, microtime( true ) - 100 );
+		$this->assertCount( 0, $this->mails );
+		$this->assertSame( [ 'queued', 'queued' ], array_column( $this->rows( $id ), 'status' ) );
+	}
+
 	public function test_test_send_is_untracked_and_prefixed() {
 		$id = $this->make_announcement();
 		$this->assertTrue( Queue::test_send( $id, 'me@x.com', null ) );

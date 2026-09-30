@@ -93,6 +93,7 @@ final class Editor {
 					'confirmSend'  => \__( 'Send this announcement to %d people now?', 'anchor-schema' ),
 					'nobody'       => \__( 'Nobody matches this audience yet.', 'anchor-schema' ),
 					'search'       => \__( 'Search…', 'anchor-schema' ),
+					'auditFailed'  => \__( 'Could not check the audience. Please reload and try again.', 'anchor-schema' ),
 				],
 			]
 		);

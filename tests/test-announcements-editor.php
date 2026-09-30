@@ -81,8 +81,10 @@ class Test_Announcements_Editor extends Anchor_Announcements_TestCase {
 
 	public function test_schedule_parses_site_time() {
 		update_option( 'timezone_string', 'America/New_York' );
-		$id = $this->make_announcement();
-		$this->post_save( $id, [ 'subject' => 'S', 'preheader' => '', 'body' => '<p>B</p>', 'audience' => '{}' ], 'schedule', '2099-01-01T09:00' );
+		$this->make_user( 'r@x.com' );
+		$id  = $this->make_announcement();
+		$aud = wp_json_encode( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'specific_people', 'negate' => false, 'params' => [ 'emails' => 'r@x.com' ] ] ] ] ] ] );
+		$this->post_save( $id, [ 'subject' => 'S', 'preheader' => '', 'body' => '<p>B</p>', 'audience' => $aud ], 'schedule', '2099-01-01T09:00' );
 		$this->assertSame( PT::STATE_SCHEDULED, PT::state( $id ) );
 		$this->assertSame( strtotime( '2099-01-01 14:00:00 UTC' ), (int) get_post_meta( $id, PT::META_SCHEDULED, true ) );
 		update_option( 'timezone_string', '' );

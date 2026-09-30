@@ -78,6 +78,6 @@ final class Migrations {
 		if ( $admin ) {
 			$admin->add_cap( Module::CAP );
 		}
-		\update_option( self::OPTION, self::VERSION, false );
+		\update_option( self::OPTION, self::VERSION, true ); // Read on every request: keep it autoloaded.
 	}
 }

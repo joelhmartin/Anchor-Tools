@@ -39,18 +39,82 @@ final class Queue {
 			}
 		);
 		\add_action( self::HOOK, [ self::class, 'tick' ] );
-		\add_action(
-			'init',
-			static function () {
-				if ( ! \wp_next_scheduled( self::HOOK ) ) {
-					\wp_schedule_event( \time() + 60, self::SCHEDULE, self::HOOK );
-				}
-			}
-		);
+		// The tick exists only while something is scheduled, sending or paused (ensure_scheduled /
+		// clear_if_idle). This admin-side self-heal covers a hook cleared while the module was off.
+		\add_action( 'admin_init', [ self::class, 'heal' ] );
 	}
+
+	private const TIME_BUDGET = 45; // seconds of wall time per tick before we stop taking new rows
 
 	private static function table(): string {
 		return Migrations::table( 'sends' );
+	}
+
+	/** Schedule the one-minute tick if it is not already. */
+	public static function ensure_scheduled(): void {
+		if ( ! \wp_next_scheduled( self::HOOK ) ) {
+			\wp_schedule_event( \time() + 60, self::SCHEDULE, self::HOOK );
+		}
+	}
+
+	/** True while any announcement is scheduled, sending or paused. */
+	public static function has_active(): bool {
+		return (bool) \get_posts(
+			[
+				'post_type'   => PT::CPT,
+				'post_status' => 'any',
+				'numberposts' => 1,
+				'fields'      => 'ids',
+				'meta_query'  => [ [ 'key' => PT::META_STATE, 'value' => [ PT::STATE_SCHEDULED, PT::STATE_SENDING, PT::STATE_PAUSED ], 'compare' => 'IN' ] ], // phpcs:ignore WordPress.DB.SlowDBQuery
+			]
+		);
+	}
+
+	/** Remove the tick when nothing needs it. */
+	public static function clear_if_idle(): void {
+		if ( ! self::has_active() ) {
+			\wp_clear_scheduled_hook( self::HOOK );
+		}
+	}
+
+	/** Admin self-heal, at most every five minutes: re-arm the tick if work is waiting and the event is gone. */
+	public static function heal(): void {
+		if ( \wp_next_scheduled( self::HOOK ) || \get_transient( 'anchor_announcements_heal' ) ) {
+			return;
+		}
+		\set_transient( 'anchor_announcements_heal', 1, 5 * MINUTE_IN_SECONDS );
+		if ( self::has_active() ) {
+			self::ensure_scheduled();
+		}
+	}
+
+	/**
+	 * The checks shared by sending and scheduling: mailing address, subject and body, and an
+	 * audience that is not empty once unsubscribed addresses are removed.
+	 *
+	 * @return true|\WP_Error
+	 */
+	public static function preflight( int $id ) {
+		$res = self::checked_recipients( $id );
+		return \is_wp_error( $res ) ? $res : true;
+	}
+
+	/** @return list<array>|\WP_Error All resolved recipients (suppressed ones included), or the first problem. */
+	private static function checked_recipients( int $id ) {
+		if ( '' === \trim( (string) Settings::get()['footer_address'] ) ) {
+			return new \WP_Error( 'missing_address', \__( 'Add your mailing address in Announcements > Settings before sending.', 'anchor-schema' ) );
+		}
+		$body = (string) \get_post_meta( $id, PT::META_BODY, true );
+		if ( '' === \trim( (string) \get_post_meta( $id, PT::META_SUBJECT, true ) ) || '' === \trim( \wp_strip_all_tags( $body ) ) ) {
+			return new \WP_Error( 'empty_content', \__( 'Add a subject and a message before sending.', 'anchor-schema' ) );
+		}
+		$rules      = \json_decode( (string) \get_post_meta( $id, PT::META_AUDIENCE, true ), true );
+		$recipients = Module::instance()->resolver()->resolve( \is_array( $rules ) ? $rules : [] )->all();
+		$sendable   = \array_filter( $recipients, static fn( $r ) => ! Suppressions::is_suppressed( $r['email'] ) );
+		if ( ! $sendable ) {
+			return new \WP_Error( 'empty_audience', \__( 'Nobody matches this audience (after removing unsubscribed addresses).', 'anchor-schema' ) );
+		}
+		return $recipients;
 	}
 
 	/** @return int|\WP_Error */
@@ -59,20 +123,11 @@ final class Queue {
 		if ( ! \in_array( $state, [ PT::STATE_DRAFT, PT::STATE_SCHEDULED ], true ) ) {
 			return new \WP_Error( 'wrong_state', \__( 'This announcement has already been sent.', 'anchor-schema' ) );
 		}
-		if ( '' === \trim( (string) Settings::get()['footer_address'] ) ) {
-			return new \WP_Error( 'missing_address', \__( 'Add your mailing address in Announcements > Settings before sending.', 'anchor-schema' ) );
+		$recipients = self::checked_recipients( $id );
+		if ( \is_wp_error( $recipients ) ) {
+			return $recipients;
 		}
 		$body = (string) \get_post_meta( $id, PT::META_BODY, true );
-		if ( '' === \trim( (string) \get_post_meta( $id, PT::META_SUBJECT, true ) ) || '' === \trim( \wp_strip_all_tags( $body ) ) ) {
-			return new \WP_Error( 'empty_content', \__( 'Add a subject and a message before sending.', 'anchor-schema' ) );
-		}
-
-		$rules      = \json_decode( (string) \get_post_meta( $id, PT::META_AUDIENCE, true ), true );
-		$recipients = Module::instance()->resolver()->resolve( \is_array( $rules ) ? $rules : [] )->all();
-		$sendable   = \array_filter( $recipients, static fn( $r ) => ! Suppressions::is_suppressed( $r['email'] ) );
-		if ( ! $sendable ) {
-			return new \WP_Error( 'empty_audience', \__( 'Nobody matches this audience (after removing unsubscribed addresses).', 'anchor-schema' ) );
-		}
 
 		global $wpdb;
 		$now    = \current_time( 'mysql', true );
@@ -98,6 +153,7 @@ final class Queue {
 		\update_post_meta( $id, PT::META_LINKS, LinkRewriter::links( \Anchor_Email_Sanitizer::body( $body ) ) );
 		\update_post_meta( $id, PT::META_STATE, PT::STATE_SENDING );
 		\delete_post_meta( $id, PT::META_SCHEDULED );
+		self::ensure_scheduled();
 		return $queued;
 	}
 
@@ -109,8 +165,13 @@ final class Queue {
 		if ( PT::STATE_DRAFT !== PT::state( $id ) && PT::STATE_SCHEDULED !== PT::state( $id ) ) {
 			return new \WP_Error( 'wrong_state', \__( 'This announcement has already been sent.', 'anchor-schema' ) );
 		}
+		$ok = self::preflight( $id );
+		if ( \is_wp_error( $ok ) ) {
+			return $ok;
+		}
 		\update_post_meta( $id, PT::META_SCHEDULED, $timestamp );
 		\update_post_meta( $id, PT::META_STATE, PT::STATE_SCHEDULED );
+		self::ensure_scheduled();
 		return true;
 	}
 
@@ -119,6 +180,7 @@ final class Queue {
 			\delete_post_meta( $id, PT::META_SCHEDULED );
 			\update_post_meta( $id, PT::META_STATE, PT::STATE_DRAFT );
 		}
+		self::clear_if_idle();
 	}
 
 	public static function pause( int $id ): void {
@@ -130,6 +192,7 @@ final class Queue {
 	public static function resume( int $id ): void {
 		if ( PT::STATE_PAUSED === PT::state( $id ) ) {
 			\update_post_meta( $id, PT::META_STATE, PT::STATE_SENDING );
+			self::ensure_scheduled();
 		}
 	}
 
@@ -140,6 +203,7 @@ final class Queue {
 		global $wpdb;
 		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::table() . " SET status = 'skipped', skip_reason = 'cancelled' WHERE announcement_id = %d AND status = 'queued'", $id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 		\update_post_meta( $id, PT::META_STATE, PT::STATE_CANCELLED );
+		self::clear_if_idle();
 	}
 
 	public static function claim( int $send_id ): bool {
@@ -156,8 +220,9 @@ final class Queue {
 			\update_option( self::LAST_RUN_OPTION, \time(), false );
 			self::release_scheduled();
 			self::recover_stale_claims();
-			self::send_batch();
+			self::send_batch( \microtime( true ) );
 			self::finish_done();
+			self::clear_if_idle();
 		} finally {
 			$wpdb->query( "SELECT RELEASE_LOCK('anchor_announcements_tick')" );
 		}
@@ -180,9 +245,28 @@ final class Queue {
 			$res = self::start( (int) $id );
 			if ( \is_wp_error( $res ) ) {
 				\update_post_meta( (int) $id, PT::META_STATE, PT::STATE_DRAFT );
-				\update_post_meta( (int) $id, '_aa_last_error', $res->get_error_message() );
+				\update_post_meta( (int) $id, '_aa_last_error', \wp_slash( $res->get_error_message() ) );
+				self::notify_release_failed( (int) $id, $res );
 			}
 		}
+	}
+
+	/** Tell the author a scheduled send did not go out (plain text, through wp_mail). */
+	private static function notify_release_failed( int $id, \WP_Error $error ): void {
+		$author = \get_userdata( (int) \get_post_field( 'post_author', $id ) );
+		$to     = $author && \is_email( $author->user_email ) ? $author->user_email : (string) \get_option( 'admin_email' );
+		$title  = \get_the_title( $id );
+		\wp_mail(
+			$to,
+			\sprintf( \__( 'Announcement not sent: %s', 'anchor-schema' ), $title ),
+			\sprintf(
+				/* translators: 1: announcement title, 2: error, 3: edit link */
+				\__( "The scheduled announcement \"%1\$s\" was not sent.\n\nReason: %2\$s\n\nIt is back in draft. Fix the problem and schedule it again:\n%3\$s", 'anchor-schema' ),
+				$title,
+				$error->get_error_message(),
+				\admin_url( 'post.php?post=' . $id . '&action=edit' )
+			)
+		);
 	}
 
 	private static function recover_stale_claims(): void {
@@ -191,7 +275,7 @@ final class Queue {
 		$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::table() . " SET status = 'failed', error = %s WHERE status = 'sending' AND claimed_at < %s", \__( 'Sending was interrupted and was not retried, to avoid sending a duplicate.', 'anchor-schema' ), $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	}
 
-	private static function send_batch(): void {
+	private static function send_batch( float $started ): void {
 		global $wpdb;
 		$sending = \get_posts(
 			[
@@ -210,6 +294,9 @@ final class Queue {
 		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . self::table() . " WHERE status = 'queued' AND announcement_id IN ({$in}) ORDER BY id ASC LIMIT %d", (int) Settings::get()['batch_size'] ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
 		foreach ( $rows as $row ) {
+			if ( \microtime( true ) - $started > self::TIME_BUDGET ) {
+				break; // Remaining rows stay queued for the next tick.
+			}
 			if ( Suppressions::is_suppressed( (string) $row->email ) ) {
 				$wpdb->query( $wpdb->prepare( 'UPDATE ' . self::table() . " SET status = 'skipped', skip_reason = 'suppressed' WHERE id = %d AND status = 'queued'", (int) $row->id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 				continue;

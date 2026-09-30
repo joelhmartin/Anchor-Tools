@@ -41,6 +41,21 @@ class Module {
 		foreach ( [ new Audience\Conditions\UserRole(), new Audience\Conditions\UserRegistered(), new Audience\Conditions\UserField(), new Audience\Conditions\SpecificPeople() ] as $condition ) {
 			$this->conditions->register( $condition );
 		}
+		foreach ( [ new Audience\Conditions\WcPurchased(), new Audience\Conditions\WcOrderCount(), new Audience\Conditions\WcTotalSpent() ] as $condition ) {
+			$this->conditions->register( $condition );
+		}
+		\add_filter(
+			'anchor_announcements_universe',
+			static function ( Audience\RecipientSet $set ) {
+				if ( Audience\WooOrders::available() ) {
+					$all = \array_diff( \array_keys( \wc_get_order_statuses() ), [ 'wc-failed', 'wc-cancelled', 'wc-checkout-draft' ] );
+					foreach ( Audience\WooOrders::orders( \array_values( $all ), null, null ) as $row ) {
+						Audience\WooOrders::add_to( $set, $row );
+					}
+				}
+				return $set;
+			}
+		);
 		\add_action( 'init', [ Content\AnnouncementPostType::class, 'register' ] );
 		if ( \is_admin() ) {
 			new Admin\SettingsPage();

@@ -137,7 +137,7 @@ All three endpoints are query-var routes on the home URL (`?anchor_aa=o|c|u&t=<t
 - Announcements list columns: status, audience, sent, opened %, clicked %, scheduled or sent date.
 - Report tab on a sent announcement: totals (queued, sent, failed, skipped, opened, clicked, unsubscribed) and rates; per-recipient table (name, email, status, first opened, opens, first clicked, clicks) with filters (opened, not opened, clicked, failed, skipped, unsubscribed) and search; per-link table (URL, clicks, unique clickers); CSV export of the recipient table.
 - Suppressions screen: list, search, add manually, remove.
-- WordPress privacy exporter and eraser registered for sends, events and suppressions by email (an erased suppression keeps a hashed email so the person stays unsubscribed).
+- WordPress privacy exporter and eraser registered for sends, events and suppressions by email. The eraser deletes send and tracking rows but retains the suppression row (reported as retained, with the reason "kept so this address is never emailed again"), which the eraser API supports through `items_retained` and `messages`.
 
 ## 10. Follow-up: events onto the kit (separate PR)
 

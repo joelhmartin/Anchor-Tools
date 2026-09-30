@@ -57,7 +57,7 @@ test('compose, preview audience, test send, send, report', async ({ page: settin
 
   // Compose in a fresh tab: after the settings POST the original headless tab stops
   // delivering animation frames, which stalls Playwright's actionability checks.
-  const page = await context.newPage();
+  let page = await context.newPage();
 
   await page.goto('/wp-admin/post-new.php?post_type=anchor_announcement');
   await page.fill('#title', 'E2E announcement');
@@ -76,6 +76,11 @@ test('compose, preview audience, test send, send, report', async ({ page: settin
     page.waitForURL(/post\.php\?post=\d+/),
     page.click('button[name="aa_action"][value="save"]'),
   ]);
+  // Reload the saved draft in a fresh tab (same headless frame stall as after the settings POST).
+  const editUrl = page.url();
+  await page.close();
+  page = await context.newPage();
+  await page.goto(editUrl);
   await page.click('#aa-audience-preview');
   await expect(page.locator('#aa-audience-count')).toContainText('2 recipients');
 

@@ -57,7 +57,7 @@ class Test_Announcements_Editor extends Anchor_Announcements_TestCase {
 
 	public function test_empty_params_round_trip_as_object() {
 		$id = $this->make_announcement();
-		$this->post_save( $id, [ 'subject' => 'S', 'preheader' => '', 'body' => '<p>B</p>', 'audience' => wp_json_encode( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'user_role', 'params' => [] ] ] ] ] ] ) ] );
+		$this->post_save( $id, [ 'subject' => 'S', 'preheader' => '', 'body' => '<p>B</p>', 'audience' => wp_json_encode( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'user_registered', 'params' => [] ] ] ] ] ] ) ] );
 		$this->assertStringContainsString( '"params":{}', (string) get_post_meta( $id, PT::META_AUDIENCE, true ) );
 	}
 

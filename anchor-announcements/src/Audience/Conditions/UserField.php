@@ -22,9 +22,20 @@ final class UserField implements Condition {
 			[ 'key' => 'value', 'type' => 'text', 'label' => \__( 'Value', 'anchor-schema' ) ],
 		];
 	}
+	/** A key is always needed; a value too unless the compare is "is set" / "is not set". */
+	public function complete( array $params ): bool {
+		if ( '' === self::clean_key( $params ) ) {
+			return false;
+		}
+		return \in_array( (string) ( $params['compare'] ?? '=' ), [ 'exists', 'not_exists' ], true ) || '' !== \trim( (string) ( $params['value'] ?? '' ) );
+	}
+	/** Meta keys are case-sensitive: strip unsafe characters only. */
+	private static function clean_key( array $params ): string {
+		return (string) \preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) ( $params['key'] ?? '' ) );
+	}
 	public function match( array $params ): RecipientSet {
 		$set = new RecipientSet();
-		$key = \sanitize_key( (string) ( $params['key'] ?? '' ) );
+		$key = self::clean_key( $params );
 		$cmp = self::COMPARES[ (string) ( $params['compare'] ?? '=' ) ] ?? null;
 		if ( '' === $key || null === $cmp ) {
 			return $set;

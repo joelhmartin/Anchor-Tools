@@ -23,6 +23,7 @@ final class WcTotalSpent implements Condition {
 			[ 'key' => 'to', 'type' => 'date', 'label' => \__( 'To', 'anchor-schema' ) ],
 		];
 	}
+	public function complete( array $params ): bool { return \is_numeric( $params['amount'] ?? null ); }
 	public function match( array $params ): RecipientSet {
 		[ $from, $to ] = Dates::gmt_range( (string) ( $params['from'] ?? '' ), (string) ( $params['to'] ?? '' ) );
 		$set = new RecipientSet();

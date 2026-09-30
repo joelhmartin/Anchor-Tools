@@ -23,10 +23,14 @@ final class Resolver {
 				if ( null === $this->registry->get( $type ) ) {
 					continue;
 				}
+				$params = \is_array( $c['params'] ?? null ) ? $c['params'] : [];
+				if ( ! self::configured( $this->registry->get( $type ), $params ) ) {
+					continue; // An unconfigured condition must never widen or empty an audience.
+				}
 				$conditions[] = [
 					'type'   => $type,
 					'negate' => ! empty( $c['negate'] ),
-					'params' => \is_array( $c['params'] ?? null ) ? $c['params'] : [],
+					'params' => $params,
 				];
 			}
 			if ( $conditions ) {
@@ -34,6 +38,31 @@ final class Resolver {
 			}
 		}
 		return $out;
+	}
+
+	/**
+	 * Optional condition methods (not on the interface, so third-party conditions keep working):
+	 * required(): list of param keys, any one of which must be non-empty;
+	 * complete( array $params ): bool for rules a key list cannot express.
+	 */
+	private static function configured( Condition $cond, array $params ): bool {
+		if ( \method_exists( $cond, 'required' ) ) {
+			$keys = (array) $cond->required();
+			if ( $keys ) {
+				$ok = false;
+				foreach ( $keys as $k ) {
+					$v = $params[ $k ] ?? null;
+					if ( \is_array( $v ) ? (bool) \array_filter( $v, static fn( $x ) => '' !== \trim( (string) $x ) ) : '' !== \trim( (string) $v ) ) {
+						$ok = true;
+						break;
+					}
+				}
+				if ( ! $ok ) {
+					return false;
+				}
+			}
+		}
+		return ! \method_exists( $cond, 'complete' ) || (bool) $cond->complete( $params );
 	}
 
 	public function resolve( array $rules ): RecipientSet {

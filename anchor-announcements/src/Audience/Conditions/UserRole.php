@@ -20,6 +20,8 @@ final class UserRole implements Condition {
 		}
 		return [ [ 'key' => 'roles', 'type' => 'multiselect', 'label' => \__( 'Has any of these roles', 'anchor-schema' ), 'options' => $roles ] ];
 	}
+	/** Params keys, any one of which must be non-empty or the condition is dropped. */
+	public function required(): array { return [ 'roles' ]; }
 	public function match( array $params ): RecipientSet {
 		$set   = new RecipientSet();
 		$roles = \array_values( \array_filter( \array_map( 'sanitize_key', (array) ( $params['roles'] ?? [] ) ) ) );

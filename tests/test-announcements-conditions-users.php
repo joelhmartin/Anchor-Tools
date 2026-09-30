@@ -35,6 +35,31 @@ class Test_Announcements_Conditions_Users extends Anchor_Announcements_TestCase 
 		$this->assertSame( 0, $c->match( [ 'key' => '', 'compare' => '=', 'value' => 'x' ] )->count() );
 	}
 
+	public function test_user_field_key_keeps_its_case() {
+		$a = $this->make_user( 'a@x.com' );
+		update_user_meta( $a, 'MyField', 'yes' );
+		$this->assertTrue( ( new UserField() )->match( [ 'key' => 'MyField', 'compare' => '=', 'value' => 'yes' ] )->has( 'a@x.com' ) );
+	}
+
+	public function test_unconfigured_conditions_are_dropped_on_sanitize() {
+		$r   = $this->module()->resolver();
+		$raw = [ 'groups' => [ [ 'conditions' => [
+			[ 'type' => 'user_role', 'params' => [ 'roles' => [] ] ],
+			[ 'type' => 'specific_people', 'params' => [ 'users' => [], 'emails' => 'not-an-email' ] ],
+			[ 'type' => 'user_field', 'params' => [ 'key' => '', 'compare' => 'exists' ] ],
+			[ 'type' => 'user_field', 'params' => [ 'key' => 'k', 'compare' => '=', 'value' => '' ] ],
+			[ 'type' => 'user_field', 'params' => [ 'key' => 'k', 'compare' => 'exists' ] ],
+			[ 'type' => 'wc_total_spent', 'params' => [ 'compare' => '>=' ] ],
+			[ 'type' => 'wc_order_count', 'params' => [ 'compare' => '>=' ] ],
+			[ 'type' => 'user_role', 'params' => [ 'roles' => [ 'subscriber' ] ] ],
+		] ] ] ];
+		$kept = $r->sanitize( $raw )['groups'][0]['conditions'];
+		$this->assertSame( [ 'user_field', 'user_role' ], array_column( $kept, 'type' ) );
+		// A group with only unconfigured conditions disappears, so it cannot match everyone.
+		$this->assertSame( [], $r->sanitize( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'user_role', 'params' => [] ] ] ] ] ] )['groups'] );
+		$this->assertSame( 0, $r->resolve( [ 'groups' => [ [ 'conditions' => [ [ 'type' => 'wc_total_spent', 'params' => [] ] ] ] ] ] )->count() );
+	}
+
 	public function test_specific_people_users_and_pasted_addresses() {
 		$u   = $this->make_user( 'user@x.com', [ 'display_name' => 'Uma User' ] );
 		$set = ( new SpecificPeople() )->match( [ 'users' => [ $u ], 'emails' => "Pasted@X.com, second@x.com\nnot-an-email" ] );

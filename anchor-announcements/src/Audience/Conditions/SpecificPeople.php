@@ -19,6 +19,18 @@ final class SpecificPeople implements Condition {
 			[ 'key' => 'emails', 'type' => 'textarea', 'label' => \__( 'Email addresses (comma or one per line)', 'anchor-schema' ) ],
 		];
 	}
+	/** At least one user id or one valid email, else the condition is dropped. */
+	public function complete( array $params ): bool {
+		if ( \array_filter( \array_map( 'absint', (array) ( $params['users'] ?? [] ) ) ) ) {
+			return true;
+		}
+		foreach ( \preg_split( '/[\s,;]+/', (string) ( $params['emails'] ?? '' ) ) as $email ) {
+			if ( \is_email( \sanitize_email( $email ) ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
 	public function match( array $params ): RecipientSet {
 		$set = new RecipientSet();
 		foreach ( \array_filter( \array_map( 'absint', (array) ( $params['users'] ?? [] ) ) ) as $id ) {

@@ -72,6 +72,8 @@ class Module {
 		Sending\Queue::register();
 		if ( \is_admin() ) {
 			new Admin\SettingsPage();
+			new Admin\Editor();
+			new Admin\Ajax();
 		}
 	}
 

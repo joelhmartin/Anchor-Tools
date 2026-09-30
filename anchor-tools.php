@@ -61,6 +61,12 @@ if ( ! class_exists( 'Anchor_Asset_Loader' ) ) {
 if ( ! class_exists( 'Anchor_Monaco' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-monaco.php';
 }
+if ( ! class_exists( 'Anchor_Email_Tokens' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-tokens.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-sanitizer.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-shell.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-kit.php';
+}
 if ( ! class_exists( 'Anchor_Groups' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-groups.php';
 }
@@ -314,6 +320,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-courses/anchor-courses.php',
                 'class'       => '\\Anchor\\Courses\\Module',
             ],
+            'announcements' => [
+                'label'       => __( 'Anchor Announcements', 'anchor-schema' ),
+                'description' => __( 'Compose and send tracked email announcements to filtered audiences.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-announcements/anchor-announcements.php',
+                'class'       => '\\Anchor\\Announcements\\Module',
+            ],
         ];
     }
 }
@@ -369,4 +381,45 @@ if ( ! function_exists( 'anchor_tools_bootstrap_modules' ) ) {
     }
 
     add_action( 'plugins_loaded', 'anchor_tools_bootstrap_modules', 25 );
+}
+
+/*
+ * Anchor Announcements housekeeping that must work while the module is OFF (its
+ * own code is not loaded then), so it lives here in core:
+ *  - the tick is unscheduled on the request that switches the module off, and on
+ *    plugin deactivation (uninstall.php clears it again by literal name);
+ *  - mail already sent contains unsubscribe/open/click links that must keep
+ *    working, so the tracking endpoints are registered whenever the module has
+ *    ever created its tables, even if the module is disabled.
+ */
+if ( ! function_exists( 'anchor_tools_announcements_clear_tick' ) ) {
+    /** Unschedule the announcements queue tick (literal hook name: no module code needed). */
+    function anchor_tools_announcements_clear_tick() {
+        wp_clear_scheduled_hook( 'anchor_announcements_tick' );
+    }
+
+    /**
+     * update_option_{anchor_schema_settings} listener, same pattern as Anchor Compliance.
+     *
+     * @param mixed $old_value Previous settings.
+     * @param mixed $value     New settings.
+     */
+    function anchor_tools_announcements_maybe_clear_tick( $old_value, $value ) {
+        if ( ! empty( $old_value['modules']['announcements'] ) && empty( $value['modules']['announcements'] ) ) {
+            anchor_tools_announcements_clear_tick();
+        }
+    }
+
+    add_action( 'update_option_' . Anchor_Schema_Admin::OPTION_KEY, 'anchor_tools_announcements_maybe_clear_tick', 10, 2 );
+    register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, 'anchor_tools_announcements_clear_tick' );
+
+    add_action(
+        'plugins_loaded',
+        static function () {
+            if ( ! anchor_tools_is_module_enabled( 'announcements' ) && get_option( 'anchor_announcements_db_version' ) && class_exists( '\\Anchor\\Announcements\\Tracking\\Endpoints' ) ) {
+                new \Anchor\Announcements\Tracking\Endpoints();
+            }
+        },
+        26
+    );
 }

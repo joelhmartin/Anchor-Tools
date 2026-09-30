@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true,"announcements":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery + Compliance + Courses modules enabled."
+log "Events + Gallery + Compliance + Courses + Announcements modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.

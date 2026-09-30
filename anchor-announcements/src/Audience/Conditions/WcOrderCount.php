@@ -1,0 +1,37 @@
+<?php
+declare(strict_types=1);
+
+namespace Anchor\Announcements\Audience\Conditions;
+
+use Anchor\Announcements\Audience\Condition;
+use Anchor\Announcements\Audience\RecipientSet;
+use Anchor\Announcements\Audience\WooOrders;
+use Anchor\Announcements\Support\Dates;
+
+if ( ! \defined( 'ABSPATH' ) ) { exit; }
+
+final class WcOrderCount implements Condition {
+	public function key(): string { return 'wc_order_count'; }
+	public function label(): string { return \__( 'Number of orders', 'anchor-schema' ); }
+	public function group(): string { return 'WooCommerce'; }
+	public function available(): bool { return WooOrders::available(); }
+	public function fields(): array {
+		return [
+			[ 'key' => 'compare', 'type' => 'select', 'label' => \__( 'Compare', 'anchor-schema' ), 'options' => [ '>=' => 'at least', '<=' => 'at most', '=' => 'exactly' ], 'default' => '>=' ],
+			[ 'key' => 'number', 'type' => 'number', 'label' => \__( 'Orders', 'anchor-schema' ), 'default' => 1 ],
+			[ 'key' => 'from', 'type' => 'date', 'label' => \__( 'From', 'anchor-schema' ) ],
+			[ 'key' => 'to', 'type' => 'date', 'label' => \__( 'To', 'anchor-schema' ) ],
+		];
+	}
+	public function complete( array $params ): bool { return \is_numeric( $params['number'] ?? null ); }
+	public function match( array $params ): RecipientSet {
+		[ $from, $to ] = Dates::gmt_range( (string) ( $params['from'] ?? '' ), (string) ( $params['to'] ?? '' ) );
+		$set = new RecipientSet();
+		foreach ( WooOrders::aggregate( 'count', WooOrders::statuses( [] ), $from, $to ) as $agg ) {
+			if ( WooOrders::compare( $agg['value'], (string) ( $params['compare'] ?? '>=' ), (float) ( $params['number'] ?? 1 ) ) ) {
+				WooOrders::add_to( $set, $agg['row'] );
+			}
+		}
+		return $set;
+	}
+}

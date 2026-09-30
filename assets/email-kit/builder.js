@@ -26,13 +26,20 @@
         wpautop: false,
         plugins: 'lists,link,paste,textcolor,colorpicker,hr,wordpress,wplink',
         toolbar1: 'formatselect,bold,italic,underline,forecolor,bullist,numlist,alignleft,aligncenter,link,unlink,hr,undo,redo',
-        setup: function (ed) { ed.on('change keyup SetContent', schedule); }
+        setup: function (ed) {
+          ed.on('change keyup SetContent', schedule);
+          ed.on('init', refresh);
+        }
       },
       quicktags: false,
       mediaButtons: true
     });
 
-    function editor() { return window.tinymce ? window.tinymce.get(body.id) : null; }
+    // Only a fully initialised editor: before init, getContent() returns '' and would blank the body.
+    function editor() {
+      var ed = window.tinymce ? window.tinymce.get(body.id) : null;
+      return ed && ed.initialized ? ed : null;
+    }
 
     function currentBody() {
       if (view === 'html') { return monacoValue(); }
@@ -136,7 +143,8 @@
     var form = root.closest('form');
     if (form) { form.addEventListener('submit', function () { body.value = currentBody(); }); }
 
-    refresh();
+    // With TinyMCE the first refresh runs from its init event; without it, run now.
+    if (!window.tinymce) { refresh(); }
   }
 
   $(function () {

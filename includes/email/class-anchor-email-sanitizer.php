@@ -19,7 +19,6 @@ class Anchor_Email_Sanitizer {
 	 * @return string
 	 */
 	public static function body( $html ) {
-		$protocols = array_merge( wp_allowed_protocols(), array( 'data' ) );
 		$html      = preg_replace_callback(
 			'/\b(href|src)=(["\'])\{([a-z0-9_]+)\}\2/i',
 			static function ( $m ) {
@@ -27,7 +26,7 @@ class Anchor_Email_Sanitizer {
 			},
 			(string) $html
 		);
-		$clean     = wp_kses( $html, self::allowed_html(), array_merge( $protocols, array( 'anchor-token' ) ) );
+		$clean     = wp_kses( $html, self::allowed_html(), array_merge( wp_allowed_protocols(), array( 'anchor-token' ) ) );
 		return preg_replace( '#anchor-token://([a-z0-9_]+)#i', '{$1}', $clean );
 	}
 

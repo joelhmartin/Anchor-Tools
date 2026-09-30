@@ -40,6 +40,11 @@ class Test_Email_Kit extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( '<input', $out );
 	}
 
+	public function test_sanitizer_strips_data_uri_hrefs() {
+		$out = Anchor_Email_Sanitizer::body( '<a href="data:text/html,x">x</a>' );
+		$this->assertStringNotContainsString( 'data:', $out );
+	}
+
 	public function test_sanitizer_keeps_token_placeholders_in_hrefs() {
 		$out = Anchor_Email_Sanitizer::body( '<a href="{login_url}">Sign in</a>' );
 		$this->assertStringContainsString( 'href="{login_url}"', $out );

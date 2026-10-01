@@ -87,4 +87,12 @@ class Test_Announcements_Render extends Anchor_Announcements_TestCase {
 		$this->assertStringContainsString( '<p>Unsaved</p>', $out['html'] );
 		$this->assertStringNotContainsString( '<script', $out['html'] );
 	}
+
+	public function test_subject_is_plain_text_even_when_the_site_name_has_entities() {
+		update_option( 'blogname', 'Bob&#039;s Dental &amp; Lasers' );
+		Settings::save( [ 'footer_address' => '1 Main St' ] );
+		$id  = $this->make_announcement();
+		$out = Renderer::render( $id, Renderer::sample_recipient(), '', false, [ 'subject' => 'News from {site_name}', 'preheader' => '', 'body' => '<p>x</p>' ] );
+		$this->assertSame( "News from Bob's Dental & Lasers", $out['subject'] );
+	}
 }

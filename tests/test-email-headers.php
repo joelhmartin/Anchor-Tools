@@ -274,6 +274,24 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'Bcc: boss@example.com', $headers );
 	}
 
+	/**
+	 * Subjects are plain text: an event title from get_the_title() arrives
+	 * entity-encoded ("Laser &#038; Regenerative"), and DEKA organizers received
+	 * that literally in the subject line.
+	 */
+	public function test_subject_html_entities_are_decoded() {
+		$captured = null;
+		$cb       = function ( $args ) use ( &$captured ) {
+			$captured = $args['subject'];
+			return $args;
+		};
+		add_filter( 'wp_mail', $cb );
+		$this->module()->send_html_email( 'x@example.com', 'New: Laser &#038; Aesthetics &#8211; Rock &amp; Roll', '<b>h</b>' );
+		remove_filter( 'wp_mail', $cb );
+
+		$this->assertSame( "New: Laser & Aesthetics \u{2013} Rock & Roll", $captured );
+	}
+
 	/** A caller-supplied Content-Type header must not be duplicated. */
 	public function test_caller_supplied_content_type_is_not_duplicated() {
 		$sent = $this->module()->send_html_email(

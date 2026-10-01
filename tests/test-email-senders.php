@@ -116,6 +116,21 @@ class Test_Email_Senders extends Anchor_Events_TestCase {
 		$this->assertSame( 'Your place at Suture Level III is booked', $this->sent[0]['subject'] );
 	}
 
+	/**
+	 * The free-registration organizer notice builds its subject with
+	 * get_the_title() and sends through wp_mail() directly, so it needs its own
+	 * decode: DEKA's "Laser & Regenerative" title arrived as "Laser &#038; …".
+	 */
+	public function test_the_new_registration_notice_subject_is_plain_text() {
+		$this->set_settings( [ 'notify_admin' => true, 'notify_user' => false, 'admin_email' => 'org@example.org' ] );
+		$event_id = $this->make_event( [ 'title' => 'Laser & Regenerative' ] );
+
+		$this->module()->send_registration_emails( $event_id, 'Jane Doe', 'jane@example.org', 'confirmed' );
+
+		$this->assertCount( 1, $this->sent );
+		$this->assertSame( 'New registration for Laser & Regenerative', $this->sent[0]['subject'] );
+	}
+
 	/** Cleared back to blank, it falls back to the shipped default, not to nothing. */
 	public function test_a_blank_confirmation_subject_falls_back_to_the_shipped_default() {
 		$this->set_settings( [ 'notify_admin' => false, 'notify_user' => true, 'confirmation_subject' => '' ] );

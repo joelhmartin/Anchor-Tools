@@ -1884,6 +1884,11 @@ class Module {
         // place that writes it, so the event no longer has to be smuggled to
         // the wp_mail_failed handler through a request-scoped property — it is
         // right here as $event_id.
+        // A subject is plain text, but event titles reach it via get_the_title(),
+        // which entity-encodes ("Laser &#038; …") — decode once here so every
+        // sender's subject reads as written.
+        $subject = \html_entity_decode( (string) $subject, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+
         $previous_error        = $this->last_mail_error;
         $this->last_mail_error = null;
         $sent                  = \wp_mail( $to, $subject, $html, $headers );
@@ -14960,7 +14965,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $guests      = max( 0, (int) $guests );
         $admin_email = $settings['admin_email'] ?: \get_option( 'admin_email' );
-        $subject     = sprintf( __( 'New registration for %s', 'anchor-schema' ), \get_the_title( $event_id ) );
+        // Plain-text subject: get_the_title() entity-encodes ("Laser &#038; …").
+        $subject     = \html_entity_decode( sprintf( __( 'New registration for %s', 'anchor-schema' ), \get_the_title( $event_id ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
         $message     = sprintf(
             __( "Name: %s\nEmail: %s\nStatus: %s\nGuests: %d\nParty size: %d\nEvent: %s", 'anchor-schema' ),
             $name,

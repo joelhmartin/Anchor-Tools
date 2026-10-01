@@ -341,6 +341,9 @@ class Roster {
 
         echo '<ul class="ul-disc">';
         foreach ( $events as $event ) {
+            if ( ! $this->module->roster_capable( $event->ID ) ) {
+                continue; // external registration: nothing to list
+            }
             echo '<li><a href="' . \esc_url( $this->roster_url( $event->ID ) ) . '">'
                 . \esc_html( \get_the_title( $event ) ? \get_the_title( $event ) : ( '#' . (int) $event->ID ) )
                 . '</a></li>';
@@ -357,6 +360,11 @@ class Roster {
         echo ' <a href="' . \esc_url( (string) \get_edit_post_link( $event_id ) ) . '" class="page-title-action">'
             . \esc_html__( 'Edit event', 'anchor-schema' ) . '</a>';
         echo '<hr class="wp-header-end" />';
+
+        if ( ! $this->module->roster_capable( $event_id ) ) {
+            echo '<div class="notice notice-info inline"><p>' . \esc_html__( 'This event takes registrations on an external form, so it has no roster here.', 'anchor-schema' ) . '</p></div>';
+            return;
+        }
 
         $this->maybe_render_notice();
         $this->render_summary( $event_id );
@@ -2199,6 +2207,9 @@ class Roster {
      */
     private function render_roster_panel( $event_id, $self_url, $announce_missing_seat = true ) {
         $event_id = (int) $event_id;
+        if ( ! $this->module->roster_capable( $event_id ) ) {
+            return '<p class="anchor-event-notice">' . \esc_html__( 'This event takes registrations on an external form, so it has no roster here.', 'anchor-schema' ) . '</p>';
+        }
         $seat_id  = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
 
         $questions = $this->module_questions( $event_id );

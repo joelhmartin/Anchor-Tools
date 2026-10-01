@@ -1557,6 +1557,9 @@ class Module {
         if ( ! $this->is_email_enabled( $event_id, 'roster' ) ) {
             return Outcome::skipped( 'disabled' );
         }
+        if ( ! $this->roster_capable( $event_id ) ) {
+            return Outcome::skipped( 'no_roster' ); // registrations happen on an external form
+        }
         $event_id = (int) $event_id;
         if ( \get_post_type( $event_id ) !== self::CPT ) {
             // REG-D40 — each refusal names itself, so "the roster never arrived"
@@ -1700,7 +1703,7 @@ class Module {
 
         $settings     = $this->get_settings();
         $reminders_on = ! empty( $settings['reminder_enabled'] );
-        $roster_on    = ! empty( $settings['organizer_roster_email'] );
+        $roster_on    = ! empty( $settings['organizer_roster_email'] ) && $this->roster_capable( $event_id );
 
         if ( ! $reminders_on && ! $roster_on ) {
             $result['notice'] = 'disabled';
@@ -12689,6 +12692,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return false;
         }
         return \in_array( $this->registration_mode( $event_id ), [ 'wc', 'free' ], true );
+    }
+
+    /**
+     * Does this event keep a roster at all?
+     *
+     * A roster is the list of people who registered THROUGH this plugin, so an
+     * event whose sign-ups happen on someone else's form has none: no roster
+     * screen, no console roster view, no organizer roster digest (scheduled or
+     * sent by hand). External-registration mode answers no on its own; the
+     * `anchor_events_roster_capable` filter lets a site say the same for other
+     * events — e.g. a theme that embeds a third-party form on a "free" event.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function roster_capable( $event_id ) {
+        $event_id = (int) $event_id;
+        return (bool) \apply_filters( 'anchor_events_roster_capable', $this->registration_mode( $event_id ) !== 'external', $event_id );
     }
 
     /**

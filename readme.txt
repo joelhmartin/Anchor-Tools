@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.34.0
+Stable tag: 3.34.1
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,13 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.34.1 =
+
+* Fix: email subjects are plain text. Event titles and the site name reached
+  subjects entity-encoded ("Laser &#038; Regenerative", "Bob&#039;s"); events
+  emails, the free-registration organizer notice and Announcements subjects now
+  decode them (#42).
 
 = 3.34.0 =
 

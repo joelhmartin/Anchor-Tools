@@ -82,6 +82,9 @@ final class Renderer {
 			$html  = \str_replace( '</body>', $pixel . '</body>', $html );
 		}
 
-		return [ 'subject' => \Anchor_Email_Tokens::expand( $subject, $tokens, false ), 'html' => $html ];
+		// The subject is plain text: {site_name} comes from get_bloginfo(), which
+		// WordPress stores entity-encoded ("Bob&#039;s Dental"), so decode once here.
+		$subject = \html_entity_decode( \Anchor_Email_Tokens::expand( $subject, $tokens, false ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		return [ 'subject' => $subject, 'html' => $html ];
 	}
 }

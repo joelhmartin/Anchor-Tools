@@ -14965,7 +14965,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $guests      = max( 0, (int) $guests );
         $admin_email = $settings['admin_email'] ?: \get_option( 'admin_email' );
-        $subject     = sprintf( __( 'New registration for %s', 'anchor-schema' ), \get_the_title( $event_id ) );
+        // Plain-text subject: get_the_title() entity-encodes ("Laser &#038; …").
+        $subject     = \html_entity_decode( sprintf( __( 'New registration for %s', 'anchor-schema' ), \get_the_title( $event_id ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
         $message     = sprintf(
             __( "Name: %s\nEmail: %s\nStatus: %s\nGuests: %d\nParty size: %d\nEvent: %s", 'anchor-schema' ),
             $name,

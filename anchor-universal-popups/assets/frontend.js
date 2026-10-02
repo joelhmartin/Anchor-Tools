@@ -493,9 +493,12 @@
     // never load a player) for a trigger that can't fire here. Every trigger is
     // server-rendered, so a DOMContentLoaded-time check can't false-negative.
     // Scoped to class only: delay/scroll/id/page_load triggers are untouched.
+    // An [anchor_popup] card (data-up-popup-id) is a trigger too, so a page whose
+    // only trigger is the card must still attach, or the card click does nothing.
     if(sn.trigger && sn.trigger.type === 'class'){
       var _trigSel = classTriggerSelector(sn.trigger.value);
-      if(!_trigSel || !queryFirst(_trigSel)) return;
+      var _hasCard = !!document.querySelector('[data-up-popup-id="' + sn.id + '"]');
+      if(!_hasCard && (!_trigSel || !queryFirst(_trigSel))) return;
     }
 
     var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo' || sn.mode === 'video');

@@ -87,4 +87,52 @@ class Test_External_Signup_Console extends Anchor_Events_TestCase {
 		}
 		$this->assertSame( [], $this->module()->roster->visible_group_children( $parent ), 'All-external group has no exportable dates.' );
 	}
+	public function test_no_waitlist_count_for_external_on_list_surfaces() {
+		$ext = $this->ext();
+		$this->make_seat( $ext, [ 'status' => \Anchor\Events\Registrations::STATUS_WAITLIST ] );
+		$nat = $this->make_event();
+		$this->make_seat( $nat, [ 'status' => \Anchor\Events\Registrations::STATUS_WAITLIST ] );
+		$this->assertStringNotContainsString( 'Waitlist', $this->item( $ext ) );
+		$this->assertStringContainsString( 'Waitlist', $this->item( $nat ), 'Control.' );
+		$html = $this->module()->shortcode_event_registrants_list( [ 'orderby' => 'title' ] );
+		preg_match_all( '#<details.*?</details>#s', $html, $m );
+		$this->assertCount( 2, $m[0] );
+		foreach ( $m[0] as $block ) {
+			$this->assertSame( strpos( $block, 'External signup form' ) === false, strpos( $block, 'Waitlist' ) !== false );
+		}
+	}
+
+	private function group_with_children( array $external_flags ) {
+		$rows = [];
+		foreach ( array_keys( $external_flags ) as $n ) {
+			$rows[] = [ 'date' => '2027-05-0' . ( $n + 1 ), 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Date ' . ( $n + 1 ), 'capacity' => 5 ];
+		}
+		$parent = $this->make_event( [ 'title' => 'Workshop', 'venue' => 'Hall', 'timezone' => 'UTC' ] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', $rows );
+		$kids = $this->module()->occurrences->reconcile( $parent );
+		foreach ( array_values( $kids ) as $n => $k ) {
+			if ( $external_flags[ $n ] ) {
+				update_post_meta( $k, '_anchor_event_registration_mode', 'external' );
+			}
+		}
+		return [ $parent, array_values( $kids ) ];
+	}
+
+	public function test_group_tabs_omit_external_dates_but_a_bookmarked_one_still_refuses() {
+		list( $parent, $kids ) = $this->group_with_children( [ false, true ] );
+		$html = $this->module()->roster->render_frontend( $parent, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'id="anchor-roster-tab-' . $kids[0] . '"', $html );
+		$this->assertStringNotContainsString( 'id="anchor-roster-tab-' . $kids[1] . '"', $html );
+		$_GET['occurrence'] = $kids[1];
+		$html = $this->module()->roster->render_frontend( $parent, home_url( '/console/' ) );
+		unset( $_GET['occurrence'] );
+		$this->assertStringContainsString( 'anchor-roster-panel-' . $kids[1], $html, 'Bookmarked external child resolves to its (empty) panel.' );
+	}
+
+	public function test_all_external_group_shows_a_notice_not_an_empty_tab_bar() {
+		list( $parent ) = $this->group_with_children( [ true, true ] );
+		$html = $this->module()->roster->render_frontend( $parent, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'external form', $html );
+		$this->assertStringNotContainsString( 'anchor-roster-fe-tablist', $html );
+	}
 }

@@ -2002,7 +2002,10 @@ class Roster {
         $list_url   = \remove_query_arg( [ 'event_action', 'event_id', 'seat_id', 'roster_msg', 'roster_type', 'occurrence' ], $return_url );
         $page_url   = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $parent_id ], $list_url );
 
-        $children = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+        // $all keeps a bookmarked external child resolvable (its panel says "no
+        // roster"); $children is what can be picked: external dates get no tab.
+        $all      = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+        $children = $this->visible_group_children( $parent_id );
 
         // ?seat_id= is a single global query var; scope its "not found"
         // notice to the page level (once) rather than to every panel — every
@@ -2013,7 +2016,7 @@ class Roster {
         $seat_id    = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
         $seat_owner = 0;
         if ( $seat_id > 0 ) {
-            foreach ( $children as $cid ) {
+            foreach ( $all as $cid ) {
                 if ( self::seat_belongs_to_event( $seat_id, $cid ) ) {
                     $seat_owner = (int) $cid;
                     break;
@@ -2026,7 +2029,7 @@ class Roster {
             // The seat's own tab always wins, so the edit form it opened is
             // the one a reader actually sees.
             $active = $seat_owner;
-        } elseif ( \in_array( $requested, $children, true ) ) {
+        } elseif ( \in_array( $requested, $all, true ) ) {
             $active = $requested;
         } else {
             $active = isset( $children[0] ) ? (int) $children[0] : 0;
@@ -2047,8 +2050,10 @@ class Roster {
                 <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'Seat not found.', 'anchor-schema' ); ?></p>
             <?php endif; ?>
 
-            <?php if ( empty( $children ) ) : ?>
+            <?php if ( empty( $all ) ) : ?>
                 <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'No dates currently scheduled.', 'anchor-schema' ); ?></p>
+            <?php elseif ( empty( $children ) ) : ?>
+                <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'Every date of this event takes sign-ups on an external form, so there are no attendees to show here.', 'anchor-schema' ); ?></p>
             <?php else : ?>
                 <div class="anchor-roster-fe-tabs">
                     <div class="anchor-roster-fe-tabbar">

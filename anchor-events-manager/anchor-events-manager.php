@@ -8714,7 +8714,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $events as $event ) {
             $meta = $this->get_meta( $event->ID );
             $registrations = $this->get_registrations( $event->ID, 0 );
-            $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
+            $external = $this->uses_external_signup( $event->ID );
+            $waitlist = $external ? 0 : $this->get_registration_count( $event->ID, 'waitlist' );
             $edit_link = \get_edit_post_link( $event->ID );
             $export_url = \wp_nonce_url(
                 \admin_url( 'admin-post.php?action=anchor_event_export&event_id=' . $event->ID ),
@@ -8739,7 +8740,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 $output .= '<a href="' . esc_url( $edit_link ) . '">' . esc_html__( 'Edit event', 'anchor-schema' ) . '</a> &middot; ';
             }
             // REG-D21 — never offer a link the export handler will refuse.
-            $external = $this->uses_external_signup( $event->ID );
             if ( ! $external && Roster::current_user_can_manage() ) {
                 $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a>';
             }
@@ -9221,7 +9221,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     private function render_event_manager_item( $event ) {
         $meta = $this->get_meta( $event->ID );
         $registrations = $this->get_registrations( $event->ID, 0 );
-        $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
+        $external = $this->uses_external_signup( $event->ID );
+        $waitlist = $external ? 0 : $this->get_registration_count( $event->ID, 'waitlist' );
 
         $base_url = \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] );
         $edit_url = \add_query_arg( [ 'event_action' => 'edit', 'event_id' => $event->ID ], $base_url );
@@ -9264,7 +9265,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $output .= '<strong>' . esc_html__( 'Waitlist', 'anchor-schema' ) . ':</strong> ' . esc_html( $waitlist ) . ' &middot; ';
         }
         $output .= '<a href="' . esc_url( $edit_url ) . '">' . esc_html__( 'Edit', 'anchor-schema' ) . '</a> &middot; ';
-        $external = $this->uses_external_signup( $event->ID );
         if ( ! $external && Roster::current_user_can_manage() ) {
             $roster_url = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event->ID ], $base_url );
             $output .= '<a href="' . esc_url( $roster_url ) . '">' . esc_html__( 'Attendees', 'anchor-schema' ) . '</a> &middot; ';

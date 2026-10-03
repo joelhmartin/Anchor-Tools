@@ -320,6 +320,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-courses/anchor-courses.php',
                 'class'       => '\\Anchor\\Courses\\Module',
             ],
+            'agreements' => [
+                'label'       => __( 'Anchor Agreements', 'anchor-schema' ),
+                'description' => __( 'Require a signed agreement (drawn or generated signature) at WooCommerce checkout.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-agreements/anchor-agreements.php',
+                'class'       => '\\Anchor\\Agreements\\Module',
+            ],
             'announcements' => [
                 'label'       => __( 'Anchor Announcements', 'anchor-schema' ),
                 'description' => __( 'Compose and send tracked email announcements to filtered audiences.', 'anchor-schema' ),

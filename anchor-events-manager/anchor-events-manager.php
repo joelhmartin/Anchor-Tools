@@ -8739,12 +8739,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 $output .= '<a href="' . esc_url( $edit_link ) . '">' . esc_html__( 'Edit event', 'anchor-schema' ) . '</a> &middot; ';
             }
             // REG-D21 — never offer a link the export handler will refuse.
-            if ( Roster::current_user_can_manage() ) {
+            $external = $this->uses_external_signup( $event->ID );
+            if ( ! $external && Roster::current_user_can_manage() ) {
                 $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a>';
             }
             $output .= '</p>';
 
-            if ( empty( $registrations ) ) {
+            if ( $external ) {
+                $output .= '<p class="anchor-event-admin-empty">' . esc_html__( 'Sign-ups for this event happen on an external form.', 'anchor-schema' ) . '</p>';
+            } elseif ( empty( $registrations ) ) {
                 $output .= '<p class="anchor-event-admin-empty">' . esc_html__( 'No registrants yet.', 'anchor-schema' ) . '</p>';
             } else {
                 $output .= '<table class="anchor-event-admin-table"><thead><tr>';

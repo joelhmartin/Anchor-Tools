@@ -1339,6 +1339,11 @@ class Roster {
         if ( ! self::is_exportable_event( $event_id ) ) {
             \wp_die( \esc_html__( 'Invalid event.', 'anchor-schema' ) );
         }
+        // An external-signup event has no roster to export (links are hidden,
+        // this refuses a bookmarked or hand-typed URL).
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            \wp_die( \esc_html__( 'This event takes sign-ups on an external form, so there is no roster to export.', 'anchor-schema' ) );
+        }
         $scope = isset( $_GET['scope'] ) ? \sanitize_key( \wp_unslash( $_GET['scope'] ) ) : 'all';
         if ( ! \in_array( $scope, [ 'active', 'access' ], true ) ) {
             $scope = 'all';
@@ -1609,7 +1614,7 @@ class Roster {
      */
     private function export_table_all_dates( $parent_id, $scope ) {
         $parent_id = (int) $parent_id;
-        $children  = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+        $children  = $this->visible_group_children( $parent_id );
 
         $field_owner = []; // question key => the child id whose label resolves the heading.
         $per_child   = [];
@@ -1643,6 +1648,21 @@ class Roster {
         }
 
         return [ 'header' => $header, 'rows' => $rows ];
+    }
+
+    /**
+     * A group parent's dates that can have a roster: every child except the
+     * ones taking sign-ups on an external form. Feeds the all-dates export and
+     * decides whether the "Export all dates" bar is worth showing.
+     *
+     * @param int $parent_id
+     * @return int[]
+     */
+    public function visible_group_children( $parent_id ) {
+        $children = $this->module->occurrences ? $this->module->occurrences->children_any_status( (int) $parent_id ) : [];
+        return \array_values( \array_filter( $children, function ( $cid ) {
+            return ! $this->module->uses_external_signup( (int) $cid );
+        } ) );
     }
 
     /**
@@ -2056,10 +2076,12 @@ class Roster {
                             ><?php echo \esc_html( $label ); ?><?php if ( '' !== $badge ) : ?> <span class="anchor-roster-fe-badge anchor-roster-fe-badge--<?php echo \esc_attr( $badge ); ?>"><?php echo \esc_html( $this->child_badge_label( $badge ) ); ?></span><?php endif; ?></a>
                         <?php endforeach; ?>
                     </div>
+                    <?php if ( $this->visible_group_children( $parent_id ) ) : ?>
                     <p class="anchor-roster-fe-tools anchor-roster-fe-all-dates">
                         <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export all dates', 'anchor-schema' ); ?></a>
                         <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export all dates (confirmed only)', 'anchor-schema' ); ?></a>
                     </p>
+                    <?php endif; ?>
                     </div><!-- .anchor-roster-fe-tabbar -->
 
                     <?php

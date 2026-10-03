@@ -3999,7 +3999,7 @@ class WooCommerce {
      * @param int        $event_id     The event this confirmation is scoped to.
      * @param array|null $review_flags (by ref) Forwarded to collect_order_seats() —
      *                                 see its docblock (CodeRabbit finding-1).
-     * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
+     * @return Outcome sent | skipped (nothing_to_send, disabled, external_signup) | failed.
      */
     private function send_customer_confirmation( \WC_Order $order, array $settings, $event_id = 0, ?array &$review_flags = null ) {
         if ( $this->module->uses_external_signup( (int) $event_id ) ) {
@@ -4136,7 +4136,7 @@ class WooCommerce {
      *                                 see its docblock (CodeRabbit finding-1). Only
      *                                 ever called from dispatch_emails()'s batched
      *                                 pass, so always pass its $review_flags through.
-     * @return Outcome sent | skipped (disabled) | failed (no_address, wp_mail).
+     * @return Outcome sent | skipped (disabled, external_signup) | failed (no_address, wp_mail).
      */
     private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind, ?array &$review_flags = null ) {
         $event_id = (int) $event_id;

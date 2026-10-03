@@ -10932,6 +10932,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return '';
         }
 
+        // External signup (spec 2026-10-01): sign-ups happen on someone else's
+        // form, so nothing below applies — not the WooCommerce storefront seam,
+        // not the "tickets not available" notice, not the native seat form.
+        // Asked BEFORE the seam so a product or paid tier left over from a
+        // previous mode can never put a buy button on this page. Still gated by
+        // `registration_enabled` above, as it always was.
+        if ( $this->uses_external_signup( $post_id ) ) {
+            return $this->render_external_registration( $post_id, $meta );
+        }
+
         // Render seam (spec §3): the WooCommerce class swaps the free form for a
         // buy button on linked events by returning non-empty here. Inert until the
         // Phase 2 filter callback is registered (no consumers otherwise).
@@ -10960,15 +10970,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $free_bookable   = $this->has_authored_free_tier( $post_id );
         if ( ! $wc_free_reentry && ! $free_bookable && $this->registration_mode( $post_id ) === 'wc' ) {
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Tickets are not available right now.', 'anchor-schema' ) . '</div>';
-        }
-
-        // External registration mode (Task 1.6): the event's registration/
-        // checkout happens off-site. Still gated by `registration_enabled`
-        // above, matching the legacy external-URL path, can_view_virtual_link(),
-        // and maybe_append_registration_shortcode() — when registration is
-        // disabled, no registration UI renders at all, external or otherwise.
-        if ( $this->registration_mode( $post_id ) === 'external' ) {
-            return $this->render_external_registration( $post_id, $meta );
         }
 
         if ( $meta['registration_type'] === 'external' ) {

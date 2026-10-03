@@ -793,6 +793,13 @@ class Roster {
             $this->redirect( $event_id, 'error', \__( 'This is a multi-date offering — add the attendee to one of its dates, not to the container.', 'anchor-schema' ), 'invalid' );
         }
 
+        // An external-signup event has no roster here, so it takes no
+        // hand-added seats either: they would get this plugin's emails and
+        // count toward a capacity nobody manages.
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            $this->redirect( $event_id, 'error', \__( 'This event takes sign-ups on an external form, so attendees cannot be added here.', 'anchor-schema' ), 'invalid' );
+        }
+
         $name   = \sanitize_text_field( \wp_unslash( $_POST['roster_name'] ?? '' ) );
         $raw_email = \sanitize_text_field( \wp_unslash( $_POST['roster_email'] ?? '' ) );
         $email  = \sanitize_email( $raw_email );
@@ -1062,6 +1069,9 @@ class Roster {
         $seat_id = isset( $_POST['seat_id'] ) ? (int) \wp_unslash( $_POST['seat_id'] ) : 0;
         if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
             $this->redirect( $event_id, 'error', \__( 'That seat is not on this event.', 'anchor-schema' ), 'invalid' );
+        }
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            $this->redirect( $event_id, 'error', \__( 'This event takes sign-ups on an external form, so it grants no event role.', 'anchor-schema' ), 'invalid' );
         }
         $user_id = $this->module->entitlements->ensure_user( [ 'id' => $seat_id ] );
         if ( $user_id <= 0 ) {

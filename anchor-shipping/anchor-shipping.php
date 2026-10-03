@@ -55,5 +55,8 @@ class Module {
 		}
 		// Later tasks register their services below this line.
 		$this->carriers = new Carriers\CarrierRegistry();
+		if ( \is_admin() ) {
+			new Admin\SettingsPage( $this->carriers );
+		}
 	}
 }

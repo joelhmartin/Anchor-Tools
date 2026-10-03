@@ -47,14 +47,35 @@ final class SignatureRepository {
 		return self::shape( $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->t()} WHERE token = %s", $token ), ARRAY_A ) );
 	}
 
-	public function attach( int $id, int $order_id ): bool {
+	/**
+	 * Attach to $order_id. Refuses a row attached to another order, unless that order is
+	 * $from_order_id (the caller has checked it is an abandoned, unpaid order); the move
+	 * is one guarded UPDATE, so a concurrent attach elsewhere cannot be overwritten.
+	 */
+	public function attach( int $id, int $order_id, int $from_order_id = 0 ): bool {
 		global $wpdb;
+		$now = \current_time( 'mysql', true );
+		if ( $from_order_id && $from_order_id !== $order_id ) {
+			$wpdb->query( $wpdb->prepare(
+				"UPDATE {$this->t()} SET order_id = %d, attached_at = %s WHERE id = %d AND order_id = %d",
+				$order_id, $now, $id, $from_order_id
+			) );
+		}
 		$wpdb->query( $wpdb->prepare(
 			"UPDATE {$this->t()} SET order_id = %d, attached_at = COALESCE(attached_at, %s) WHERE id = %d AND (order_id IS NULL OR order_id = %d)",
-			$order_id, \current_time( 'mysql', true ), $id, $order_id
+			$order_id, $now, $id, $order_id
 		) );
 		$row = $this->get( $id );
 		return $row && $row['order_id'] === $order_id;
+	}
+
+	/** Re-key a migrated guest session; claim its unowned rows for the user it became. */
+	public function reassign_session( string $from, string $to, int $user_id ): int {
+		global $wpdb;
+		return (int) $wpdb->query( $wpdb->prepare(
+			"UPDATE {$this->t()} SET session_key = %s, user_id = COALESCE(user_id, NULLIF(%d, 0)) WHERE session_key = %s",
+			$to, $user_id, $from
+		) );
 	}
 
 	public function for_order( int $order_id ): array {

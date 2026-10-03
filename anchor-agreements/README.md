@@ -30,7 +30,15 @@ Products list flags it.
 
 ## Notes
 
-- **Block checkout is refused** for carts that need a signature; use the classic checkout.
+- **Requires WooCommerce.** Without it the module only shows an admin notice.
+- **Block checkout is refused** for carts that need a signature; use the classic checkout. Store
+  managers see an admin notice while the checkout page uses the Checkout block.
+- **No order is sold unsigned.** If a required signature cannot be attached when the order is created,
+  checkout stops with an error (order note + WooCommerce log, source `anchor-agreements`). A signature on
+  an abandoned unpaid order (pending, failed, cancelled) moves to the order that replaces it; one on a
+  paid or on-hold order never moves.
+- Signing as a guest and then logging in, or creating an account at checkout, keeps the signature.
+- My Account > Signed documents lists signatures by account only, never by matching email.
 - **WP Rocket / RUCSS:** add `/aagr-/` to `remove_unused_css_safelist` (every class is `aagr-` prefixed).
 - Signature images live only in the database, never in `uploads/`.
 - A signature not attached to an order within the purge window (default 30 days) is deleted daily

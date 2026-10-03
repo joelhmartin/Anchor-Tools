@@ -62,6 +62,17 @@ class Test_Agreements_Signatures extends WP_UnitTestCase {
 		$this->assertSame( 1, $res['total'] );
 		$this->assertArrayNotHasKey( 'image', $res['rows'][0] );
 	}
+
+	public function test_attach_moves_only_from_the_named_order() {
+		$repo = new SignatureRepository();
+		$id   = $repo->insert( $this->data() );
+		$repo->attach( $id, 100 );
+		$this->assertFalse( $repo->attach( $id, 200, 300 ) );
+		$this->assertSame( 100, $repo->get( $id )['order_id'] );
+		$this->assertTrue( $repo->attach( $id, 200, 100 ) );
+		$this->assertSame( 200, $repo->get( $id )['order_id'] );
+	}
+
 	public function test_for_user_never_matches_by_email() {
 		$repo  = new SignatureRepository();
 		$guest = $repo->insert( $this->data( [ 'user_id' => null, 'signer_email' => 'p@example.com' ] ) );

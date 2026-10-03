@@ -19,7 +19,11 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class Checkout {
 
+	/** @var array<int,int> agreement_id => signature_id that validate() approved in this request. */
+	private array $approved = [];
+
 	public function __construct() {
+		\add_action( 'woocommerce_guest_session_to_user_id', [ SignatureCheck::class, 'adopt_guest_session' ], 10, 2 );
 		\add_action( 'woocommerce_review_order_before_submit', [ $this, 'render' ] );
 		\add_action( 'woocommerce_after_checkout_validation', [ $this, 'validate' ], 10, 2 );
 		\add_action( 'woocommerce_checkout_order_created', [ $this, 'attach' ] );
@@ -98,34 +102,120 @@ final class Checkout {
 	}
 
 	public function validate( array $data, \WP_Error $errors ): void {
-		$required = Requirements::for_cart();
+		$this->approved = [];
+		$required       = Requirements::for_cart();
 		if ( ! $required ) {
 			return;
 		}
-		if ( ( new SignatureCheck() )->unsigned( $required, SignatureCheck::awaiting_order_id() ) ) {
-			$errors->add( 'anchor_agreements_unsigned', \__( 'Please read and sign the required agreement before placing your order.', 'anchor-schema' ) );
+		$this->approved = ( new SignatureCheck() )->valid_map( $required, SignatureCheck::awaiting_order_id() );
+		$unsigned       = array_diff( array_map( 'intval', array_keys( $required ) ), array_keys( $this->approved ) );
+		if ( $unsigned ) {
+			$errors->add( 'anchor_agreements_unsigned', self::unsigned_message( $unsigned ) );
 		}
 	}
 
+	/** @param int[] $agreement_ids */
+	public static function unsigned_message( array $agreement_ids ): string {
+		$agreement_ids = array_values( $agreement_ids );
+		$v             = 1 === \count( $agreement_ids ) ? ( new VersionRepository() )->current_for( (int) $agreement_ids[0] ) : null;
+		if ( $v ) {
+			/* translators: %s: agreement title */
+			return sprintf( \__( 'Please read and sign the %s before placing your order.', 'anchor-schema' ), \esc_html( \wp_strip_all_tags( $v['title'] ) ) );
+		}
+		return \__( 'Please read and sign the required agreements before placing your order.', 'anchor-schema' );
+	}
+
+	/**
+	 * woocommerce_checkout_order_created. Runs after WooCommerce may have logged a new
+	 * account in and switched the session, and on a NEW order when the awaiting one was
+	 * abandoned, so it reuses validate()'s approved ids and may move a signature off an
+	 * unpaid awaiting order. If any required agreement still cannot be attached it
+	 * throws: create_order() turns that into a checkout error, so nothing sells unsigned.
+	 *
+	 * @throws \Exception When a required agreement has no attachable signature.
+	 */
 	public function attach( \WC_Order $order ): void {
-		$required = Requirements::for_order( $order );
+		$approved       = $this->approved;
+		$this->approved = [];
+		$required       = Requirements::for_order( $order );
 		if ( ! $required ) {
 			return;
 		}
-		$check = new SignatureCheck();
-		$repo  = new SignatureRepository();
-		$ids   = [];
+		$order_id = $order->get_id();
+		$check    = new SignatureCheck();
+		$repo     = new SignatureRepository();
+		$awaiting = SignatureCheck::awaiting_order_id();
+		$plan     = [];
 		foreach ( array_keys( $required ) as $aid ) {
-			$sig = $check->valid_signature_id( (int) $aid, $order->get_id() );
-			if ( $sig && $repo->attach( $sig, $order->get_id() ) ) {
-				$ids[] = $sig;
+			$aid = (int) $aid;
+			$sig = $approved[ $aid ] ?? 0;
+			$sig = $sig ?: $check->valid_signature_id( $aid, $awaiting );
+			$sig = $sig ?: $check->valid_signature_id( $aid, $order_id ); // Already ours (hook re-run).
+			$row = $sig ? $repo->get( $sig ) : null;
+			$from = $row && null !== $row['order_id'] && $row['order_id'] !== $order_id ? $row['order_id'] : 0;
+			if ( ! $row || $row['agreement_id'] !== $aid || ( $from && ! SignatureCheck::is_reclaimable_order( $from ) ) ) {
+				continue;
+			}
+			$plan[ $aid ] = [ $sig, $from ];
+		}
+		$missing = array_diff( array_map( 'intval', array_keys( $required ) ), array_keys( $plan ) );
+		if ( $missing ) {
+			$this->refuse( $order, $missing );
+		}
+
+		$ids = [];
+		foreach ( $plan as $aid => [ $sig, $from ] ) {
+			if ( ! $repo->attach( $sig, $order_id, $from ) ) {
+				$missing[] = $aid;
+				continue;
+			}
+			$ids[] = $sig;
+			if ( $from ) {
+				self::release_from( $from, $sig, $order_id );
 			}
 		}
 		if ( $ids ) {
 			$order->update_meta_data( '_anchor_agreement_signature_ids', $ids );
 			$order->save_meta_data();
-			\do_action( 'anchor_agreements_attached', $order->get_id(), $ids );
+			\do_action( 'anchor_agreements_attached', $order_id, $ids );
 		}
+		if ( $missing ) {
+			$this->refuse( $order, $missing );
+		}
+	}
+
+	/** The signature moved to the replacement order; keep the old order's record honest. */
+	private static function release_from( int $old_order_id, int $sig, int $new_order_id ): void {
+		$old = \wc_get_order( $old_order_id );
+		if ( ! $old instanceof \WC_Order ) {
+			return;
+		}
+		$ids = array_values( array_diff( array_map( 'intval', (array) $old->get_meta( '_anchor_agreement_signature_ids' ) ), [ $sig ] ) );
+		$ids ? $old->update_meta_data( '_anchor_agreement_signature_ids', $ids ) : $old->delete_meta_data( '_anchor_agreement_signature_ids' );
+		$old->save_meta_data();
+		/* translators: 1: signature id, 2: order number */
+		$old->add_order_note( sprintf( \__( 'Agreement signature #%1$d moved to replacement order #%2$s.', 'anchor-schema' ), $sig, $new_order_id ) );
+	}
+
+	/**
+	 * @param int[] $missing agreement ids.
+	 * @throws \Exception Always.
+	 */
+	private function refuse( \WC_Order $order, array $missing ): void {
+		$titles = [];
+		foreach ( $missing as $aid ) {
+			$v        = ( new VersionRepository() )->current_for( (int) $aid );
+			$titles[] = $v ? \wp_strip_all_tags( $v['title'] ) : '#' . (int) $aid;
+		}
+		/* translators: %s: comma-separated agreement titles */
+		$order->add_order_note( sprintf( \__( 'Checkout stopped: no valid signature could be attached for %s.', 'anchor-schema' ), implode( ', ', $titles ) ) );
+		if ( \function_exists( 'wc_get_logger' ) ) {
+			\wc_get_logger()->warning(
+				sprintf( 'Order #%d: checkout stopped, no attachable signature for agreement(s) %s.', $order->get_id(), implode( ', ', array_map( 'intval', $missing ) ) ),
+				[ 'source' => 'anchor-agreements' ]
+			);
+		}
+		throw new \Exception( self::unsigned_message( $missing ) ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- escaped in unsigned_message().
 	}
 
 	public function forget_on_thankyou(): void {

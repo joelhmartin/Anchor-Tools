@@ -71,10 +71,14 @@ class Test_Agreements_Signing extends WP_UnitTestCase {
 	}
 
 	public function test_signature_attached_to_awaiting_order_still_counts() {
-		$res = ( new SigningEndpoint() )->handle( $this->input() );
-		( new SignatureRepository() )->attach( $res['signature_id'], 555 );
+		$res   = ( new SigningEndpoint() )->handle( $this->input() );
+		$order = wc_create_order(); // pending, as WooCommerce leaves it after a failed payment.
+		( new SignatureRepository() )->attach( $res['signature_id'], $order->get_id() );
 		$check = new SignatureCheck();
-		$this->assertSame( [], $check->unsigned( [ $this->agreement => 1 ], 555 ) );
+		$this->assertSame( [], $check->unsigned( [ $this->agreement => 1 ], $order->get_id() ) );
 		$this->assertSame( [ $this->agreement ], $check->unsigned( [ $this->agreement => 1 ], 0 ) );
+		// Once that order is paid, its signature is spent: a new checkout needs a new one.
+		$order->payment_complete();
+		$this->assertSame( [ $this->agreement ], $check->unsigned( [ $this->agreement => 1 ], $order->get_id() ) );
 	}
 }

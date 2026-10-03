@@ -1,0 +1,8 @@
+.anchor-shipping-panel.is-busy { opacity: .5; pointer-events: none; }
+.anchor-shipping-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 6px 0; border-bottom: 1px solid #f0f0f1; }
+.anchor-shipping-row strong { flex: 1 1 100%; font-family: monospace; }
+.anchor-shipping-row.is-voided { opacity: .55; text-decoration: line-through; }
+.anchor-shipping-meta { flex: 1 1 100%; color: #646970; font-size: 12px; }
+.anchor-shipping-note { background: #fcf9e8; border-left: 3px solid #dba617; padding: 6px 8px; }
+.anchor-shipping-custom input { width: 4em; }
+.anchor-shipping-error { color: #b32d2e; }

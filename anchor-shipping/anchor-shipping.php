@@ -67,6 +67,8 @@ class Module {
 		if ( \is_admin() ) {
 			new Admin\SettingsPage( $this->carriers );
 			new Admin\ProductFields();
+			new Admin\OrderPanel( $this->shipments, $this->packer, $this->carriers );
+			new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers );
 		}
 	}
 }

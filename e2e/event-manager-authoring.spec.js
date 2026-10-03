@@ -77,11 +77,12 @@ test('front-end manager form: type/registration-mode choosers toggle the conditi
 
   const typeSelect = page.locator('#anchor_event_type');
   const modeSelect = page.locator('#anchor_event_registration_mode');
+  const externalBox = page.locator('#anchor_event_external_signup');
   await expect(typeSelect).toBeVisible();
   await expect(modeSelect).toBeVisible();
 
   const sessionsSection = page.locator('.anchor-event-sessions-table').locator('..');
-  const externalSection = page.locator('[data-when-mode="external"]');
+  const externalSection = page.locator('.anchor-event-external-signup');
 
   // Default type=single, mode=free for a brand-new event — both conditional
   // sections start hidden.
@@ -91,8 +92,9 @@ test('front-end manager form: type/registration-mode choosers toggle the conditi
   await typeSelect.selectOption('multisession');
   await expect(sessionsSection).toBeVisible();
 
-  await modeSelect.selectOption('external');
+  await externalBox.check();
   await expect(externalSection).toBeVisible();
+  await expect(modeSelect).toBeHidden();
 });
 
 test('front-end manager form: create with multisession + external round-trips through save', async ({ page }) => {
@@ -107,7 +109,7 @@ test('front-end manager form: create with multisession + external round-trips th
   await page.fill('#anchor_event_title', uniqueTitle);
   await page.fill('#anchor_event_start_date', '2026-09-01');
   await page.locator('#anchor_event_type').selectOption('multisession');
-  await page.locator('#anchor_event_registration_mode').selectOption('external');
+  await page.locator('#anchor_event_external_signup').check();
 
   await page.locator('.anchor-event-session-add').click();
   const rows = page.locator('.anchor-event-sessions-rows .anchor-event-session-row');
@@ -137,7 +139,7 @@ test('front-end manager form: create with multisession + external round-trips th
   await page.waitForURL(/event_action=edit/, { timeout: 15000 });
 
   await expect(page.locator('#anchor_event_type')).toHaveValue('multisession');
-  await expect(page.locator('#anchor_event_registration_mode')).toHaveValue('external');
+  await expect(page.locator('#anchor_event_external_signup')).toBeChecked();
   await expect(page.locator('#anchor_event_external_url')).toHaveValue('https://example.test/register-e2e-manager');
   await expect(page.locator('#anchor_event_external_display_price')).toHaveValue('$495');
 

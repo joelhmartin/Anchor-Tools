@@ -7783,7 +7783,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         \wp_enqueue_media();
         \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], $this->asset_version( 'anchor-events-manager/assets/admin.css' ) );
-        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], $this->asset_version( 'anchor-events-manager/assets/admin.js' ), true );
+        \wp_register_script( 'anchor-events-registration-mode', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/registration-mode.js' ), [], $this->asset_version( 'anchor-events-manager/assets/registration-mode.js' ), true );
+        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable', 'anchor-events-registration-mode' ], $this->asset_version( 'anchor-events-manager/assets/admin.js' ), true );
         // Ticket-tier repeatable table (spec §3.2).
         \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], $this->asset_version( 'anchor-events-manager/assets/ticket-types-admin.js' ), true );
 
@@ -8813,10 +8814,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         \wp_enqueue_media();
         \wp_enqueue_style( 'dashicons' );
         \wp_enqueue_script( 'jquery-ui-sortable' );
+        \wp_register_script( 'anchor-events-registration-mode', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/registration-mode.js' ), [], $this->asset_version( 'anchor-events-manager/assets/registration-mode.js' ), true );
         \wp_enqueue_script(
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
-            [ 'jquery', 'jquery-ui-sortable' ],
+            [ 'jquery', 'jquery-ui-sortable', 'anchor-events-registration-mode' ],
             $this->asset_version( 'anchor-events-manager/assets/manager.js' ),
             true
         );

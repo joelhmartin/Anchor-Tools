@@ -3250,12 +3250,9 @@ class Module {
      * @param int   $event_id
      * @param array $meta
      * @param bool  $admin True for the metabox styling, false for the console.
-     * @return string '' when the event can never hold a stream.
+     * @return string Escaped HTML. Always rendered, even for an external-signup event (hidden by JS): an absent textarea saves as "clear the stream", which wiped the stored embed on every external save.
      */
     public function render_livestream_fields( $event_id, array $meta, $admin = true ) {
-        if ( $this->registration_mode( (int) $event_id ) === 'external' ) {
-            return '';
-        }
         $hint  = $admin ? 'description' : 'anchor-event-hint';
         $embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
         $raw   = (string) ( $embed['raw'] ?? ( $embed['src'] ?? '' ) );
@@ -3270,7 +3267,7 @@ class Module {
 
         \ob_start();
         ?>
-        <div class="anchor-event-section anchor-event-livestream" data-step="3">
+        <div class="anchor-event-section anchor-event-livestream anchor-event-conditional" data-when-mode="wc free" data-step="3">
             <h3><?php echo esc_html__( 'Livestream', 'anchor-schema' ); ?></h3>
             <div class="anchor-event-grid">
                 <div class="anchor-event-field" style="grid-column:1/-1;">
@@ -3381,6 +3378,92 @@ class Module {
     }
 
     /**
+     * "Use external signup form" + the native Registration select, shared by
+     * the wp-admin metabox and the front-end console (one renderer, as
+     * render_access_fields() is, so the two surfaces cannot drift).
+     *
+     * Ticked → registration_mode = external, and the select steps aside
+     * (data-when-mode="wc free", toggled by registration-mode.js). The select
+     * is still rendered and still posts: it carries the native mode the event
+     * returns to when the box is unticked. The hidden marker tells the save
+     * path this form carried the checkbox (sanitize_event_type_input()).
+     *
+     * @param int  $event_id 0 for a new event.
+     * @param bool $admin    Metabox styling when true.
+     * @return string Escaped HTML: two .anchor-event-field cells for a grid.
+     */
+    public function render_registration_mode_field( $event_id, $admin = true ) {
+        $event_id  = (int) $event_id;
+        $external  = $event_id > 0 && $this->uses_external_signup( $event_id );
+        $native    = $this->native_registration_mode( $event_id );
+        $wc_active = \class_exists( 'WooCommerce' );
+        $hint      = $admin ? 'description' : 'anchor-event-hint';
+        \ob_start();
+        ?>
+        <div class="anchor-event-field anchor-event-field--check anchor-event-external-signup-field">
+            <span class="anchor-event-field-heading"><?php echo esc_html__( 'Signups', 'anchor-schema' ); ?></span>
+            <input type="hidden" name="anchor_event_external_signup_present" value="1" />
+            <label>
+                <input type="checkbox" id="anchor_event_external_signup" name="anchor_event_external_signup" value="1" <?php checked( $external ); ?> />
+                <?php echo esc_html__( 'Use external signup form', 'anchor-schema' ); ?>
+            </label>
+            <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'People sign up on another site\'s form. This event then keeps no attendee list here and sends no confirmation, reminder or roster emails. Untick it and every setting you had comes back.', 'anchor-schema' ); ?></p>
+        </div>
+        <div class="anchor-event-field anchor-event-conditional" data-when-mode="wc free">
+            <label for="anchor_event_registration_mode"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></label>
+            <select id="anchor_event_registration_mode" name="anchor_event_registration_mode">
+                <option value="wc" <?php selected( $native, 'wc' ); ?> <?php disabled( ! $wc_active ); ?>><?php echo esc_html__( 'WooCommerce ticketed', 'anchor-schema' ); ?><?php echo $wc_active ? '' : ' ' . esc_html__( '(requires WooCommerce)', 'anchor-schema' ); ?></option>
+                <option value="free" <?php selected( $native, 'free' ); ?>><?php echo esc_html__( 'Free registration', 'anchor-schema' ); ?></option>
+            </select>
+            <?php if ( ! $wc_active ) : ?>
+                <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'WooCommerce is inactive, so WooCommerce-ticketed registration is unavailable until it is activated.', 'anchor-schema' ); ?></p>
+            <?php endif; ?>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * The fields "Use external signup form" reveals, directly under the
+     * checkbox on both surfaces. data-step="2" places it in the console
+     * wizard's Schedule step (inert in the metabox, as for Livestream).
+     *
+     * `external_embed` is stored already sanitized (sanitize_external_embed())
+     * and shown here through esc_textarea() like any other field value.
+     *
+     * @param array $meta  get_meta() result.
+     * @param bool  $admin Metabox styling when true.
+     * @return string Escaped HTML.
+     */
+    public function render_external_signup_section( array $meta, $admin = true ) {
+        $hint = $admin ? 'description' : 'anchor-event-hint';
+        \ob_start();
+        ?>
+        <div class="anchor-event-section anchor-event-conditional anchor-event-external-signup" data-when-mode="external" data-step="2">
+            <h3><?php echo esc_html__( 'External signup form', 'anchor-schema' ); ?></h3>
+            <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Paste the form\'s embed code, or link to the page where people sign up. When both are set, the embedded form is shown. It appears on the event page while "Enable registration" is ticked.', 'anchor-schema' ); ?></p>
+            <div class="anchor-event-grid">
+                <div class="anchor-event-field anchor-event-field-wide" style="grid-column:1/-1;">
+                    <label for="anchor_event_external_embed"><?php echo esc_html__( 'Embed code', 'anchor-schema' ); ?></label>
+                    <textarea id="anchor_event_external_embed" name="anchor_event_external_embed" rows="5" class="large-text code"><?php echo esc_textarea( (string) ( $meta['external_embed'] ?? '' ) ); ?></textarea>
+                    <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'The provider\'s iframe embed. Several iframes are fine — one per session, for example. Scripts are removed.', 'anchor-schema' ); ?></p>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_external_url"><?php echo esc_html__( 'Signup page URL', 'anchor-schema' ); ?></label>
+                    <input type="url" id="anchor_event_external_url" name="anchor_event_external_url" value="<?php echo esc_attr( (string) ( $meta['external_url'] ?? '' ) ); ?>" />
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_external_display_price"><?php echo esc_html__( 'Display price', 'anchor-schema' ); ?></label>
+                    <input type="text" id="anchor_event_external_display_price" name="anchor_event_external_display_price" value="<?php echo esc_attr( (string) ( $meta['external_display_price'] ?? '' ) ); ?>" />
+                    <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Display-only price label, e.g. $495. Not connected to WooCommerce.', 'anchor-schema' ); ?></p>
+                </div>
+            </div>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
      * The Access section: the master switch, then the prerequisite roles and
      * their any/all mode. Both surfaces (spec §7).
      *
@@ -3399,7 +3482,7 @@ class Module {
         $on     = $locked || ! empty( $meta['access_role_enabled'] );
         \ob_start();
         ?>
-        <div class="anchor-event-section anchor-event-access" data-step="4">
+        <div class="anchor-event-section anchor-event-access anchor-event-conditional" data-when-mode="wc free" data-step="4">
             <h3><?php echo esc_html__( 'Access', 'anchor-schema' ); ?></h3>
             <div class="anchor-event-grid">
                 <div class="anchor-event-field anchor-event-field--check" style="grid-column:1/-1;">
@@ -4116,8 +4199,6 @@ class Module {
         $settings = $this->get_settings();
         $timezone_options = $this->timezone_field_options( $meta['timezone'] );
         $event_type = $this->event_type( $post->ID );
-        $registration_mode = $this->registration_mode( $post->ID );
-        $wc_active = \class_exists( 'WooCommerce' );
         $sessions = $this->get_sessions( $post->ID );
         $labels = $this->get_labels( $post->ID );
         ?>
@@ -4134,19 +4215,11 @@ class Module {
                             <option value="recurring" <?php selected( $event_type, 'recurring' ); ?>><?php echo esc_html__( 'Recurring schedule', 'anchor-schema' ); ?></option>
                         </select>
                     </div>
-                    <div class="anchor-event-field">
-                        <label for="anchor_event_registration_mode"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></label>
-                        <select id="anchor_event_registration_mode" name="anchor_event_registration_mode">
-                            <option value="wc" <?php selected( $registration_mode, 'wc' ); ?> <?php disabled( ! $wc_active ); ?>><?php echo esc_html__( 'WooCommerce ticketed', 'anchor-schema' ); ?><?php echo $wc_active ? '' : ' ' . esc_html__( '(requires WooCommerce)', 'anchor-schema' ); ?></option>
-                            <option value="free" <?php selected( $registration_mode, 'free' ); ?>><?php echo esc_html__( 'Free registration', 'anchor-schema' ); ?></option>
-                            <option value="external" <?php selected( $registration_mode, 'external' ); ?>><?php echo esc_html__( 'External registration', 'anchor-schema' ); ?></option>
-                        </select>
-                        <?php if ( ! $wc_active ) : ?>
-                            <p class="description"><?php echo esc_html__( 'WooCommerce is inactive, so WooCommerce-ticketed registration is unavailable until it is activated.', 'anchor-schema' ); ?></p>
-                        <?php endif; ?>
-                    </div>
+                    <?php echo $this->render_registration_mode_field( $post->ID, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                 </div>
             </div>
+
+            <?php echo $this->render_external_signup_section( $meta, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 
             <div class="anchor-event-section">
                 <h3><?php echo esc_html__( 'Date & Time', 'anchor-schema' ); ?></h3>
@@ -4350,26 +4423,6 @@ class Module {
 
             <?php echo $this->render_access_fields( $post->ID, $meta, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-mode="external">
-                <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
-                <div class="anchor-event-grid">
-                    <div class="anchor-event-field">
-                        <label for="anchor_event_external_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label>
-                        <input type="url" id="anchor_event_external_url" name="anchor_event_external_url" value="<?php echo esc_attr( $meta['external_url'] ); ?>" />
-                    </div>
-                    <div class="anchor-event-field">
-                        <label for="anchor_event_external_display_price"><?php echo esc_html__( 'Display price', 'anchor-schema' ); ?></label>
-                        <input type="text" id="anchor_event_external_display_price" name="anchor_event_external_display_price" value="<?php echo esc_attr( $meta['external_display_price'] ); ?>" />
-                        <p class="description"><?php echo esc_html__( 'Display-only price label, e.g. $495. Not connected to WooCommerce.', 'anchor-schema' ); ?></p>
-                    </div>
-                    <div class="anchor-event-field anchor-event-field-wide">
-                        <label for="anchor_event_external_embed"><?php echo esc_html__( 'Embed code', 'anchor-schema' ); ?></label>
-                        <textarea id="anchor_event_external_embed" name="anchor_event_external_embed" rows="5" class="large-text code"><?php echo esc_textarea( $meta['external_embed'] ); ?></textarea>
-                        <p class="description"><?php echo esc_html__( 'Paste a third-party embed. Iframes allowed; scripts stripped by default.', 'anchor-schema' ); ?></p>
-                    </div>
-                </div>
-            </div>
-
             <div class="anchor-event-section">
                 <h3><?php echo esc_html__( 'Display Controls', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
@@ -4419,7 +4472,7 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc free">
                 <h3><?php echo esc_html__( 'Email Settings', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
@@ -9285,8 +9338,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // get_post_meta( 0, ... ) reads nothing, so each resolver returns its
         // documented default (single / free / []).
         $event_type = $this->event_type( $event_id );
-        $registration_mode = $this->registration_mode( $event_id );
-        $wc_active = \class_exists( 'WooCommerce' );
         $sessions = $this->get_sessions( $event_id );
         // Safe with $event_id === 0 (new event): get_post_meta( 0, ... ) reads
         // nothing, so get_labels() returns [].
@@ -9399,19 +9450,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                             </select>
                         <?php endif; ?>
                     </div>
-                    <div class="anchor-event-field">
-                        <label for="anchor_event_registration_mode"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></label>
-                        <select id="anchor_event_registration_mode" name="anchor_event_registration_mode">
-                            <option value="wc" <?php selected( $registration_mode, 'wc' ); ?> <?php disabled( ! $wc_active ); ?>><?php echo esc_html__( 'WooCommerce ticketed', 'anchor-schema' ); ?><?php echo $wc_active ? '' : ' ' . esc_html__( '(requires WooCommerce)', 'anchor-schema' ); ?></option>
-                            <option value="free" <?php selected( $registration_mode, 'free' ); ?>><?php echo esc_html__( 'Free registration', 'anchor-schema' ); ?></option>
-                            <option value="external" <?php selected( $registration_mode, 'external' ); ?>><?php echo esc_html__( 'External registration', 'anchor-schema' ); ?></option>
-                        </select>
-                        <?php if ( ! $wc_active ) : ?>
-                            <p class="description"><?php echo esc_html__( 'WooCommerce is inactive, so WooCommerce-ticketed registration is unavailable until it is activated.', 'anchor-schema' ); ?></p>
-                        <?php endif; ?>
-                    </div>
+                    <?php echo $this->render_registration_mode_field( $event_id, false ); // already escaped ?>
                 </div>
             </div>
+
+            <?php echo $this->render_external_signup_section( $meta, false ); // already escaped ?>
 
             <div class="anchor-event-section" data-step="2">
                 <h3><?php echo esc_html__( 'Date & Time', 'anchor-schema' ); ?></h3>
@@ -9535,7 +9578,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'How many people can come, and what they are asked when they sign up here. If sign-ups happen on another site instead, choose External above.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'How many people can come, and what they are asked when they sign up here. If people sign up on another site\'s form instead, tick "Use external signup form" in step 2.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
                     <?php
@@ -9555,7 +9598,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
             <?php echo $this->render_access_fields( $event_id, $meta, false ); // already escaped ?>
 
-            <div class="anchor-event-section" data-step="4">
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc free" data-step="4">
                 <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-questions">
@@ -9588,27 +9631,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-mode="external" data-step="4">
-                <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Send people to a sign-up form somewhere else. Those names will live in that system, so they will not appear under Attendees here.', 'anchor-schema' ); ?></p>
-                <div class="anchor-event-grid">
-                    <div class="anchor-event-field">
-                        <label for="anchor_event_external_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label>
-                        <input type="url" id="anchor_event_external_url" name="anchor_event_external_url" value="<?php echo esc_attr( $meta['external_url'] ); ?>" />
-                    </div>
-                    <div class="anchor-event-field">
-                        <label for="anchor_event_external_display_price"><?php echo esc_html__( 'Display price', 'anchor-schema' ); ?></label>
-                        <input type="text" id="anchor_event_external_display_price" name="anchor_event_external_display_price" value="<?php echo esc_attr( $meta['external_display_price'] ); ?>" />
-                        <p class="description"><?php echo esc_html__( 'Display-only price label, e.g. $495. Not connected to WooCommerce.', 'anchor-schema' ); ?></p>
-                    </div>
-                    <div class="anchor-event-field" style="grid-column:1/-1;">
-                        <label for="anchor_event_external_embed"><?php echo esc_html__( 'Embed code', 'anchor-schema' ); ?></label>
-                        <textarea id="anchor_event_external_embed" name="anchor_event_external_embed" rows="5" class="large-text code"><?php echo esc_textarea( $meta['external_embed'] ); ?></textarea>
-                        <p class="description"><?php echo esc_html__( 'Paste a third-party embed. Iframes allowed; scripts stripped by default.', 'anchor-schema' ); ?></p>
-                    </div>
-                </div>
-            </div>
-
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc" data-step="4">
                 <h3><?php echo esc_html__( 'Tickets / Pricing', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Paid tickets. Add a row per price — early bird, standard, student — each with its own price, how many are available, and when it can be bought.', 'anchor-schema' ); ?></p>
@@ -9625,7 +9647,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 </div>
             </div>
 
-            <div class="anchor-event-section" data-step="5">
+            <div class="anchor-event-section anchor-event-conditional anchor-event-external-signup-notice" data-when-mode="external" data-step="5">
+                <h3><?php echo esc_html__( 'Emails', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'This event takes sign-ups on an external form, so it sends no confirmation, reminder or roster emails. Untick "Use external signup form" in step 2 to bring them back — your wording is kept.', 'anchor-schema' ); ?></p>
+            </div>
+
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc free" data-step="5">
                 <h3><?php echo esc_html__( 'Email Settings', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'The emails people get when they sign up, and the reminder before the event. Leave one alone and it keeps using the standard wording.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">

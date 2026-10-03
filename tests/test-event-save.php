@@ -564,10 +564,12 @@ class Test_Event_Save extends Anchor_Events_TestCase {
 		remove_role( 'anchor_event_' . $event_id );
 	}
 
-	/** An external event gets no Livestream group at all. */
-	public function test_external_event_has_no_livestream_group() {
+	/** An external event still renders the Livestream group (hidden by JS), so the stored stream round-trips. */
+	public function test_external_event_livestream_group_is_rendered_but_conditional() {
 		$event_id = $this->make_event( [ 'registration_mode' => 'external' ] );
-		$this->assertSame( '', $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true ) );
+		$html     = $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+		$this->assertStringContainsString( 'name="anchor_event_stream_embed"', $html );
+		$this->assertStringContainsString( 'data-when-mode="wc free"', $html );
 	}
 
 	/** The session row carries a modality select and a stream override. */

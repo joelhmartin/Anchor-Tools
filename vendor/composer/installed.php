@@ -3,7 +3,7 @@
         'name' => 'anchor/anchor-tools',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '117ba083f39d7a0ebf11a2d340bcc7100d282dff',
+        'reference' => 'ab205633bb3f62d170ad9eeddb0b213559dbd1b0',
         'type' => 'wordpress-plugin',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -13,7 +13,7 @@
         'anchor/anchor-tools' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '117ba083f39d7a0ebf11a2d340bcc7100d282dff',
+            'reference' => 'ab205633bb3f62d170ad9eeddb0b213559dbd1b0',
             'type' => 'wordpress-plugin',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
@@ -279,6 +279,15 @@
             'install_path' => __DIR__ . '/../sebastian/version',
             'aliases' => array(),
             'dev_requirement' => true,
+        ),
+        'setasign/fpdf' => array(
+            'pretty_version' => '1.9.0',
+            'version' => '1.9.0.0',
+            'reference' => '051b70e4c57dedc88df41b1eff1c62894e5f9ed0',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../setasign/fpdf',
+            'aliases' => array(),
+            'dev_requirement' => false,
         ),
         'symfony/polyfill-ctype' => array(
             'pretty_version' => 'v1.33.0',

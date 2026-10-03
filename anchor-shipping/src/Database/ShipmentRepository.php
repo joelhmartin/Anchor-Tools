@@ -15,7 +15,9 @@ final class ShipmentRepository {
 			'created_at' => \current_time( 'mysql', true ),
 			'created_by' => \get_current_user_id(),
 		];
-		$wpdb->insert( Migrations::table(), $row );
+		if ( false === $wpdb->insert( Migrations::table(), $row ) ) {
+			throw new \RuntimeException( 'Could not save the shipment record: ' . $wpdb->last_error );
+		}
 		return (int) $wpdb->insert_id;
 	}
 
@@ -41,6 +43,8 @@ final class ShipmentRepository {
 
 	public function update( int $id, array $fields ): void {
 		global $wpdb;
-		$wpdb->update( Migrations::table(), $fields, [ 'id' => $id ] );
+		if ( false === $wpdb->update( Migrations::table(), $fields, [ 'id' => $id ] ) ) {
+			throw new \RuntimeException( 'Could not update the shipment record: ' . $wpdb->last_error );
+		}
 	}
 }

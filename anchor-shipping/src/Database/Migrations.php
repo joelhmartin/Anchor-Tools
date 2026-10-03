@@ -57,6 +57,9 @@ final class Migrations {
 				KEY carrier_shipment (carrier,shipment_id)
 			) $charset;"
 		);
-		\update_option( self::OPTION, self::VERSION, false );
+		// Only record the version once the table exists, so a failed migration retries.
+		if ( self::table() === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', self::table() ) ) ) {
+			\update_option( self::OPTION, self::VERSION, false );
+		}
 	}
 }

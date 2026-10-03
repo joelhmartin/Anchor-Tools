@@ -66,7 +66,7 @@ abstract class Anchor_Shipping_TestCase extends WP_UnitTestCase {
 		return json_decode( (string) file_get_contents( __DIR__ . '/fixtures/shipping/' . $name . '.json' ), true );
 	}
 
-	/** Saves a complete sandbox UPS setup with one box preset. Requires Task 3. */
+	/** Saves a complete sandbox UPS setup (credentials, ship-from, one box preset, inbox). */
 	protected function configure_ups( array $overrides = [] ): void {
 		\Anchor\Shipping\Support\Settings::save(
 			array_replace_recursive(

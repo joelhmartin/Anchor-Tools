@@ -2701,6 +2701,14 @@ class Module {
      */
     public function sanitize_external_embed( $meta_value, $meta_key, $object_type ) {
         $allowed = $this->get_embed_allowed_html();
+        // A site may opt script/style in through the filter, but only a user
+        // who could paste raw HTML anywhere (`unfiltered_html`) may store them:
+        // the embed is echoed to every visitor, and the metabox and console
+        // saves are open to roles without that capability. One check here
+        // covers both save paths.
+        if ( ! \current_user_can( 'unfiltered_html' ) ) {
+            unset( $allowed['script'], $allowed['style'] );
+        }
         $html    = (string) $meta_value;
         // Drop the whole element first — unless a site opted the tag back in.
         foreach ( [ 'script', 'style' ] as $tag ) {

@@ -48,12 +48,27 @@ class Test_External_Embed_Sanitizer extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'color:red', $this->clean( '<style>.x{color:red}</style>' . self::FORM ) );
 	}
 
-	public function test_a_site_that_opts_scripts_back_in_keeps_them() {
+	private function opt_scripts_in() {
 		add_filter( 'anchor_events_embed_allowed_html', function ( $allowed ) {
 			$allowed['script'] = [ 'src' => true ];
 			return $allowed;
 		} );
+	}
+
+	public function test_opt_in_keeps_scripts_for_a_user_with_unfiltered_html() {
+		$this->opt_scripts_in();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertTrue( current_user_can( 'unfiltered_html' ) );
 		$this->assertStringContainsString( '<script src="https://cdn.forms.example.com/h.js">', $this->clean( '<script src="https://cdn.forms.example.com/h.js"></script>' ) );
+	}
+
+	public function test_opt_in_does_not_let_a_user_without_unfiltered_html_store_scripts() {
+		$this->opt_scripts_in();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'author' ] ) );
+		$this->assertFalse( current_user_can( 'unfiltered_html' ) );
+		$out = $this->clean( '<script src="https://cdn.forms.example.com/h.js"></script><script>steal()</script>' . self::FORM );
+		$this->assertStringNotContainsString( '<script', $out );
+		$this->assertStringNotContainsString( 'steal', $out );
 	}
 
 	public function test_event_handlers_are_still_stripped() {

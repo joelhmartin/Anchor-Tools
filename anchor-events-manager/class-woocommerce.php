@@ -1253,6 +1253,14 @@ class WooCommerce {
         // WooCommerce treats a draft product as purchasable, sailed past it
         // entirely. The event-level answer is now taken once, up front, from
         // the same authority the storefront rendered from, and it says why.
+        // An event switched to an external signup form keeps its synced product
+        // and tiers; the public nonce must not still sell it. (Not folded into
+        // bookability(): the schema Offer and the external render read that
+        // for external events and rely on it staying open.)
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            \wp_send_json_error( [ 'messages' => [ \__( 'This event takes sign-ups on an external form, so it cannot be added to the cart.', 'anchor-schema' ) ] ] );
+        }
+
         $event_state = $this->module->bookability( $event_id );
         if ( ! $this->module->is_bookable( $event_state ) ) {
             \wp_send_json_error( [ 'messages' => [ $this->bookability_message( $event_state, '', $event_id ) ] ] );
@@ -1468,6 +1476,12 @@ class WooCommerce {
             if ( $parent_id > 0 && \get_post_status( $parent_id ) !== 'publish' ) {
                 return false;
             }
+        }
+
+        // A leftover product of an event now signing up externally is not for
+        // sale, on any purchase path (cart, checkout, permalink).
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            return false;
         }
 
         // WOO-D2: one question, one authority. This used to re-implement the

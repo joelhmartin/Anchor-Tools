@@ -56,4 +56,16 @@ class Test_External_Signup_Js extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'export ', $shared );
 		$this->assertStringNotContainsString( 'import ', $shared );
 	}
+	public function test_wizard_validation_skips_fields_in_hidden_containers() {
+		$node = trim( (string) shell_exec( 'command -v node 2>/dev/null' ) );
+		if ( $node === '' ) {
+			$this->markTestSkipped( 'node is not installed.' );
+		}
+		$root = dirname( __DIR__ );
+		$out  = (string) shell_exec( escapeshellarg( $node ) . ' ' . escapeshellarg( $root . '/tests/js/manager-wizard-harness.js' )
+			. ' ' . escapeshellarg( $root . '/anchor-events-manager/assets/manager-wizard.js' ) . ' 2>&1' );
+		$data = json_decode( $out, true );
+		$this->assertIsArray( $data, 'Harness output: ' . $out );
+		$this->assertTrue( $data['advanced'], 'An invalid field inside a display:none wrapper must not block Next.' );
+	}
 }

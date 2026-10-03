@@ -3566,7 +3566,7 @@ class Module {
      */
     public function render_event_role_panel( $event_id ) {
         $event_id = (int) $event_id;
-        if ( $event_id <= 0 || ! $this->entitlements || ! Roster::current_user_can_manage() ) {
+        if ( $event_id <= 0 || ! $this->entitlements || ! Roster::current_user_can_manage() || $this->uses_external_signup( $event_id ) ) {
             return '';
         }
         if ( ! $this->entitlements->enabled( $event_id ) ) {
@@ -9261,18 +9261,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $output .= '<strong>' . esc_html__( 'Waitlist', 'anchor-schema' ) . ':</strong> ' . esc_html( $waitlist ) . ' &middot; ';
         }
         $output .= '<a href="' . esc_url( $edit_url ) . '">' . esc_html__( 'Edit', 'anchor-schema' ) . '</a> &middot; ';
-        if ( Roster::current_user_can_manage() ) {
+        $external = $this->uses_external_signup( $event->ID );
+        if ( ! $external && Roster::current_user_can_manage() ) {
             $roster_url = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event->ID ], $base_url );
             $output .= '<a href="' . esc_url( $roster_url ) . '">' . esc_html__( 'Attendees', 'anchor-schema' ) . '</a> &middot; ';
         }
         // REG-D21 — gated with the Attendees link above it: same handler, same cap.
-        if ( Roster::current_user_can_manage() ) {
+        if ( ! $external && Roster::current_user_can_manage() ) {
             $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a> &middot; ';
         }
         $output .= '<a class="anchor-event-admin-delete" href="' . esc_url( $delete_url ) . '" data-confirm="' . esc_attr__( 'Move this event to trash?', 'anchor-schema' ) . '">' . esc_html__( 'Delete', 'anchor-schema' ) . '</a>';
         $output .= '</p>';
 
-        if ( empty( $registrations ) ) {
+        if ( $external ) {
+            $output .= '<p class="anchor-event-admin-empty">' . esc_html__( 'Sign-ups for this event happen on an external form.', 'anchor-schema' ) . '</p>';
+        } elseif ( empty( $registrations ) ) {
             $output .= '<p class="anchor-event-admin-empty">' . esc_html__( 'No registrants yet.', 'anchor-schema' ) . '</p>';
         } else {
             $output .= '<table class="anchor-event-admin-table"><thead><tr>';
@@ -11726,7 +11729,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     public function event_row_actions( $actions, $post ) {
         if ( $post instanceof \WP_Post && $post->post_type === self::CPT
-            && $this->roster && Roster::current_user_can_manage() ) {
+            && $this->roster && Roster::current_user_can_manage()
+            && ! $this->uses_external_signup( $post->ID ) ) {
             $url = $this->roster->roster_url( $post->ID );
             $actions['anchor_roster'] = '<a href="' . \esc_url( $url ) . '">'
                 . \esc_html__( 'Roster', 'anchor-schema' ) . '</a>';
@@ -14622,6 +14626,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function render_registrant_counts( $event_id ) {
+        if ( $this->uses_external_signup( (int) $event_id ) ) {
+            return ' <span class="anchor-event-admin-count anchor-event-admin-count--external">' . esc_html__( 'External signup form', 'anchor-schema' ) . '</span>';
+        }
         $c   = $this->registrant_counts( $event_id );
         $out = ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
             \_n( '%d registrant', '%d registrants', $c['active'], 'anchor-schema' ),

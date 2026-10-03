@@ -68,4 +68,16 @@ class Test_Agreements_Customer_Views extends WP_UnitTestCase {
 		$items = CustomerViews::menu_item( [ 'dashboard' => 'D', 'customer-logout' => 'L' ] );
 		$this->assertSame( [ 'dashboard', 'signed-documents', 'customer-logout' ], array_keys( $items ) );
 	}
+
+	public function test_plain_text_email_does_not_html_escape_titles() {
+		$order = wc_create_order();
+		$sig   = $this->signed( $order->get_id() );
+		global $wpdb;
+		$wpdb->query( $wpdb->prepare( 'UPDATE ' . \Anchor\Agreements\Database\Migrations::table( 'versions' ) . ' SET title = %s WHERE id = %d', 'Terms & Conditions', $sig['version_id'] ) );
+		ob_start();
+		CustomerViews::email_block( $order, false, true );
+		$out = ob_get_clean();
+		$this->assertStringContainsString( 'Terms & Conditions:', $out );
+		$this->assertStringNotContainsString( '&amp;', $out );
+	}
 }

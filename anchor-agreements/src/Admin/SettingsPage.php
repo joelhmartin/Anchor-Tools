@@ -13,6 +13,8 @@ final class SettingsPage {
 	public function __construct() {
 		\add_action( 'admin_menu', [ $this, 'menu' ] );
 		\add_action( 'admin_init', [ $this, 'register' ] );
+		// options.php otherwise demands manage_options, so a shop manager could open this page but not save it.
+		\add_filter( 'option_page_capability_anchor_agreements', static fn() => 'manage_woocommerce' );
 	}
 
 	public function menu(): void {

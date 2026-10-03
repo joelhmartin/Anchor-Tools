@@ -129,4 +129,9 @@ class Test_Agreements_Admin extends WP_UnitTestCase {
 		anchor_tools_agreements_maybe_clear_cleanup( [ 'modules' => [ 'agreements' => true ] ], [ 'modules' => [] ] );
 		$this->assertFalse( wp_next_scheduled( Cleanup::HOOK ) );
 	}
+
+	public function test_settings_save_capability_matches_page_capability() {
+		new \Anchor\Agreements\Admin\SettingsPage();
+		$this->assertSame( 'manage_woocommerce', apply_filters( 'option_page_capability_anchor_agreements', 'manage_options' ) );
+	}
 }

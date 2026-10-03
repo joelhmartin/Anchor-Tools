@@ -35,7 +35,7 @@ final class CustomerViews {
 		if ( $plain_text ) {
 			echo "\n" . \esc_html__( 'Your signed agreements:', 'anchor-schema' ) . "\n";
 			foreach ( $rows as $r ) {
-				echo \esc_html( self::title_for( $r ) ) . ': ' . \esc_url_raw( SignedCopyPage::url( $r['token'] ) ) . "\n";
+				echo \wp_strip_all_tags( self::title_for( $r ) ) . ': ' . \esc_url_raw( SignedCopyPage::url( $r['token'] ) ) . "\n";
 			}
 			return;
 		}

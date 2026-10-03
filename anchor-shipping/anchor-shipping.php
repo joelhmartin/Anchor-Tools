@@ -57,6 +57,7 @@ class Module {
 		$this->carriers = new Carriers\CarrierRegistry();
 		if ( \is_admin() ) {
 			new Admin\SettingsPage( $this->carriers );
+			new Admin\ProductFields();
 		}
 	}
 }

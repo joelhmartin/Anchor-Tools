@@ -2859,6 +2859,11 @@ class Module {
             // "2.5 Day Course" is not computable from dates at all.
             'labels' => [ 'type' => 'array', 'show_in_rest' => false ],
             'registration_mode' => [ 'type' => 'string', 'show_in_rest' => false ],
+            // The wc|free choice an external-signup event goes back to when
+            // "Use external signup form" is unticked (spec 2026-10-01 §3: stored
+            // settings survive the external period). Written by the save path
+            // only; read by native_registration_mode().
+            'native_registration_mode' => [ 'type' => 'string', 'show_in_rest' => false ],
             'external_url' => [ 'type' => 'string', 'show_in_rest' => false ],
             // Third-party embed markup (spec §Task 1.1+1.2). Classic-metabox-only
             // (show_in_rest=false), but sanitize_callback still runs on every write
@@ -2968,6 +2973,7 @@ class Module {
             'sessions' => [],
             'labels' => [],
             'registration_mode' => 'free',
+            'native_registration_mode' => '',
             'external_url' => '',
             'external_embed' => '',
             'external_display_price' => '',
@@ -6260,6 +6266,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return array{
      *     type: string,
      *     registration_mode: string,
+     *     native_registration_mode: string,
      *     sessions: array,
      *     stream_embed: array,
      *     external_url: string,
@@ -6277,9 +6284,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // queuing a notice (and keeping the stored value) for anything refused.
         $stream_embed = $this->stream_embed_input( $src, (int) $post_id, $sessions );
 
+        // "Use external signup form" (spec 2026-10-01). When the checkbox was ON
+        // the form (its hidden marker posted), it is the answer: ticked means
+        // external, unticked means whatever the Registration select says. A
+        // form that never carried the checkbox keeps the old rule — the select
+        // alone, 'external' included — so no other save path can flip an
+        // external-signup event back to native by omission.
+        $posted_mode = \wp_unslash( $src['anchor_event_registration_mode'] ?? '' );
+        $native      = $this->sanitize_native_registration_mode( $posted_mode, (int) $post_id, $registration_mode_fallback );
+        if ( ! empty( $src['anchor_event_external_signup_present'] ) ) {
+            $mode = ! empty( $src['anchor_event_external_signup'] ) ? 'external' : $native;
+        } else {
+            $mode = $this->sanitize_registration_mode( $posted_mode, $registration_mode_fallback );
+        }
+
         return \wp_slash( [
             'type' => $this->sanitize_event_type( \wp_unslash( $src['anchor_event_type'] ?? '' ) ),
-            'registration_mode' => $this->sanitize_registration_mode( \wp_unslash( $src['anchor_event_registration_mode'] ?? '' ), $registration_mode_fallback ),
+            'registration_mode' => $mode,
+            'native_registration_mode' => $mode === 'external' ? $native : $mode,
             'sessions' => $sessions,
             'stream_embed' => $stream_embed,
             'required_roles' => $this->sanitize_role_slugs( \wp_unslash( $src['anchor_event_required_roles'] ?? [] ) ),
@@ -6399,6 +6421,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $value;
         }
         return in_array( $fallback, $valid, true ) ? $fallback : 'free';
+    }
+
+    /**
+     * A posted Registration select value as a NATIVE mode (wc|free). Anything
+     * else (nothing posted, a disabled option, an old form's 'external') falls
+     * back to what the event already resolves to.
+     *
+     * @param mixed  $raw
+     * @param int    $post_id
+     * @param string $fallback Pre-resolved registration_mode() of the event.
+     * @return string wc|free
+     */
+    private function sanitize_native_registration_mode( $raw, $post_id, $fallback ) {
+        $value = \sanitize_text_field( (string) $raw );
+        if ( in_array( $value, [ 'wc', 'free' ], true ) ) {
+            return $value;
+        }
+        if ( (int) $post_id > 0 ) {
+            return $this->native_registration_mode( (int) $post_id );
+        }
+        return in_array( $fallback, [ 'wc', 'free' ], true ) ? $fallback : 'free';
     }
 
     /**
@@ -12706,6 +12749,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $stored;
         }
         return $this->derive_registration_mode( $event_id );
+    }
+
+    /**
+     * The native mode (wc|free) this event uses when it is NOT taking sign-ups
+     * on an external form: its own mode for a native event, or the remembered
+     * choice for an external-signup one (free when nothing was remembered).
+     * Preselects the Registration select behind the checkbox.
+     *
+     * @param int $event_id
+     * @return string wc|free
+     */
+    public function native_registration_mode( $event_id ) {
+        $event_id = (int) $event_id;
+        $mode     = $this->registration_mode( $event_id );
+        if ( $mode !== 'external' ) {
+            return $mode;
+        }
+        $saved = (string) \get_post_meta( $event_id, $this->meta_key( 'native_registration_mode' ), true );
+        return in_array( $saved, [ 'wc', 'free' ], true ) ? $saved : 'free';
     }
 
     /**

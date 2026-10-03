@@ -197,6 +197,7 @@ class Occurrences {
         'reminder_offsets',
         'labels',
         'registration_mode',
+        'native_registration_mode',
         'external_url',
         'external_embed',
         'external_display_price',

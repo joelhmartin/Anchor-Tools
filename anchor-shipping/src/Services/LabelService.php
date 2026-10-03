@@ -38,6 +38,7 @@ final class LabelService {
 		if ( empty( $opts['additional'] ) && $this->is_labelled( $order ) ) {
 			throw new \LogicException( \__( 'This order already has a label. Void it first, or tick "additional package".', 'anchor-schema' ) );
 		}
+		$parcels    = array_values( $parcels );
 		$s          = Settings::all();
 		$carrier_id = (string) ( $opts['carrier'] ?? $s['default_carrier'] );
 		$service    = (string) ( $opts['service'] ?? $s['default_service'] );
@@ -58,7 +59,7 @@ final class LabelService {
 			new ShipmentRequest(
 				Settings::ship_from(),
 				$to,
-				array_values( $parcels ),
+				$parcels,
 				$service,
 				sprintf( 'Order %s', $order->get_order_number() ),
 				$declared,
@@ -93,7 +94,7 @@ final class LabelService {
 					]
 				);
 			}
-		} catch ( \RuntimeException $e ) {
+		} catch ( \Throwable $e ) {
 			$message = sprintf(
 				/* translators: 1: carrier, 2: carrier shipment id, 3: tracking numbers, 4: error */
 				\__( '%1$s label %2$s (tracking %3$s) was created but could not be saved: %4$s. Void it with the carrier or record it manually.', 'anchor-schema' ),
@@ -102,7 +103,8 @@ final class LabelService {
 				implode( ', ', array_map( static fn( $p ) => $p->tracking_number, $result->packages ) ),
 				$e->getMessage()
 			);
-			$order->add_order_note( $message );
+			// Flags the order (and adds the note) so the paid-order job never buys a second label.
+			$this->mark_needs_attention( $order, $message );
 			throw new \RuntimeException( $message, 0, $e );
 		}
 

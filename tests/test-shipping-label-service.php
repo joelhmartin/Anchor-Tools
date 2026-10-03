@@ -67,6 +67,9 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 	}
 
 	public function test_save_failure_after_the_label_exists_notes_the_tracking_number_and_rethrows() {
+		if ( function_exists( 'posix_geteuid' ) && 0 === posix_geteuid() ) {
+			$this->markTestSkipped( 'chmod-based failure cannot be forced as root.' );
+		}
 		$this->configure_ups();
 		$order = $this->make_order( [], 'processing' );
 		$dir   = sys_get_temp_dir() . '/anchor-shipping-ro-' . wp_generate_password( 8, false );
@@ -92,6 +95,7 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$notes = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
 		$this->assertStringContainsString( '1ZK877V90300000001', $notes );
 		$this->assertStringContainsString( 'could not be saved', $notes );
+		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ) );
 	}
 
 	public function test_void_marks_every_package_of_the_shipment_and_is_idempotent() {

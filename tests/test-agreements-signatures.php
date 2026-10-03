@@ -62,4 +62,14 @@ class Test_Agreements_Signatures extends WP_UnitTestCase {
 		$this->assertSame( 1, $res['total'] );
 		$this->assertArrayNotHasKey( 'image', $res['rows'][0] );
 	}
+	public function test_for_user_never_matches_by_email() {
+		$repo  = new SignatureRepository();
+		$guest = $repo->insert( $this->data( [ 'user_id' => null, 'signer_email' => 'p@example.com' ] ) );
+		$own   = $repo->insert( $this->data( [ 'user_id' => 9, 'signer_email' => 'other@example.com' ] ) );
+		$repo->attach( $guest, 1 );
+		$repo->attach( $own, 2 );
+		// User 9 registered with the guest's address p@example.com: still only their own row.
+		$this->assertSame( [ $own ], array_column( $repo->for_user( 9 ), 'id' ) );
+		$this->assertSame( [], $repo->for_user( 0 ) );
+	}
 }

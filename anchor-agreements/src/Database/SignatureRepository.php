@@ -63,11 +63,15 @@ final class SignatureRepository {
 		return array_map( [ self::class, 'shape' ], $rows ?: [] );
 	}
 
-	public function for_signer( int $user_id, string $email ): array {
+	/** Attached signatures owned by this account. Never matched by email: an address is not proof of identity. */
+	public function for_user( int $user_id ): array {
 		global $wpdb;
+		if ( $user_id <= 0 ) {
+			return [];
+		}
 		$rows = $wpdb->get_results( $wpdb->prepare(
-			'SELECT ' . self::LIST_COLS . " FROM {$this->t()} WHERE order_id IS NOT NULL AND (user_id = %d OR (signer_email <> '' AND signer_email = %s)) ORDER BY signed_at DESC",
-			$user_id, $email
+			'SELECT ' . self::LIST_COLS . " FROM {$this->t()} WHERE order_id IS NOT NULL AND user_id = %d ORDER BY signed_at DESC",
+			$user_id
 		), ARRAY_A );
 		return array_map( [ self::class, 'shape' ], $rows ?: [] );
 	}

@@ -80,4 +80,14 @@ class Test_Agreements_Customer_Views extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Terms & Conditions:', $out );
 		$this->assertStringNotContainsString( '&amp;', $out );
 	}
+
+	public function test_plain_text_email_decodes_stored_entities() {
+		$order = wc_create_order();
+		$sig   = $this->signed( $order->get_id() );
+		global $wpdb;
+		$wpdb->query( $wpdb->prepare( 'UPDATE ' . \Anchor\Agreements\Database\Migrations::table( 'versions' ) . ' SET title = %s WHERE id = %d', 'Policy &#8211; Rock &amp; Roll', $sig['version_id'] ) );
+		ob_start();
+		CustomerViews::email_block( $order, false, true );
+		$this->assertStringContainsString( "Policy \u{2013} Rock & Roll:", ob_get_clean() );
+	}
 }

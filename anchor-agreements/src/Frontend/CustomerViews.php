@@ -35,7 +35,7 @@ final class CustomerViews {
 		if ( $plain_text ) {
 			echo "\n" . \esc_html__( 'Your signed agreements:', 'anchor-schema' ) . "\n";
 			foreach ( $rows as $r ) {
-				echo \wp_strip_all_tags( self::title_for( $r ) ) . ': ' . \esc_url_raw( SignedCopyPage::url( $r['token'] ) ) . "\n";
+				echo html_entity_decode( \wp_strip_all_tags( self::title_for( $r ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) . ': ' . \esc_url_raw( SignedCopyPage::url( $r['token'] ) ) . "\n";
 			}
 			return;
 		}
@@ -71,7 +71,7 @@ final class CustomerViews {
 
 	private static function current_rows(): array {
 		$user = \wp_get_current_user();
-		return $user->ID ? ( new SignatureRepository() )->for_signer( $user->ID, (string) $user->user_email ) : [];
+		return $user->ID ? ( new SignatureRepository() )->for_user( (int) $user->ID ) : [];
 	}
 
 	public static function shortcode(): string {

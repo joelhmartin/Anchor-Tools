@@ -2687,12 +2687,12 @@ class Module {
      * value through an allowlisted wp_kses() so only third-party-embed-shaped
      * markup survives.
      *
-     * `script` is deliberately absent from the default allowlist — wp_kses()
-     * strips any tag not in the allowed set entirely (open tag, body, and
-     * close tag), so both inline `<script>alert(1)</script>` and loader tags
-     * like `<script src="...widget.js" async>` are removed cleanly with no
-     * extra regex needed. Sites that genuinely need script-based embeds can
-     * opt back in via the `anchor_events_embed_allowed_html` filter below.
+     * `script` and `style` are deliberately absent from the default allowlist.
+     * wp_kses() strips a disallowed tag but KEEPS the text between the tags, so
+     * script/style elements are removed whole before wp_kses() runs (otherwise
+     * an inline handler body would print as visible text). Sites that genuinely
+     * need script-based embeds can opt back in via the
+     * `anchor_events_embed_allowed_html` filter below.
      *
      * @param mixed  $meta_value
      * @param string $meta_key
@@ -2700,7 +2700,15 @@ class Module {
      * @return string
      */
     public function sanitize_external_embed( $meta_value, $meta_key, $object_type ) {
-        return (string) \wp_kses( (string) $meta_value, $this->get_embed_allowed_html() );
+        $allowed = $this->get_embed_allowed_html();
+        $html    = (string) $meta_value;
+        // Drop the whole element first — unless a site opted the tag back in.
+        foreach ( [ 'script', 'style' ] as $tag ) {
+            if ( ! isset( $allowed[ $tag ] ) ) {
+                $html = (string) \preg_replace( '@<' . $tag . '\b[^>]*>.*?</' . $tag . '\s*>@si', '', $html );
+            }
+        }
+        return (string) \wp_kses( $html, $allowed );
     }
 
     /**
@@ -2712,6 +2720,10 @@ class Module {
     private function get_embed_allowed_html() {
         $default_allowed = [
             'iframe' => [
+                'id' => true,
+                'class' => true,
+                'scrolling' => true,
+                'allowtransparency' => true,
                 'src' => true,
                 'width' => true,
                 'height' => true,

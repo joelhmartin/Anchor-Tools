@@ -53,4 +53,19 @@ class Test_Shipping_Packer extends Anchor_Shipping_TestCase {
 		$this->assertTrue( ( new Packer() )->pack_order( $order )->ok() );
 		$this->assertSame( 110.0, ( new Packer() )->shippable_subtotal( $order ) );
 	}
+
+	public function test_subtotal_is_pre_discount_so_a_coupon_cannot_lower_the_declared_value() {
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'auto', 'threshold' => 100 ] ] );
+		$order  = $this->make_order( [ $this->make_product( [ 'price' => 500, 'weight' => 0.5, 'box' => 'small' ] ) ] );
+		$coupon = new WC_Coupon();
+		$coupon->set_code( 'save200' );
+		$coupon->set_discount_type( 'fixed_cart' );
+		$coupon->set_amount( '200' );
+		$coupon->save();
+		$order->apply_coupon( $coupon );
+		$order->calculate_totals();
+		$order->save();
+		$this->assertSame( 500.0, ( new Packer() )->shippable_subtotal( $order ) );
+		$this->assertSame( 500.0, \Anchor\Shipping\Services\Protection::for_order( $order, ( new Packer() )->shippable_subtotal( $order ) )['declared_value'] );
+	}
 }

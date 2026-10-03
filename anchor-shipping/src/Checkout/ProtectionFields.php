@@ -28,6 +28,7 @@ final class ProtectionFields {
 		return Protection::offered( $option ) && \WC()->session && 'yes' === \WC()->session->get( self::OPTIONS[ $option ] );
 	}
 
+	/** Pre-discount value of shippable lines (line_subtotal). Must agree with Packer::shippable_subtotal() for the order. */
 	public function cart_shippable_subtotal( \WC_Cart $cart ): float {
 		$total = 0.0;
 		foreach ( $cart->get_cart() as $line ) {

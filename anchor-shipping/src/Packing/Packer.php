@@ -18,20 +18,25 @@ final class Packer {
 	/** @param array|null $boxes null = read Settings::boxes() at pack time, so settings saved later in the request apply */
 	public function __construct( private ?array $boxes = null ) {}
 
-	/** @return array<int, array{product:\WC_Product, qty:int, total:float}> */
+	/** @return array<int, array{product:\WC_Product, qty:int, value:float}> */
 	public function shippable_items( \WC_Order $order ): array {
 		$out = [];
 		foreach ( $order->get_items() as $item ) {
 			$product = $item instanceof \WC_Order_Item_Product ? $item->get_product() : null;
 			if ( $product && $product->needs_shipping() ) {
-				$out[] = [ 'product' => $product, 'qty' => (int) $item->get_quantity(), 'total' => (float) $item->get_total() ];
+				$out[] = [ 'product' => $product, 'qty' => (int) $item->get_quantity(), 'value' => (float) $item->get_subtotal() ];
 			}
 		}
 		return $out;
 	}
 
+	/**
+	 * Pre-discount value of the lines that need shipping (item subtotal). Must agree with
+	 * ProtectionFields::cart_shippable_subtotal(), which uses the cart's line_subtotal:
+	 * the checkout fee and the label's declared value are computed from the same number.
+	 */
 	public function shippable_subtotal( \WC_Order $order ): float {
-		return round( array_sum( array_column( $this->shippable_items( $order ), 'total' ) ), 2 );
+		return round( array_sum( array_column( $this->shippable_items( $order ), 'value' ) ), 2 );
 	}
 
 	public function pack_order( \WC_Order $order ): PackResult {

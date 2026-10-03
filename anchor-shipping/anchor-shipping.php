@@ -68,6 +68,7 @@ class Module {
 		$this->labels   = new Services\LabelService( $this->carriers, $this->shipments, $this->store, $this->packer );
 		$this->paid_orders = new Services\PaidOrderHandler( $this->labels, $this->packer );
 		new Services\VoidOnCancel( $this->labels, $this->shipments );
+		new Checkout\ProtectionFields();
 		\add_filter( 'woocommerce_email_classes', [ Emails\Registry::class, 'register' ] );
 		\add_filter( 'woocommerce_email_actions', [ Emails\Registry::class, 'actions' ] );
 		if ( \is_admin() ) {

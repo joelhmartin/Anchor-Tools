@@ -10,6 +10,7 @@ class Test_Agreements_Checkout extends WP_UnitTestCase {
 
 	public function set_up(): void {
 		parent::set_up();
+		add_filter( 'woocommerce_set_cookie_enabled', '__return_false' );
 		WC()->session = new WC_Session_Handler();
 		WC()->session->init();
 		WC()->session->set_customer_session_cookie( true );

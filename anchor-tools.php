@@ -429,3 +429,26 @@ if ( ! function_exists( 'anchor_tools_announcements_clear_tick' ) ) {
         26
     );
 }
+
+/**
+ * Agreements: unschedule the abandoned-signature cleanup when the module is switched off
+ * (literal hook name, so no module code is needed while it is off) and on deactivation.
+ */
+if ( ! function_exists( 'anchor_tools_agreements_clear_cleanup' ) ) {
+    function anchor_tools_agreements_clear_cleanup() {
+        wp_clear_scheduled_hook( 'anchor_agreements_cleanup' );
+    }
+
+    /**
+     * @param mixed $old_value Previous settings.
+     * @param mixed $value     New settings.
+     */
+    function anchor_tools_agreements_maybe_clear_cleanup( $old_value, $value ) {
+        if ( ! empty( $old_value['modules']['agreements'] ) && empty( $value['modules']['agreements'] ) ) {
+            anchor_tools_agreements_clear_cleanup();
+        }
+    }
+
+    add_action( 'update_option_' . Anchor_Schema_Admin::OPTION_KEY, 'anchor_tools_agreements_maybe_clear_cleanup', 10, 2 );
+    register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, 'anchor_tools_agreements_clear_cleanup' );
+}

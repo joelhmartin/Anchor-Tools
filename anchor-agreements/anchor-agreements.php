@@ -35,11 +35,17 @@ class Module {
 		\add_action( 'init', [ Content\AgreementPostType::class, 'register' ] );
 		if ( \is_admin() ) {
 			new Admin\ProductFields();
+			new Admin\ProductListFlag();
+			new Admin\OrderMetabox();
+			new Admin\SignaturesPage();
+			new Admin\SettingsPage();
 		}
 		new Frontend\SigningEndpoint();
 		new Frontend\Checkout();
 		new Frontend\SignedCopyPage();
 		new Frontend\CustomerViews();
+		new Services\Notifier();
+		new Services\Cleanup();
 		// Later tasks register their services here (see each task's "wire it" step).
 	}
 }

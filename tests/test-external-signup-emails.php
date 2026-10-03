@@ -82,6 +82,23 @@ class Test_External_Signup_Emails extends Anchor_Events_TestCase {
 		$this->assertEmpty( get_post_meta( $seat, Registrations::META_REMINDERS_SENT, true ), 'No markers: unticking the box later must still let the reminder go.' );
 	}
 
+	/** Control: the same setup on a native event does reach the seat, so the test above is not vacuous. */
+	public function test_reminder_sweep_reaches_the_seat_on_a_native_event() {
+		$start = time() + 12 * HOUR_IN_SECONDS;
+		$free  = $this->make_event( [
+			'registration_mode' => 'free',
+			'timezone'          => 'UTC',
+			'start_date'        => gmdate( 'Y-m-d', $start ),
+			'start_time'        => gmdate( 'H:i', $start ),
+			'start_ts'          => $start,
+		] );
+		$this->make_seat( $free, [ 'email' => 'native@example.org' ] );
+
+		$this->module()->run_reminder_sweep();
+
+		$this->assertCount( 1, $this->sent );
+	}
+
 	public function test_reminder_retry_path_refuses() {
 		$ext  = $this->external_event();
 		$seat = $this->make_seat( $ext, [ 'email' => 'legacy@example.org' ] );

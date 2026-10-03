@@ -3798,7 +3798,7 @@ class WooCommerce {
                 if ( ! $result->is_skipped() ) {
                     $evaluated['customer_email'] = true;
                 }
-                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
+                if ( $result->is_sent() || $this->is_settled_skip( $result ) ) {
                     // Sent, or the organizer switched THIS event's confirmation
                     // off — either way this event is settled, not failed, and
                     // stamping it stops the next reconcile re-deciding it
@@ -3840,7 +3840,7 @@ class WooCommerce {
 
             if ( $notify_organizer && $has_confirm && empty( $sent[ $gate_key ] ) ) {
                 $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed', $review_flags );
-                if ( $notice->is_sent() || ( $notice->is_skipped() && 'disabled' === $notice->reason() ) ) {
+                if ( $notice->is_sent() || $this->is_settled_skip( $notice ) ) {
                     // Same rule as the buyer confirmation: a type the organizer
                     // switched off is settled, not failed. This gate is already
                     // per event, so there is nothing to narrow.
@@ -3951,6 +3951,15 @@ class WooCommerce {
     }
 
     /**
+     * A skip that settles the event rather than failing it: the organizer
+     * switched the email off, or the event takes sign-ups on an external form
+     * and so sends no order mail at all. Either way stamp the gate and move on.
+     */
+    private function is_settled_skip( Outcome $outcome ) {
+        return $outcome->is_skipped() && \in_array( $outcome->reason(), [ 'disabled', 'external_signup' ], true );
+    }
+
+    /**
      * Build + send the buyer confirmation for ONE event's active seats on this
      * order. Also used by the manual "Resend confirmation" button, which loops
      * this over every event the order currently has active seats for
@@ -3979,6 +3988,9 @@ class WooCommerce {
      * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
      */
     private function send_customer_confirmation( \WC_Order $order, array $settings, $event_id = 0, ?array &$review_flags = null ) {
+        if ( $this->module->uses_external_signup( (int) $event_id ) ) {
+            return Outcome::skipped( 'external_signup' ); // sign-ups happen on an external form
+        }
         $to = (string) $order->get_billing_email();
         if ( $to === '' ) {
             return Outcome::failed( 'no_address' );
@@ -4114,6 +4126,9 @@ class WooCommerce {
      */
     private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind, ?array &$review_flags = null ) {
         $event_id = (int) $event_id;
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            return Outcome::skipped( 'external_signup' );
+        }
         // The event can switch this email type off. Checked before anything is
         // built, so a disabled type resolves no template and never fires the
         // anchor_events_registration_email_html filter — send_customer_confirmation()
@@ -4428,7 +4443,7 @@ class WooCommerce {
             foreach ( $by_event as $eid => $seats ) {
                 $eid    = (int) $eid;
                 $result = $this->send_customer_confirmation( $order, $settings, $eid );
-                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
+                if ( $result->is_sent() || $this->is_settled_skip( $result ) ) {
                     // Sent, or the organizer switched THIS event's confirmation
                     // off — either way this event is settled (audit REG-D6).
                     $sent[ 'customer:' . $eid ] = \time();

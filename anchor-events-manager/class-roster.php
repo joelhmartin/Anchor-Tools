@@ -1136,7 +1136,10 @@ class Roster {
             // Nothing was sent and nothing went wrong. The error channel would
             // send the operator to an error log with nothing in it, so this
             // goes to the ordinary notice channel and says which it is.
-            $this->redirect( $event_id, 'success', \__( 'Roster not sent — the roster email is switched off for this event.', 'anchor-schema' ) );
+            $message = $result->reason() === 'external_signup'
+                ? \__( 'Roster not sent — this event takes sign-ups on an external form, so it has no roster.', 'anchor-schema' )
+                : \__( 'Roster not sent — the roster email is switched off for this event.', 'anchor-schema' );
+            $this->redirect( $event_id, 'success', $message );
         } else {
             $this->redirect( $event_id, 'error', \__( 'Roster could not be sent — check the error log.', 'anchor-schema' ) );
         }

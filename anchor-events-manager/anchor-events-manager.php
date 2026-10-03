@@ -1558,7 +1558,7 @@ class Module {
             return Outcome::skipped( 'disabled' );
         }
         if ( ! $this->roster_capable( $event_id ) ) {
-            return Outcome::skipped( 'no_roster' ); // registrations happen on an external form
+            return Outcome::skipped( 'external_signup' ); // sign-ups happen on an external form
         }
         $event_id = (int) $event_id;
         if ( \get_post_type( $event_id ) !== self::CPT ) {
@@ -1660,7 +1660,7 @@ class Module {
      *
      * Return shape:
      * [
-     *   'notice' => ''|'invalid'|'group_parent'|'disabled'|'no_start',
+     *   'notice' => ''|'invalid'|'external_signup'|'group_parent'|'disabled'|'no_start',
      *   'rows'   => [
      *     [
      *       'type'         => 'reminder'|'roster',
@@ -1696,6 +1696,11 @@ class Module {
             return $result;
         }
 
+        if ( $this->uses_external_signup( $event_id ) ) {
+            $result['notice'] = 'external_signup';
+            return $result;
+        }
+
         if ( $this->occurrences->is_group_parent( $event_id ) ) {
             $result['notice'] = 'group_parent';
             return $result;
@@ -1703,7 +1708,7 @@ class Module {
 
         $settings     = $this->get_settings();
         $reminders_on = ! empty( $settings['reminder_enabled'] );
-        $roster_on    = ! empty( $settings['organizer_roster_email'] ) && $this->roster_capable( $event_id );
+        $roster_on    = ! empty( $settings['organizer_roster_email'] );
 
         if ( ! $reminders_on && ! $roster_on ) {
             $result['notice'] = 'disabled';
@@ -5175,6 +5180,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $schedule = $this->compute_email_schedule( (int) $post->ID );
         $notices  = [
             'invalid'      => __( 'This event could not be loaded.', 'anchor-schema' ),
+            'external_signup' => __( 'This event takes sign-ups on an external form, so nothing is scheduled here: no reminders and no roster digest.', 'anchor-schema' ),
             'group_parent' => __( 'Sends are scheduled per date — see each date\'s event for its own reminder/roster schedule.', 'anchor-schema' ),
             'disabled'     => __( 'Reminders and the roster digest are both off. Enable them in Settings › Anchor Tools › Events to schedule sends for this event.', 'anchor-schema' ),
             'no_start'     => __( 'Set a start date/time for this event to see its send schedule.', 'anchor-schema' ),
@@ -12691,25 +12697,36 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $this->occurrences && $this->occurrences->is_group_parent( $event_id ) ) {
             return false;
         }
-        return \in_array( $this->registration_mode( $event_id ), [ 'wc', 'free' ], true );
+        return ! $this->uses_external_signup( $event_id );
     }
 
     /**
-     * Does this event keep a roster at all?
+     * Does this event take its sign-ups on someone else's form?
      *
-     * A roster is the list of people who registered THROUGH this plugin, so an
-     * event whose sign-ups happen on someone else's form has none: no roster
-     * screen, no console roster view, no organizer roster digest (scheduled or
-     * sent by hand). External-registration mode answers no on its own; the
-     * `anchor_events_roster_capable` filter lets a site say the same for other
-     * events — e.g. a theme that embeds a third-party form on a "free" event.
+     * The ONE answer to the "Use external signup form" checkbox, which is
+     * stored as registration_mode = external (spec 2026-10-01). Everything
+     * that only makes sense for registrations taken THROUGH this plugin —
+     * the roster and its digest, the lifecycle emails, hand-added seats, the
+     * access role, the livestream room, the native form and storefront —
+     * asks this, directly or through roster_capable()/stream_capable().
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function uses_external_signup( $event_id ) {
+        return $this->registration_mode( (int) $event_id ) === 'external';
+    }
+
+    /**
+     * Does this event keep a roster at all? A roster is the list of people
+     * who registered through this plugin, so an external-signup event has
+     * none: no roster screen, console panel, list entry or digest.
      *
      * @param int $event_id
      * @return bool
      */
     public function roster_capable( $event_id ) {
-        $event_id = (int) $event_id;
-        return (bool) \apply_filters( 'anchor_events_roster_capable', $this->registration_mode( $event_id ) !== 'external', $event_id );
+        return ! $this->uses_external_signup( (int) $event_id );
     }
 
     /**

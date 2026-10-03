@@ -38,6 +38,8 @@ class Module {
 		}
 		new Frontend\SigningEndpoint();
 		new Frontend\Checkout();
+		new Frontend\SignedCopyPage();
+		new Frontend\CustomerViews();
 		// Later tasks register their services here (see each task's "wire it" step).
 	}
 }

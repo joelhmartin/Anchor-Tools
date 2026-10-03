@@ -62,7 +62,7 @@ class Test_Shipping_Checkout_Protection extends Anchor_Shipping_TestCase {
 		$this->assertStringNotContainsString( 'name="anchor_shipping_insure"', $html );
 	}
 
-	public function test_order_records_the_choice_and_clears_the_session() {
+	public function test_order_records_the_choice_and_session_clears_when_the_cart_empties() {
 		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '1.25' ] ] );
 		WC()->cart->add_to_cart( $this->make_product( [ 'price' => 450, 'weight' => 0.5 ] ) );
 		WC()->session->set( 'anchor_shipping_insure', 'yes' );
@@ -70,6 +70,8 @@ class Test_Shipping_Checkout_Protection extends Anchor_Shipping_TestCase {
 		( new ProtectionFields() )->save_to_order( $order );
 		$this->assertSame( 'yes', $order->get_meta( Protection::META_INSURE ) );
 		$this->assertSame( '', $order->get_meta( Protection::META_SIGNATURE ) );
+		$this->assertSame( 'yes', WC()->session->get( 'anchor_shipping_insure' ), 'a declined payment must keep the choice' );
+		WC()->cart->empty_cart(); // what Woo does after a successful order
 		$this->assertSame( '', WC()->session->get( 'anchor_shipping_insure' ) );
 		$this->assertSame( '', WC()->session->get( 'anchor_shipping_signature' ) );
 	}

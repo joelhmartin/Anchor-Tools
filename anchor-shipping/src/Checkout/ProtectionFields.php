@@ -21,6 +21,7 @@ final class ProtectionFields {
 		\add_action( 'woocommerce_checkout_update_order_review', [ $this, 'capture' ] );
 		\add_action( 'woocommerce_cart_calculate_fees', [ $this, 'apply_fees' ] );
 		\add_action( 'woocommerce_checkout_create_order', [ $this, 'save_to_order' ] );
+		\add_action( 'woocommerce_cart_emptied', [ $this, 'clear_choices' ] );
 	}
 
 	public function chosen( string $option ): bool {
@@ -99,7 +100,10 @@ final class ProtectionFields {
 		$sign     = $shipping && $this->chosen( 'signature' ) && Protection::signature_fee() > 0;
 		$order->update_meta_data( Protection::META_INSURE, $insure ? 'yes' : '' );
 		$order->update_meta_data( Protection::META_SIGNATURE, $sign ? 'yes' : '' );
-		// Don't pre-tick paid options on the customer's next checkout.
+	}
+
+	/** Woo empties the cart only after a successful order (or when the shopper does), so a declined payment keeps the choice. */
+	public function clear_choices(): void {
 		if ( \WC()->session ) {
 			foreach ( self::OPTIONS as $key ) {
 				\WC()->session->set( $key, '' );

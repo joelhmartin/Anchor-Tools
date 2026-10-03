@@ -22,6 +22,8 @@ class Module {
 
 	public ShipmentRepository $shipments;
 
+	public Carriers\CarrierRegistry $carriers;
+
 	private static ?Module $instance = null;
 
 	public static function instance(): ?Module {
@@ -52,5 +54,6 @@ class Module {
 			return;
 		}
 		// Later tasks register their services below this line.
+		$this->carriers = new Carriers\CarrierRegistry();
 	}
 }

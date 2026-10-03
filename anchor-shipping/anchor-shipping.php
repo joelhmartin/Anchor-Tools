@@ -30,6 +30,8 @@ class Module {
 
 	public Services\LabelService $labels;
 
+	public Services\PaidOrderHandler $paid_orders;
+
 	private static ?Module $instance = null;
 
 	public static function instance(): ?Module {
@@ -64,6 +66,7 @@ class Module {
 		$this->store    = new Services\LabelStore();
 		$this->packer   = new Packing\Packer();
 		$this->labels   = new Services\LabelService( $this->carriers, $this->shipments, $this->store, $this->packer );
+		$this->paid_orders = new Services\PaidOrderHandler( $this->labels, $this->packer );
 		\add_filter( 'woocommerce_email_classes', [ Emails\Registry::class, 'register' ] );
 		\add_filter( 'woocommerce_email_actions', [ Emails\Registry::class, 'actions' ] );
 		if ( \is_admin() ) {

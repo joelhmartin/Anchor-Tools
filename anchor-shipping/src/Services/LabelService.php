@@ -28,8 +28,38 @@ final class LabelService {
 		private Packer $packer
 	) {}
 
+	public const UNRECORDED_META = '_anchor_shipping_unrecorded';
+
 	public function is_labelled( \WC_Order $order ): bool {
-		return [] !== $this->shipments->active_for_order( $order->get_id() );
+		return [] !== $this->shipments->active_for_order( $order->get_id() )
+			|| '' !== (string) $order->get_meta( self::UNRECORDED_META );
+	}
+
+	/** Refuse before spending money if the label could not be stored afterwards. */
+	private function preflight( array $settings ): void {
+		if ( 'ZPL' !== $settings['label_format'] && ! \function_exists( 'imagecreatefromstring' ) ) {
+			throw new CarrierError( 'setup', \__( 'The server is missing the GD image extension needed to make label PDFs.', 'anchor-schema' ) );
+		}
+		$dir = $this->store->dir();
+		if ( ! \wp_is_writable( $dir ) ) {
+			/* translators: %s: folder path */
+			throw new CarrierError( 'setup', sprintf( \__( 'The label folder is not writable: %s', 'anchor-schema' ), $dir ) );
+		}
+	}
+
+	/** The label was bought but not (fully) kept: tell a person on the problem channel, then stop. */
+	private function fail_after_billing( \WC_Order $order, string $carrier_label, string $shipment_id, string $numbers, \Throwable $e, bool $row_exists ): never {
+		$message = sprintf(
+			/* translators: 1: carrier, 2: carrier shipment id, 3: tracking numbers, 4: what was not kept, 5: error */
+			\__( '%1$s shipment %2$s (tracking %3$s) was created at %1$s but %4$s: %5$s. Void it from the order or at the carrier\'s website.', 'anchor-schema' ),
+			$carrier_label,
+			$shipment_id,
+			$numbers,
+			$row_exists ? \__( 'its label file could not be saved', 'anchor-schema' ) : \__( 'it could not be recorded', 'anchor-schema' ),
+			$e->getMessage()
+		);
+		$this->mark_needs_attention( $order, $message, 'problem' );
+		throw new LabelNotSaved( $message, 0, $e );
 	}
 
 	/**
@@ -48,6 +78,7 @@ final class LabelService {
 		if ( ! $carrier || ! $carrier->supports( 'labels' ) ) {
 			throw new CarrierError( 'unknown_carrier', \__( 'That carrier is not available for labels.', 'anchor-schema' ) );
 		}
+		$this->preflight( $s );
 		$to = Address::from_order_shipping( $order );
 		if ( ! $to->is_complete() ) {
 			throw new CarrierError( 'address', \__( 'The order is missing part of its shipping address.', 'anchor-schema' ) );
@@ -70,13 +101,15 @@ final class LabelService {
 			)
 		);
 
-		// The carrier label exists (and is billed) from here on: a local failure must not be silent.
-		$ids = [];
-		try {
-			foreach ( $result->packages as $i => $pkg ) {
-				$parcel = $parcels[ $i ] ?? end( $parcels );
-				$saved  = $this->store->save( $order->get_id(), $pkg );
-				$ids[]  = $this->shipments->insert(
+		// The carrier label exists (and is billed) from here on. Record the row FIRST so a
+		// failed file save still blocks a second purchase and can be voided from the panel.
+		$ids      = [];
+		$failures = [];
+		$numbers  = implode( ', ', array_map( static fn( $p ) => $p->tracking_number, $result->packages ) );
+		foreach ( $result->packages as $i => $pkg ) {
+			$parcel = $parcels[ $i ] ?? end( $parcels );
+			try {
+				$id = $this->shipments->insert(
 					[
 						'order_id'        => $order->get_id(),
 						'carrier'         => $carrier_id,
@@ -87,27 +120,30 @@ final class LabelService {
 						'currency'        => $result->currency,
 						'declared_value'  => count( $result->packages ) ? round( $declared / count( $result->packages ), 2 ) : 0,
 						'signature'       => $signature ? 1 : 0,
-						'label_path'      => $saved['path'],
-						'label_format'    => $saved['format'],
+						'label_path'      => '',
+						'label_format'    => '',
 						'box'             => $parcel->box_id,
 						'weight_kg'       => $parcel->weight_kg,
 						'dims_cm'         => $parcel->dims_label(),
 						'source'          => $source,
 					]
 				);
+			} catch ( \Throwable $e ) {
+				// No row: nothing else will stop a second purchase, so leave a marker on the order.
+				$order->update_meta_data( self::UNRECORDED_META, $result->shipment_id );
+				$order->save();
+				$this->fail_after_billing( $order, $carrier->label(), $result->shipment_id, $numbers, $e, false );
 			}
-		} catch ( \Throwable $e ) {
-			$message = sprintf(
-				/* translators: 1: carrier, 2: carrier shipment id, 3: tracking numbers, 4: error */
-				\__( '%1$s label %2$s (tracking %3$s) was created but could not be saved: %4$s. Void it with the carrier or record it manually.', 'anchor-schema' ),
-				$carrier->label(),
-				$result->shipment_id,
-				implode( ', ', array_map( static fn( $p ) => $p->tracking_number, $result->packages ) ),
-				$e->getMessage()
-			);
-			// Flags the order (and adds the note) so the paid-order job never buys a second label.
-			$this->mark_needs_attention( $order, $message );
-			throw new LabelNotSaved( $message, 0, $e );
+			$ids[] = $id;
+			try {
+				$saved = $this->store->save( $order->get_id(), $pkg );
+				$this->shipments->update( $id, [ 'label_path' => $saved['path'], 'label_format' => $saved['format'] ] );
+			} catch ( \Throwable $e ) {
+				$failures[] = $e->getMessage();
+			}
+		}
+		if ( $failures ) {
+			$this->fail_after_billing( $order, $carrier->label(), $result->shipment_id, $numbers, new \RuntimeException( implode( '; ', array_unique( $failures ) ) ), true );
 		}
 
 		$services = $carrier->services();
@@ -156,11 +192,19 @@ final class LabelService {
 		\do_action( 'anchor_shipping_label_voided', (int) $row['order_id'], $row['shipment_id'] );
 	}
 
-	public function mark_needs_attention( \WC_Order $order, string $reason ): void {
+	/**
+	 * Flag the order for a person. $kind 'ready' = "needs a label" (ReadyToShipEmail);
+	 * 'problem' = something went wrong, do not just retry (ProblemEmail).
+	 */
+	public function mark_needs_attention( \WC_Order $order, string $reason, string $kind = 'ready' ): void {
 		$order->update_meta_data( self::STATE_META, 'needs_attention' );
-		/* translators: %s: reason */
-		$order->add_order_note( sprintf( \__( 'Shipping label needed: %s', 'anchor-schema' ), $reason ) );
+		$order->add_order_note(
+			'' === $reason
+				? \__( 'Shipping label needed.', 'anchor-schema' )
+				/* translators: %s: reason */
+				: sprintf( \__( 'Shipping label needed: %s', 'anchor-schema' ), $reason )
+		);
 		$order->save();
-		\do_action( 'anchor_shipping_needs_attention', $order->get_id(), $reason );
+		\do_action( 'problem' === $kind ? 'anchor_shipping_problem' : 'anchor_shipping_needs_attention', $order->get_id(), $reason );
 	}
 }

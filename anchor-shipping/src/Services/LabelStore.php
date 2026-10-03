@@ -66,7 +66,7 @@ final class LabelStore {
 	 * portrait, crop to 2:3 from the top, and place it on one 4x6in page.
 	 */
 	public function gif_to_pdf( string $gif ): string {
-		$im = \imagecreatefromstring( $gif );
+		$im = @\imagecreatefromstring( $gif ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- bad bytes are reported below
 		if ( false === $im ) {
 			throw new \RuntimeException( 'The carrier returned a label image that could not be read.' );
 		}

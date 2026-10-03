@@ -23,7 +23,11 @@ class Test_Shipping_Void_On_Cancel extends Anchor_Shipping_TestCase {
 	public function test_refusal_to_void_asks_a_person() {
 		$order = $this->labelled_order();
 		$this->queue_response( 400, [ 'response' => [ 'errors' => [ [ 'code' => '190102', 'message' => 'No shipment found within the allowed void period' ] ] ] ] );
+		reset_phpmailer_instance();
 		$order->update_status( 'refunded' );
+		$problem = array_filter( tests_retrieve_phpmailer_instance()->mock_sent, static fn( $m ) => str_contains( $m['subject'], 'Shipping problem' ) );
+		$this->assertCount( 1, $problem, 'staff get the problem email, not "ready to ship"' );
+		$this->assertCount( 0, array_filter( tests_retrieve_phpmailer_instance()->mock_sent, static fn( $m ) => str_contains( $m['subject'], 'Ready to ship' ) ) );
 		$this->assertCount( 1, Module::instance()->shipments->active_for_order( $order->get_id() ) );
 		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( '_anchor_shipping_state' ) );
 		$notes = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );

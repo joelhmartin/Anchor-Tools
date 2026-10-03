@@ -30,7 +30,7 @@ final class VoidOnCancel {
 				$order = \wc_get_order( $order_id );
 				if ( $order ) {
 					/* translators: 1: tracking number, 2: carrier message */
-					$this->labels->mark_needs_attention( $order, sprintf( \__( 'Order was cancelled/refunded but label %1$s could not be voided: %2$s', 'anchor-schema' ), $row['tracking_number'], $e->getMessage() ) );
+					$this->labels->mark_needs_attention( $order, sprintf( \__( 'Order was cancelled/refunded but label %1$s could not be voided: %2$s', 'anchor-schema' ), $row['tracking_number'], $e->getMessage() ), 'problem' );
 				}
 			}
 		}

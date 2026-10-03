@@ -66,7 +66,7 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		}
 	}
 
-	public function test_save_failure_after_the_label_exists_notes_the_tracking_number_and_rethrows() {
+	public function test_unwritable_label_dir_is_refused_before_any_carrier_call() {
 		if ( function_exists( 'posix_geteuid' ) && 0 === posix_geteuid() ) {
 			$this->markTestSkipped( 'chmod-based failure cannot be forced as root.' );
 		}
@@ -78,24 +78,86 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		file_put_contents( $dir . '/index.php', 'x' );
 		chmod( $dir, 0555 );
 		$labels = new LabelService( Module::instance()->carriers, Module::instance()->shipments, new LabelStore( $dir ), Module::instance()->packer );
-
-		$this->queue_token();
-		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
 		try {
 			$labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
-			$this->fail( 'expected RuntimeException' );
-		} catch ( RuntimeException $e ) {
-			$this->assertStringContainsString( '1ZK877V90300000001', $e->getMessage() );
-			$this->assertStringContainsString( 'could not be saved', $e->getMessage() );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertSame( 'setup', $e->carrier_code );
+			$this->assertStringContainsString( 'not writable', $e->getMessage() );
 		} finally {
 			chmod( $dir, 0755 );
 			array_map( 'unlink', glob( $dir . '/{,.}*[!.]*', GLOB_BRACE ) ?: [] );
 			rmdir( $dir );
 		}
-		$notes = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
-		$this->assertStringContainsString( '1ZK877V90300000001', $notes );
-		$this->assertStringContainsString( 'could not be saved', $notes );
-		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ) );
+		$this->assertCount( 0, $this->requests, 'no carrier call, nothing billed' );
+	}
+
+	public function test_save_failure_after_billing_keeps_the_row_blocks_a_second_label_and_uses_the_problem_channel() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture_with_unreadable_label() );
+		reset_phpmailer_instance();
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+			$this->fail( 'expected LabelNotSaved' );
+		} catch ( \Anchor\Shipping\Domain\LabelNotSaved $e ) {
+			$this->assertStringContainsString( '1ZK877V90300000001', $e->getMessage() );
+			$this->assertStringContainsString( 'label file could not be saved', $e->getMessage() );
+		}
+		$rows = Module::instance()->shipments->for_order( $order->get_id() );
+		$this->assertCount( 1, $rows, 'the billed label stays on record' );
+		$this->assertSame( '', $rows[0]['label_path'] );
+		$this->assertSame( 'label_created', $rows[0]['status'] );
+		$order = wc_get_order( $order->get_id() );
+		$this->assertTrue( Module::instance()->labels->is_labelled( $order ) );
+		$this->assertSame( 'needs_attention', $order->get_meta( LabelService::STATE_META ) );
+		$sent = tests_retrieve_phpmailer_instance()->mock_sent;
+		$this->assertCount( 1, $sent );
+		$this->assertStringContainsString( 'Shipping problem', $sent[0]['subject'] );
+		$this->assertStringContainsString( '1ZK877V90300000001', $sent[0]['body'] );
+		$this->assertStringNotContainsString( 'Create label', $sent[0]['body'] );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+			$this->fail( 'expected AlreadyLabelled' );
+		} catch ( \Anchor\Shipping\Domain\AlreadyLabelled $e ) {
+			$this->assertCount( 2, $this->requests );
+		}
+		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( Module::instance()->shipments, Module::instance()->packer, Module::instance()->carriers ) )->render_panel( $order );
+		$this->assertStringContainsString( 'Label file missing', $panel );
+		$this->assertStringContainsString( 'anchor-shipping-void', $panel );
+		$this->assertStringNotContainsString( 'action=anchor_shipping_download', $panel );
+	}
+
+	public function test_failed_row_insert_after_billing_leaves_an_unrecorded_marker_that_blocks_auto_creation() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		global $wpdb;
+		$fail = static fn( $q ) => str_contains( $q, 'INSERT INTO `' . \Anchor\Shipping\Database\Migrations::table() . '`' ) ? 'SELECT 1 FROM nonexistent_anchor_table' : $q;
+		add_filter( 'query', $fail );
+		$wpdb->suppress_errors( true );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+			$this->fail( 'expected LabelNotSaved' );
+		} catch ( \Anchor\Shipping\Domain\LabelNotSaved $e ) {
+			$this->assertStringContainsString( 'could not be recorded', $e->getMessage() );
+		} finally {
+			remove_filter( 'query', $fail );
+			$wpdb->suppress_errors( false );
+		}
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( '1ZK877V90300000001', $order->get_meta( '_anchor_shipping_unrecorded' ) );
+		$this->assertTrue( Module::instance()->labels->is_labelled( $order ) );
+		$this->assertSame( [], Module::instance()->shipments->for_order( $order->get_id() ) );
+	}
+
+	public function test_empty_reason_writes_a_clean_note() {
+		$order = $this->make_order( [], 'processing' );
+		Module::instance()->labels->mark_needs_attention( $order, '' );
+		$notes = wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' );
+		$this->assertContains( 'Shipping label needed.', $notes );
 	}
 
 	public function test_void_marks_every_package_of_the_shipment_and_is_idempotent() {

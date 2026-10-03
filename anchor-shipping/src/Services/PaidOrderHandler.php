@@ -76,7 +76,8 @@ final class PaidOrderHandler {
 				/* translators: %s: carrier error message */
 				$reason = sprintf( \__( 'The carrier refused the label: %s', 'anchor-schema' ), $e->getMessage() );
 			}
-			$this->labels->mark_needs_attention( $order, $reason );
+			// 'uncertain' = UPS may have created a label: a person must check ups.com first.
+			$this->labels->mark_needs_attention( $order, $reason, 'uncertain' === $e->carrier_code ? 'problem' : 'ready' );
 		} catch ( AlreadyLabelled $e ) {
 			return; // labelled concurrently
 		} catch ( LabelNotSaved $e ) {
@@ -84,7 +85,7 @@ final class PaidOrderHandler {
 		} catch ( \Throwable $e ) {
 			// Never leave a paid order silently unlabelled and unflagged.
 			/* translators: %s: error message */
-			$this->labels->mark_needs_attention( $order, sprintf( \__( 'Automatic label failed: %s', 'anchor-schema' ), $e->getMessage() ) );
+			$this->labels->mark_needs_attention( $order, sprintf( \__( 'Automatic label failed: %s', 'anchor-schema' ), $e->getMessage() ), 'problem' );
 		}
 	}
 }

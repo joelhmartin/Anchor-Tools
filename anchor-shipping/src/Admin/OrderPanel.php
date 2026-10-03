@@ -64,7 +64,11 @@ final class OrderPanel {
 					<strong><?php echo \esc_html( $r['tracking_number'] ); ?></strong>
 					<span class="anchor-shipping-meta"><?php echo \esc_html( trim( ( $carrier ? $carrier->label() : $r['carrier'] ) . ' · ' . $r['status'] . ( (float) $r['declared_value'] > 0 ? ' · insured' : '' ) . ( '1' === (string) $r['signature'] ? ' · signature' : '' ) ) ); ?></span>
 					<?php if ( ! $voided ) : ?>
-						<a class="button button-small" target="_blank" href="<?php echo \esc_url( Ajax::download_url( (int) $r['id'] ) ); ?>"><?php \esc_html_e( 'Print', 'anchor-schema' ); ?></a>
+						<?php if ( '' === (string) $r['label_path'] ) : ?>
+							<em class="anchor-shipping-meta"><?php \esc_html_e( 'Label file missing', 'anchor-schema' ); ?></em>
+						<?php else : ?>
+							<a class="button button-small" target="_blank" href="<?php echo \esc_url( Ajax::download_url( (int) $r['id'] ) ); ?>"><?php \esc_html_e( 'Print', 'anchor-schema' ); ?></a>
+						<?php endif; ?>
 						<?php if ( $carrier ) : ?><a class="button button-small" target="_blank" rel="noopener" href="<?php echo \esc_url( $carrier->tracking_url( $r['tracking_number'] ) ); ?>"><?php \esc_html_e( 'Track', 'anchor-schema' ); ?></a><?php endif; ?>
 						<button type="button" class="button button-small anchor-shipping-void" data-id="<?php echo (int) $r['id']; ?>"><?php \esc_html_e( 'Void', 'anchor-schema' ); ?></button>
 					<?php endif; ?>

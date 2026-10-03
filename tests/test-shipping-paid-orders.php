@@ -93,35 +93,23 @@ class Test_Shipping_Paid_Orders extends Anchor_Shipping_TestCase {
 		$this->configure_ups( [ 'auto_label' => true ] );
 		$order = $this->make_order( [], 'processing' );
 		$this->queue_token();
-		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
-		if ( function_exists( 'posix_geteuid' ) && 0 === posix_geteuid() ) {
-			$this->markTestSkipped( 'chmod-based failure cannot be forced as root.' );
-		}
-		$dir = sys_get_temp_dir() . '/anchor-shipping-ro-' . wp_generate_password( 8, false );
-		wp_mkdir_p( $dir );
-		file_put_contents( $dir . '/.htaccess', 'x' );
-		file_put_contents( $dir . '/index.php', 'x' );
-		chmod( $dir, 0555 ); // unwritable label dir: the label is bought, saving it fails
-		$m       = Module::instance();
-		$labels  = new LabelService( $m->carriers, $m->shipments, new \Anchor\Shipping\Services\LabelStore( $dir ), $m->packer );
-		$handler = new PaidOrderHandler( $labels, $m->packer );
-		try {
-			$handler->run( $order->get_id() );
-		} finally {
-			chmod( $dir, 0755 );
-			array_map( 'unlink', glob( $dir . '/{,.}*[!.]*', GLOB_BRACE ) ?: [] );
-			rmdir( $dir );
-		}
+		$this->queue_response( 200, $this->fixture_with_unreadable_label() );
+		reset_phpmailer_instance();
+		$this->handler()->run( $order->get_id() );
 		$this->assertSame( 'needs_attention', $this->state( $order->get_id() ) );
 		$this->assertFalse( (bool) as_has_scheduled_action( PaidOrderHandler::ACTION, [ $order->get_id(), 2 ], PaidOrderHandler::GROUP ), 'no retry' );
 		$this->assertCount( 2, $this->requests, 'one token + one label purchase only' );
 		$notes = wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' );
 		$this->assertCount( 1, array_filter( $notes, static fn( $n ) => str_contains( $n, 'could not be saved' ) ), 'noted once' );
+		$sent = tests_retrieve_phpmailer_instance()->mock_sent;
+		$this->assertCount( 1, $sent );
+		$this->assertStringContainsString( 'Shipping problem', $sent[0]['subject'] );
 	}
 
 	public function test_unexpected_exception_still_flags_the_order() {
 		$this->configure_ups( [ 'auto_label' => true, 'default_carrier' => 'boom' ] );
 		$order = $this->make_order( [], 'processing' );
+		reset_phpmailer_instance();
 		$boom  = new class() implements \Anchor\Shipping\Carriers\CarrierInterface {
 			public function id(): string { return 'boom'; }
 			public function label(): string { return 'Boom'; }
@@ -149,6 +137,9 @@ class Test_Shipping_Paid_Orders extends Anchor_Shipping_TestCase {
 		$this->assertSame( 'needs_attention', $this->state( $order->get_id() ) );
 		$notes = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
 		$this->assertStringContainsString( 'Automatic label failed: boom', $notes );
+		$sent = tests_retrieve_phpmailer_instance()->mock_sent;
+		$this->assertCount( 1, $sent );
+		$this->assertStringContainsString( 'Shipping problem', $sent[0]['subject'] );
 	}
 
 	public function test_job_does_nothing_for_an_order_cancelled_after_queueing() {

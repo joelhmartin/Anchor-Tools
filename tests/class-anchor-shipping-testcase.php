@@ -69,6 +69,13 @@ abstract class Anchor_Shipping_TestCase extends WP_UnitTestCase {
 		return json_decode( (string) file_get_contents( __DIR__ . '/fixtures/shipping/' . $name . '.json' ), true );
 	}
 
+	/** The single-package ship fixture, but with a label image LabelStore cannot decode (the label is billed, saving it fails). */
+	protected function fixture_with_unreadable_label(): array {
+		$f = $this->fixture( 'ups-ship-single' );
+		$f['ShipmentResponse']['ShipmentResults']['PackageResults']['ShippingLabel']['GraphicImage'] = base64_encode( 'notagif' );
+		return $f;
+	}
+
 	/** Saves a complete sandbox UPS setup (credentials, ship-from, one box preset, inbox). */
 	protected function configure_ups( array $overrides = [] ): void {
 		\Anchor\Shipping\Support\Settings::save(

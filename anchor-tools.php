@@ -326,6 +326,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-announcements/anchor-announcements.php',
                 'class'       => '\\Anchor\\Announcements\\Module',
             ],
+            'shipping' => [
+                'label'       => __( 'Anchor Shipping', 'anchor-schema' ),
+                'description' => __( 'Carrier labels and tracking for WooCommerce orders (UPS first).', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-shipping/anchor-shipping.php',
+                'class'       => '\\Anchor\\Shipping\\Module',
+            ],
         ];
     }
 }

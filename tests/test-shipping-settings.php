@@ -49,4 +49,20 @@ class Test_Shipping_Settings extends Anchor_Shipping_TestCase {
 		$this->configure_ups();
 		$this->assertSame( 'shipping@example.com', Settings::inbox() );
 	}
+
+	public function test_non_production_site_is_forced_to_sandbox_unless_the_constant_is_defined() {
+		$this->configure_ups( [ 'carriers' => [ 'ups' => [ 'environment' => 'production' ] ] ] );
+		$this->assertSame( 'production', Settings::carrier( 'ups' )['environment'] );
+		$this->assertFalse( Settings::environment_forced( 'ups' ) );
+
+		$staging = static fn() => 'staging';
+		add_filter( 'anchor_shipping_environment_type', $staging );
+		try {
+			$this->assertSame( 'sandbox', Settings::carrier( 'ups' )['environment'] );
+			$this->assertTrue( Settings::environment_forced( 'ups' ) );
+		} finally {
+			remove_filter( 'anchor_shipping_environment_type', $staging );
+		}
+		$this->assertSame( 'production', Settings::carrier( 'ups' )['environment'] );
+	}
 }

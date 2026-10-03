@@ -60,7 +60,23 @@ final class Settings {
 				$c[ $key ] = (string) \constant( self::constant_name( $id, $key ) );
 			}
 		}
+		if ( self::environment_forced( $id ) ) {
+			$c['environment'] = 'sandbox';
+		}
 		return array_map( 'strval', $c );
+	}
+
+	/** wp_get_environment_type(), behind a filter so tests (and odd hosts) can override it. */
+	public static function environment_type(): string {
+		return (string) \apply_filters( 'anchor_shipping_environment_type', \wp_get_environment_type() );
+	}
+
+	/**
+	 * A staging/dev copy of the site must never buy real labels just because the
+	 * database was cloned with "production" saved: only a wp-config constant overrides.
+	 */
+	public static function environment_forced( string $carrier ): bool {
+		return 'production' !== self::environment_type() && ! self::is_constant( $carrier, 'environment' );
 	}
 
 	/** Configured ship-from, each blank field filled from the Woo store address. */

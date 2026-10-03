@@ -175,6 +175,9 @@ final class SettingsPage {
 								<?php else : ?>
 									<input type="text" class="regular-text" name="<?php echo \esc_attr( $fname ); ?>" value="<?php echo \esc_attr( $value ); ?>">
 								<?php endif; ?>
+								<?php if ( 'environment' === $key && Settings::environment_forced( $id ) ) : ?>
+									<p class="description"><?php echo \esc_html( sprintf( /* translators: 1: site environment type, 2: constant name */ \__( "Forced to Sandbox because this site's environment type is '%1\$s'. Define %2\$s in wp-config.php to override.", 'anchor-schema' ), Settings::environment_type(), Settings::constant_name( $id, 'environment' ) ) ); ?></p>
+								<?php endif; ?>
 							</td></tr>
 						<?php endforeach; ?>
 					</table>

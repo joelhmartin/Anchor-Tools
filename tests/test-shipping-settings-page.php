@@ -48,4 +48,17 @@ class Test_Shipping_Settings_Page extends Anchor_Shipping_TestCase {
 		$this->assertStringContainsString( 'name="anchor_shipping[carriers][ups][client_secret]"', $html );
 		$this->assertStringContainsString( 'K877V9', $html, 'non-secret values are shown' );
 	}
+
+	public function test_render_explains_a_forced_sandbox() {
+		$this->configure_ups();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$staging = static fn() => 'staging';
+		add_filter( 'anchor_shipping_environment_type', $staging );
+		ob_start();
+		$this->page()->render();
+		$html = ob_get_clean();
+		remove_filter( 'anchor_shipping_environment_type', $staging );
+		$this->assertStringContainsString( "Forced to Sandbox because this site&#039;s environment type is &#039;staging&#039;", $html );
+		$this->assertStringContainsString( 'ANCHOR_SHIPPING_UPS_ENVIRONMENT', $html );
+	}
 }

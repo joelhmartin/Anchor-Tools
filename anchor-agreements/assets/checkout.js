@@ -20,7 +20,7 @@
 		const ctx = canvas.getContext( '2d' );
 		let strokes = [], current = null;
 		function size() {
-			const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+			const r = canvas.getBoundingClientRect(), dpr = Math.min( window.devicePixelRatio || 1, 2000 / r.width, 1000 / r.height ); // server caps signature PNGs at 2000x1000
 			canvas.width = Math.round( r.width * dpr );
 			canvas.height = Math.round( r.height * dpr );
 			ctx.setTransform( dpr, 0, 0, dpr, 0, 0 );
@@ -91,7 +91,8 @@
 			'<div class="aagr-panel" data-panel="generate" hidden><div class="aagr-fonts"></div></div></div>' +
 			'<div class="aagr-modal__foot"><label class="aagr-modal__consent"><input type="checkbox" name="aagr-consent" /> <span>' + t.consent + '</span></label>' +
 			'<div class="aagr-modal__error" role="alert" hidden></div>' +
-			'<button type="button" class="aagr-modal__sign" disabled>' + t.sign + '</button></div></div>';
+			'<button type="button" class="aagr-modal__sign" disabled>' + t.sign + '</button>' +
+			'<button type="button" class="aagr-modal__next">' + t.next + '</button></div></div>';
 		document.body.appendChild( modal );
 
 		const fontsBox = modal.querySelector( '.aagr-fonts' );
@@ -112,6 +113,10 @@
 			if ( e.target.closest( '.aagr-pad-clear' ) ) return pad.clear();
 			if ( e.target.closest( '.aagr-modal__close' ) || e.target === modal ) return close();
 			if ( e.target.closest( '.aagr-modal__sign' ) ) return submit();
+			if ( e.target.closest( '.aagr-modal__next' ) ) { // review mode: step through every document
+				if ( index < queue.length - 1 ) { index++; return show(); }
+				return close();
+			}
 		} );
 		modal.addEventListener( 'input', ( e ) => {
 			if ( e.target.name === 'aagr-name' ) {
@@ -153,6 +158,8 @@
 		modal.querySelector( '.aagr-modal__error' ).hidden = true;
 		state.font = '';
 		modal.querySelectorAll( '.aagr-font-choice' ).forEach( ( b ) => b.setAttribute( 'aria-pressed', 'false' ) );
+		const next = modal.querySelector( '.aagr-modal__next' );
+		next.textContent = index < queue.length - 1 ? t.next : t.close;
 		pad.clear();
 		selectTab( state.method );
 	}
@@ -187,16 +194,17 @@
 		const btn = modal.querySelector( '.aagr-modal__sign' ), err = modal.querySelector( '.aagr-modal__error' );
 		const doc = queue[ index ], family = ( cfg.fonts.find( ( f ) => f.key === state.font ) || {} ).family;
 		btn.disabled = true;
-		if ( state.method === 'generate' ) await document.fonts.load( '60px "' + family + '"' );
-		const body = new FormData();
-		body.append( 'nonce', cfg.nonce );
-		body.append( 'agreement_id', doc.dataset.agreementId );
-		body.append( 'name', nameValue() );
-		body.append( 'method', state.method );
-		body.append( 'font', state.method === 'generate' ? state.font : '' );
-		body.append( 'image', state.method === 'draw' ? pad.toDataURL() : renderGenerated( nameValue(), family ) );
-		body.append( 'consent', '1' );
 		try {
+			// Load the font BEFORE rendering the canvas, or the name is drawn in a fallback face.
+			if ( state.method === 'generate' ) await document.fonts.load( '60px "' + family + '"' );
+			const body = new FormData();
+			body.append( 'nonce', cfg.nonce );
+			body.append( 'agreement_id', doc.dataset.agreementId );
+			body.append( 'name', nameValue() );
+			body.append( 'method', state.method );
+			body.append( 'font', state.method === 'generate' ? state.font : '' );
+			body.append( 'image', state.method === 'draw' ? pad.toDataURL() : renderGenerated( nameValue(), family ) );
+			body.append( 'consent', '1' );
 			const res = await fetch( cfg.endpoint, { method: 'POST', body, credentials: 'same-origin' } ).then( ( r ) => r.json() );
 			if ( ! res.ok ) throw new Error( res.error || 'error' );
 			doc.dataset.signed = '1';

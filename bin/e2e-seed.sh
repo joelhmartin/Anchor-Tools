@@ -909,7 +909,18 @@ if [ -z "${AAGR_PRODUCT}" ]; then
   log "Created agreement product #${AAGR_PRODUCT}."
 fi
 wp post meta update "${AAGR_PRODUCT}" _anchor_agreement_required yes >/dev/null
-wp eval '$p = ABSPATH . "wp-content/plugins/'"${PLUGIN_SLUG}"'/e2e/.seed.json"; $d = json_decode( (string) file_get_contents( $p ), true ) ?: []; $d["agreements_product_id"] = '"${AAGR_PRODUCT}"'; file_put_contents( $p, json_encode( $d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );'
+# Second agreement + product so the modal's multi-document step/review flow is testable.
+AAGR_DOC2="$(wp post list --post_type=anchor_agreement --post_status=any --name=privacy-addendum --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${AAGR_DOC2}" ]; then
+  AAGR_DOC2="$(wp post create --post_type=anchor_agreement --post_status=publish --post_title='Privacy Addendum' --post_name=privacy-addendum --post_content='<p>We keep your signature on file.</p>' --porcelain)"
+fi
+AAGR_PRODUCT2="$(wp post list --post_type=product --post_status=any --name=agreement-test-2 --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${AAGR_PRODUCT2}" ]; then
+  AAGR_PRODUCT2="$(wp wc product create --name='Agreement Test 2' --slug=agreement-test-2 --regular_price=10 --virtual=true --user=1 --porcelain)"
+fi
+wp post meta update "${AAGR_PRODUCT2}" _anchor_agreement_required yes >/dev/null
+wp post meta update "${AAGR_PRODUCT2}" _anchor_agreement_id "${AAGR_DOC2}" >/dev/null
+wp eval '$p = ABSPATH . "wp-content/plugins/'"${PLUGIN_SLUG}"'/e2e/.seed.json"; $d = json_decode( (string) file_get_contents( $p ), true ) ?: []; $d["agreements_product_id"] = '"${AAGR_PRODUCT}"'; $d["agreements_product2_id"] = '"${AAGR_PRODUCT2}"'; file_put_contents( $p, json_encode( $d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );'
 log "Agreements fixture ready: agreement #${AAGR_DOC}, product #${AAGR_PRODUCT}."
 echo "AAGR_PRODUCT_ID=${AAGR_PRODUCT}"
 

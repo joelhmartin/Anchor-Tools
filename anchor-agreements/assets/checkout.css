@@ -46,4 +46,6 @@ html.aagr-lock, html.aagr-lock body { overflow: hidden; }
 	.aagr-modal__foot { position: sticky; bottom: 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 }
 
-.aagr-modal--review .aagr-modal__field, .aagr-modal--review .aagr-tabs, .aagr-modal--review .aagr-panel, .aagr-modal--review .aagr-modal__foot { display: none; }
+.aagr-modal--review .aagr-modal__field, .aagr-modal--review .aagr-tabs, .aagr-modal--review .aagr-panel, .aagr-modal--review .aagr-modal__consent, .aagr-modal--review .aagr-modal__sign { display: none; }
+.aagr-modal__next { display: none; padding: 14px; font-size: 1em; font-weight: 600; border: 0; border-radius: 8px; background: #101828; color: #fff; cursor: pointer; }
+.aagr-modal--review .aagr-modal__next { display: block; }

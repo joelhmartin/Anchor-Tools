@@ -49,7 +49,7 @@ final class Checkout {
 				'clear' => \__( 'Clear', 'anchor-schema' ), 'name' => \__( 'Full legal name', 'anchor-schema' ),
 				'consent' => Settings::consent_text(),
 				'sign' => \__( 'Sign & continue', 'anchor-schema' ), 'step' => \__( '%1$d of %2$d', 'anchor-schema' ),
-				'close' => \__( 'Close', 'anchor-schema' ), 'error' => \__( 'We could not save your signature. Please try again.', 'anchor-schema' ),
+				'close' => \__( 'Close', 'anchor-schema' ), 'next' => \__( 'Next', 'anchor-schema' ), 'error' => \__( 'We could not save your signature. Please try again.', 'anchor-schema' ),
 				'version' => \__( 'Version of %s', 'anchor-schema' ),
 			],
 		] );

@@ -150,4 +150,17 @@ class Test_Shipping_Paid_Orders extends Anchor_Shipping_TestCase {
 		$notes = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
 		$this->assertStringContainsString( 'Automatic label failed: boom', $notes );
 	}
+
+	public function test_job_does_nothing_for_an_order_cancelled_after_queueing() {
+		$this->configure_ups( [ 'auto_label' => true ] );
+		$order = $this->make_order( [], 'processing' );
+		$this->handler()->queue( $order->get_id() );
+		$order = wc_get_order( $order->get_id() );
+		$order->update_status( 'cancelled' );
+		reset_phpmailer_instance();
+		$this->handler()->run( $order->get_id() );
+		$this->assertCount( 0, $this->requests );
+		$this->assertNotSame( 'needs_attention', $this->state( $order->get_id() ) );
+		$this->assertCount( 0, tests_retrieve_phpmailer_instance()->mock_sent );
+	}
 }

@@ -49,6 +49,10 @@ final class PaidOrderHandler {
 		if ( ! $order || ! $this->eligible( $order ) ) {
 			return; // already labelled or already waiting on a person
 		}
+		// The order may have been cancelled/refunded since the job was queued.
+		if ( ! $order->has_status( (array) \apply_filters( 'anchor_shipping_autolabel_statuses', [ 'processing' ] ) ) ) {
+			return;
+		}
 		if ( ! Settings::auto_label() ) {
 			$this->labels->mark_needs_attention( $order, '' );
 			return;

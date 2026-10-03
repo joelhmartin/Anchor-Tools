@@ -28,7 +28,14 @@ class Module {
 		return __DIR__;
 	}
 
-	public function __construct() {
+	/** @param bool|null $woocommerce_active Test seam; null detects WooCommerce. */
+	public function __construct( $woocommerce_active = null ) {
+		// Everything here (checkout, orders, sessions, emails) is WooCommerce; without it
+		// is_checkout() and friends are undefined and every front-end page would fatal.
+		if ( ! ( $woocommerce_active ?? \class_exists( 'WooCommerce' ) ) ) {
+			\add_action( 'admin_notices', [ self::class, 'missing_woocommerce_notice' ] );
+			return;
+		}
 		self::$instance = $this;
 		Migrations::maybe_migrate();
 		\add_action( 'admin_init', [ Migrations::class, 'maybe_migrate' ] );
@@ -39,6 +46,7 @@ class Module {
 			new Admin\OrderMetabox();
 			new Admin\SignaturesPage();
 			new Admin\SettingsPage();
+			new Admin\BlockCheckoutNotice();
 		}
 		new Frontend\SigningEndpoint();
 		new Frontend\Checkout();
@@ -46,6 +54,12 @@ class Module {
 		new Frontend\CustomerViews();
 		new Services\Notifier();
 		new Services\Cleanup();
-		// Later tasks register their services here (see each task's "wire it" step).
+	}
+
+	public static function missing_woocommerce_notice(): void {
+		if ( ! \current_user_can( 'activate_plugins' ) ) {
+			return;
+		}
+		echo '<div class="notice notice-error"><p>' . \esc_html__( 'Anchor Agreements requires WooCommerce. The module is switched on but does nothing until WooCommerce is active.', 'anchor-schema' ) . '</p></div>';
 	}
 }

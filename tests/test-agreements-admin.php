@@ -126,8 +126,46 @@ class Test_Agreements_Admin extends WP_UnitTestCase {
 
 	public function test_switching_module_off_clears_the_cleanup_cron() {
 		$this->assertNotFalse( wp_next_scheduled( Cleanup::HOOK ) );
+		update_option( \Anchor\Agreements\Frontend\SignedCopyPage::REWRITE_OPTION, '1', false );
 		anchor_tools_agreements_maybe_clear_cleanup( [ 'modules' => [ 'agreements' => true ] ], [ 'modules' => [] ] );
 		$this->assertFalse( wp_next_scheduled( Cleanup::HOOK ) );
+		$this->assertFalse( get_option( \Anchor\Agreements\Frontend\SignedCopyPage::REWRITE_OPTION ) ); // Re-enabling re-flushes.
+	}
+
+	public function test_module_without_woocommerce_registers_only_a_notice() {
+		$instance = \Anchor\Agreements\Module::instance();
+		$before   = has_action( 'woocommerce_checkout_order_created' );
+		$module   = new \Anchor\Agreements\Module( false );
+		$this->assertSame( $instance, \Anchor\Agreements\Module::instance() );
+		$this->assertSame( $before, has_action( 'woocommerce_checkout_order_created' ) );
+		$this->assertNotFalse( has_action( 'admin_notices', [ \Anchor\Agreements\Module::class, 'missing_woocommerce_notice' ] ) );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		ob_start();
+		\Anchor\Agreements\Module::missing_woocommerce_notice();
+		$this->assertStringContainsString( 'requires WooCommerce', ob_get_clean() );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		ob_start();
+		\Anchor\Agreements\Module::missing_woocommerce_notice();
+		$this->assertSame( '', ob_get_clean() );
+		remove_action( 'admin_notices', [ \Anchor\Agreements\Module::class, 'missing_woocommerce_notice' ] );
+		unset( $module );
+	}
+
+	public function test_block_checkout_notice_only_when_checkout_page_uses_the_block() {
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_status' => 'publish', 'post_content' => '<!-- wp:shortcode -->[woocommerce_checkout]<!-- /wp:shortcode -->' ] );
+		update_option( 'woocommerce_checkout_page_id', $page );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		ob_start();
+		\Anchor\Agreements\Admin\BlockCheckoutNotice::render();
+		$this->assertSame( '', ob_get_clean() );
+		wp_update_post( [ 'ID' => $page, 'post_content' => '<!-- wp:woocommerce/checkout --><div class="wp-block-woocommerce-checkout"></div><!-- /wp:woocommerce/checkout -->' ] );
+		ob_start();
+		\Anchor\Agreements\Admin\BlockCheckoutNotice::render();
+		$this->assertStringContainsString( 'Checkout block', ob_get_clean() );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		ob_start();
+		\Anchor\Agreements\Admin\BlockCheckoutNotice::render();
+		$this->assertSame( '', ob_get_clean() );
 	}
 
 	public function test_settings_save_capability_matches_page_capability() {

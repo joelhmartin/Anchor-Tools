@@ -431,12 +431,14 @@ if ( ! function_exists( 'anchor_tools_announcements_clear_tick' ) ) {
 }
 
 /**
- * Agreements: unschedule the abandoned-signature cleanup when the module is switched off
+ * Agreements: unschedule the abandoned-signature cleanup (and reset the rewrite flush) when the module is switched off
  * (literal hook name, so no module code is needed while it is off) and on deactivation.
  */
 if ( ! function_exists( 'anchor_tools_agreements_clear_cleanup' ) ) {
     function anchor_tools_agreements_clear_cleanup() {
         wp_clear_scheduled_hook( 'anchor_agreements_cleanup' );
+        // Forget the rewrite flush too, so switching the module back on re-adds /signed-agreement/.
+        delete_option( 'anchor_agreements_rewrite_version' );
     }
 
     /**

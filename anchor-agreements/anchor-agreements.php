@@ -33,6 +33,9 @@ class Module {
 		Migrations::maybe_migrate();
 		\add_action( 'admin_init', [ Migrations::class, 'maybe_migrate' ] );
 		\add_action( 'init', [ Content\AgreementPostType::class, 'register' ] );
+		if ( \is_admin() ) {
+			new Admin\ProductFields();
+		}
 		// Later tasks register their services here (see each task's "wire it" step).
 	}
 }

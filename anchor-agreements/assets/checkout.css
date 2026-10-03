@@ -4,9 +4,10 @@
 @font-face { font-family: "Aagr Caveat"; src: url("fonts/caveat.woff2") format("woff2"); font-display: swap; }
 
 .aagr-checkout { margin: 0 0 1em; padding: 12px 14px; border: 1px solid #d0d5dd; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.aagr-checkout__label { display: flex; gap: 8px; align-items: center; margin: 0; cursor: pointer; flex: 1 1 240px; }
-.aagr-checkout__box { pointer-events: none; }
-.aagr-open { background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; font: inherit; color: inherit; }
+/* Doubled class beats theme/checkout-builder label styles (uppercase, letter-spacing, oversized inputs). */
+.aagr-checkout .aagr-checkout__label { display: flex; gap: 10px; align-items: center; margin: 0; padding: 0; cursor: pointer; flex: 1 1 240px; text-transform: none; letter-spacing: normal; font-size: inherit; line-height: 1.4; }
+.aagr-checkout .aagr-checkout__box { pointer-events: none; flex: 0 0 auto; width: 18px; height: 18px; margin: 0; position: static; vertical-align: middle; accent-color: #12b76a; }
+.aagr-checkout .aagr-open { background: none; border: 0; padding: 0; margin: 0; text-decoration: underline; text-transform: none; letter-spacing: normal; cursor: pointer; font: inherit; color: inherit; line-height: 1.4; }
 .aagr-checkout[data-complete="1"] { border-color: #12b76a; }
 
 .aagr-modal { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center; justify-content: center; background: rgba(16, 24, 40, .6); }

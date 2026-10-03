@@ -65,18 +65,38 @@ final class UpsCarrier implements CarrierInterface {
 		}
 		$pkgs     = $results['PackageResults'] ?? [];
 		$pkgs     = isset( $pkgs['TrackingNumber'] ) ? [ $pkgs ] : (array) $pkgs;
-		$packages = [];
+		$shipment_id = (string) $results['ShipmentIdentificationNumber'];
+		$packages    = [];
+		$numbers     = [];
+		$usable      = count( $pkgs ) === count( $request->parcels );
 		foreach ( $pkgs as $p ) {
-			$packages[] = new PackageLabel(
-				(string) $p['TrackingNumber'],
-				(string) base64_decode( (string) ( $p['ShippingLabel']['GraphicImage'] ?? '' ), true ),
-				(string) ( $p['ShippingLabel']['ImageFormat']['Code'] ?? $format )
+			$tracking = is_array( $p ) ? (string) ( $p['TrackingNumber'] ?? '' ) : '';
+			$bytes    = is_array( $p ) ? base64_decode( (string) ( $p['ShippingLabel']['GraphicImage'] ?? '' ), true ) : false;
+			if ( '' !== $tracking ) {
+				$numbers[] = $tracking;
+			}
+			if ( '' === $tracking || false === $bytes || '' === $bytes ) {
+				$usable = false;
+				continue;
+			}
+			$packages[] = new PackageLabel( $tracking, $bytes, (string) ( $p['ShippingLabel']['ImageFormat']['Code'] ?? $format ) );
+		}
+		if ( ! $usable ) {
+			// UPS has already billed this shipment, so staff need its numbers to void it.
+			throw new CarrierError(
+				'parse',
+				sprintf(
+					/* translators: 1: UPS shipment number, 2: tracking numbers */
+					\__( 'UPS created shipment %1$s%2$s but returned an unusable label. Void it at ups.com or retry.', 'anchor-schema' ),
+					$shipment_id,
+					$numbers ? ' (' . implode( ', ', $numbers ) . ')' : ''
+				)
 			);
 		}
 		$charge = $results['NegotiatedRateCharges']['TotalCharge'] ?? $results['ShipmentCharges']['TotalCharges'] ?? null;
 
 		return new LabelResult(
-			(string) $results['ShipmentIdentificationNumber'],
+			$shipment_id,
 			$packages,
 			isset( $charge['MonetaryValue'] ) ? (float) $charge['MonetaryValue'] : null,
 			(string) ( $charge['CurrencyCode'] ?? 'USD' )

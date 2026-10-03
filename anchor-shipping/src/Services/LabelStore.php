@@ -70,11 +70,17 @@ final class LabelStore {
 		}
 		if ( \imagesx( $im ) > \imagesy( $im ) ) {
 			$im = \imagerotate( $im, 270, 0 ); // 270° counter-clockwise = 90° clockwise
+			if ( false === $im ) {
+				throw new \RuntimeException( 'The carrier returned a label image that could not be read.' );
+			}
 		}
 		$w      = \imagesx( $im );
 		$target = (int) round( $w * 1.5 );
 		if ( \imagesy( $im ) > $target ) {
 			$im = \imagecrop( $im, [ 'x' => 0, 'y' => 0, 'width' => $w, 'height' => $target ] );
+			if ( false === $im ) {
+				throw new \RuntimeException( 'The carrier returned a label image that could not be read.' );
+			}
 		}
 		return ImagePdf::from_images( [ $im ], 4, 6 );
 	}

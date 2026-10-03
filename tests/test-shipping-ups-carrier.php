@@ -87,4 +87,32 @@ class Test_Shipping_Ups_Carrier extends Anchor_Shipping_TestCase {
 		$this->assertSame( 'DELETE', $this->requests[1]['args']['method'] );
 		$this->assertStringEndsWith( '/api/shipments/v2409/void/cancel/1ZK877V90300000001', $this->requests[1]['url'] );
 	}
+
+	public function test_label_without_image_is_rejected_with_the_shipment_id() {
+		$this->configure_ups();
+		$this->queue_token();
+		$json = $this->fixture( 'ups-ship-single' );
+		unset( $json['ShipmentResponse']['ShipmentResults']['PackageResults']['ShippingLabel']['GraphicImage'] );
+		$this->queue_response( 200, $json );
+		try {
+			( new UpsCarrier() )->create_label( $this->request() );
+			$this->fail( 'Expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertSame( 'parse', $e->carrier_code );
+			$this->assertStringContainsString( '1ZK877V90300000001', $e->getMessage() );
+		}
+	}
+
+	public function test_package_count_mismatch_is_rejected() {
+		$this->configure_ups();
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		try {
+			( new UpsCarrier() )->create_label( $this->request( [ new Parcel( 1, 10, 10, 10 ), new Parcel( 1, 10, 10, 10 ) ] ) );
+			$this->fail( 'Expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertSame( 'parse', $e->carrier_code );
+			$this->assertStringContainsString( '1ZK877V90300000001', $e->getMessage() );
+		}
+	}
 }

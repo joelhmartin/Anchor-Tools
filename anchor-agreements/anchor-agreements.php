@@ -32,6 +32,7 @@ class Module {
 		self::$instance = $this;
 		Migrations::maybe_migrate();
 		\add_action( 'admin_init', [ Migrations::class, 'maybe_migrate' ] );
+		\add_action( 'init', [ Content\AgreementPostType::class, 'register' ] );
 		// Later tasks register their services here (see each task's "wire it" step).
 	}
 }

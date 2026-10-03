@@ -10,6 +10,14 @@ class Test_Shipping_Repository extends Anchor_Shipping_TestCase {
 		$this->assertSame( Migrations::table(), $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', Migrations::table() ) ) );
 	}
 
+	public function test_db_version_option_is_autoloaded() {
+		global $wpdb;
+		delete_option( Migrations::OPTION );
+		Migrations::maybe_migrate();
+		$autoload = $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_name = %s", Migrations::OPTION ) );
+		$this->assertContains( $autoload, [ 'yes', 'on', 'auto-on' ], 'WP 6.6+ stores "on"' );
+	}
+
 	public function test_insert_find_and_active_for_order() {
 		$repo = Module::instance()->shipments;
 		$a    = $repo->insert( [ 'order_id' => 10, 'carrier' => 'ups', 'shipment_id' => 'S1', 'tracking_number' => '1Z1' ] );

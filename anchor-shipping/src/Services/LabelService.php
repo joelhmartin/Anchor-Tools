@@ -28,6 +28,8 @@ final class LabelService {
 		private Packer $packer
 	) {}
 
+	private const LOCK_SECONDS = 120;
+
 	public const UNRECORDED_META = '_anchor_shipping_unrecorded';
 
 	public function is_labelled( \WC_Order $order ): bool {
@@ -67,6 +69,29 @@ final class LabelService {
 	 * @return int[] shipment row ids
 	 */
 	public function create_for_order( \WC_Order $order, array $parcels, string $source, array $opts = [] ): array {
+		// One create per order at a time: two clicks / a click and the auto job must not both buy a label.
+		$lock = 'anchor_shipping_lock_' . $order->get_id();
+		if ( ! \add_option( $lock, time(), '', 'no' ) ) {
+			if ( time() - (int) \get_option( $lock ) < self::LOCK_SECONDS ) {
+				throw new AlreadyLabelled( \__( 'A label is already being created for this order. Reload in a minute.', 'anchor-schema' ) );
+			}
+			\delete_option( $lock ); // stale: the earlier request died
+			if ( ! \add_option( $lock, time(), '', 'no' ) ) {
+				throw new AlreadyLabelled( \__( 'A label is already being created for this order. Reload in a minute.', 'anchor-schema' ) );
+			}
+		}
+		try {
+			return $this->create_locked( $order, $parcels, $source, $opts );
+		} finally {
+			\delete_option( $lock );
+		}
+	}
+
+	/**
+	 * @param Parcel[] $parcels
+	 * @return int[]
+	 */
+	private function create_locked( \WC_Order $order, array $parcels, string $source, array $opts ): array {
 		if ( empty( $opts['additional'] ) && $this->is_labelled( $order ) ) {
 			throw new AlreadyLabelled( \__( 'This order already has a label. Void it first, or tick "additional package".', 'anchor-schema' ) );
 		}
@@ -185,7 +210,8 @@ final class LabelService {
 			/* translators: 1: carrier, 2: shipment id */
 			$order->add_order_note( sprintf( \__( '%1$s label voided: %2$s.', 'anchor-schema' ), $carrier->label(), $row['shipment_id'] ) );
 			if ( ! $this->is_labelled( $order ) ) {
-				$order->update_meta_data( self::STATE_META, '' );
+				// Staff voided it themselves, so no email; but a still-paid order has no label now.
+				$order->update_meta_data( self::STATE_META, $order->has_status( 'processing' ) ? 'needs_attention' : '' );
 			}
 			$order->save();
 		}

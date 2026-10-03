@@ -59,7 +59,7 @@ final class Migrations {
 		);
 		// Only record the version once the table exists, so a failed migration retries.
 		if ( self::table() === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', self::table() ) ) ) {
-			\update_option( self::OPTION, self::VERSION, false );
+			\update_option( self::OPTION, self::VERSION, true ); // autoloaded: the per-request version check costs no query
 		}
 	}
 }

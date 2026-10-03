@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace Anchor\Shipping\Services;
 
 use Anchor\Shipping\Database\ShipmentRepository;
-use Anchor\Shipping\Domain\CarrierError;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -26,7 +25,7 @@ final class VoidOnCancel {
 			$done[ $key ] = true;
 			try {
 				$this->labels->void_shipment( (int) $row['id'] );
-			} catch ( CarrierError $e ) {
+			} catch ( \Throwable $e ) {
 				$order = \wc_get_order( $order_id );
 				if ( $order ) {
 					/* translators: 1: tracking number, 2: carrier message */

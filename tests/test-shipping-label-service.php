@@ -175,7 +175,34 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 			$this->assertSame( 'voided', Module::instance()->shipments->find( $id )['status'] );
 		}
 		$this->assertCount( 3, $this->requests );
+		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ), 'still-processing order with no label needs a person (no email)' );
+	}
+
+	public function test_voiding_the_last_label_of_a_non_processing_order_clears_the_state() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$ids   = $this->create( $order );
+		$order = wc_get_order( $order->get_id() );
+		$order->set_status( 'on-hold' );
+		$order->save();
+		$this->queue_response( 200, $this->fixture( 'ups-void-ok' ) );
+		Module::instance()->labels->void_shipment( $ids[0] );
 		$this->assertSame( '', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ) );
+	}
+
+	public function test_a_fresh_lock_blocks_create_and_a_stale_one_is_retaken() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		add_option( 'anchor_shipping_lock_' . $order->get_id(), time(), '', 'no' );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+			$this->fail( 'expected AlreadyLabelled' );
+		} catch ( \Anchor\Shipping\Domain\AlreadyLabelled $e ) {
+			$this->assertCount( 0, $this->requests );
+		}
+		update_option( 'anchor_shipping_lock_' . $order->get_id(), time() - 600 );
+		$this->assertCount( 1, $this->create( $order ), 'a stale lock is taken over' );
+		$this->assertFalse( get_option( 'anchor_shipping_lock_' . $order->get_id() ), 'lock released' );
 	}
 
 	public function test_protection_auto_mode_uses_threshold_and_customer_mode_uses_order_meta() {

@@ -1047,6 +1047,11 @@ class Module {
      * @param int   $now
      */
     private function send_due_reminders( $event_id, $start_ts, array $settings, array $meta, $now ) {
+        // External signup: no reminders, and — like the switch below — no
+        // markers, so unticking the box mid-window still sends the reminder.
+        if ( $this->uses_external_signup( $event_id ) ) {
+            return;
+        }
         // An event whose reminders are switched off is asked nothing further:
         // no seat query, and — the point — no markers. Deciding it per seat
         // inside the loop would record every due offset as accounted for, so
@@ -1472,6 +1477,9 @@ class Module {
      * @return Outcome sent | skipped (disabled, no_address) | failed (wp_mail).
      */
     public function send_reminder_email( array $seat, $event_id, $offset, $settings = null ) {
+        if ( $this->uses_external_signup( (int) $event_id ) ) {
+            return Outcome::skipped( 'external_signup' );
+        }
         // REG-D40 — three different refusals used to leave the same silence.
         // The reason string tells the CALLER them apart; these codes tell the
         // OPERATOR, who otherwise reads an unsent reminder as a mail failure.
@@ -14997,6 +15005,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return void The organizer copy is never what a caller reports to a user.
      */
     private function send_registration_admin_notice( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
+        if ( $this->uses_external_signup( (int) $event_id ) ) {
+            return; // sign-ups happen on an external form; nobody registered here
+        }
         $settings = $this->get_settings();
         if ( empty( $settings['notify_admin'] ) ) {
             return;
@@ -15048,6 +15059,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $event_link = \get_permalink( $event_id );
         $guests     = max( 0, (int) $guests );
 
+        if ( $this->uses_external_signup( (int) $event_id ) ) {
+            return Outcome::skipped( 'external_signup' );
+        }
         if ( empty( $settings['notify_user'] ) ) {
             return Outcome::skipped( 'notifications_off' );
         }
@@ -15229,6 +15243,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return Outcome::skipped( 'no_address' );
         }
         $event_id = (int) $info['event_id'];
+        if ( $this->uses_external_signup( $event_id ) ) {
+            return Outcome::skipped( 'external_signup' );
+        }
         if ( ! $this->is_email_enabled( $event_id, 'cancellation' ) ) {
             return Outcome::skipped( 'disabled' );
         }

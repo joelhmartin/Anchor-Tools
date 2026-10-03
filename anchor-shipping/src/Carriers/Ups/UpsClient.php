@@ -25,14 +25,21 @@ final class UpsClient {
 		return self::HOSTS[ $this->environment ] ?? self::HOSTS['sandbox'];
 	}
 
-	public function request( string $method, string $path, ?array $body = null ): array {
-		$res = $this->send( $method, $path, $body, $this->token() );
+	/**
+	 * @param bool $idempotent false for calls that spend money (ship): a transport timeout
+	 *                         then means "UPS may have acted", so it is not retryable.
+	 */
+	public function request( string $method, string $path, ?array $body = null, bool $idempotent = true ): array {
+		$res = $this->send( $method, $path, $body, $this->token(), $idempotent );
 		if ( 401 === $res['code'] ) {
 			$this->forget_token();
-			$res = $this->send( $method, $path, $body, $this->token() );
+			$res = $this->send( $method, $path, $body, $this->token(), $idempotent );
 			if ( 401 === $res['code'] ) {
 				throw new CarrierError( 'auth', \__( 'UPS rejected the API credentials. Check the Client ID and Secret.', 'anchor-schema' ) );
 			}
+		}
+		if ( 504 === $res['code'] && ! $idempotent ) {
+			throw $this->uncertain();
 		}
 		if ( $res['code'] >= 400 ) {
 			throw $this->error( $res );
@@ -74,7 +81,7 @@ final class UpsClient {
 		return (string) $res['json']['access_token'];
 	}
 
-	private function send( string $method, string $path, ?array $body, string $token ): array {
+	private function send( string $method, string $path, ?array $body, string $token, bool $idempotent = true ): array {
 		$args = [
 			'method'  => $method,
 			'timeout' => 30,
@@ -88,19 +95,27 @@ final class UpsClient {
 		if ( null !== $body ) {
 			$args['body'] = \wp_json_encode( $body );
 		}
-		return $this->normalize( \wp_remote_request( $this->host() . $path, $args ), $path );
+		return $this->normalize( \wp_remote_request( $this->host() . $path, $args ), $path, $idempotent );
 	}
 
 	/** @param array|\WP_Error $raw */
-	private function normalize( $raw, string $path ): array {
+	private function normalize( $raw, string $path, bool $idempotent = true ): array {
 		if ( \is_wp_error( $raw ) ) {
 			$this->log( 'error', $path . ' transport error: ' . $raw->get_error_message() );
+			// cURL 6/7 = could not resolve/connect: the request never reached UPS, so retrying is safe.
+			if ( ! $idempotent && ! preg_match( '/cURL error (6|7):/', $raw->get_error_message() ) ) {
+				throw $this->uncertain();
+			}
 			throw new CarrierError( 'http', \__( 'Could not reach UPS. Try again in a few minutes.', 'anchor-schema' ), true );
 		}
 		$code = (int) \wp_remote_retrieve_response_code( $raw );
 		$json = json_decode( (string) \wp_remote_retrieve_body( $raw ), true );
 		$this->log( $code >= 400 ? 'warning' : 'debug', $path . ' → HTTP ' . $code );
 		return [ 'code' => $code, 'json' => is_array( $json ) ? $json : [] ];
+	}
+
+	private function uncertain(): CarrierError {
+		return new CarrierError( 'uncertain', \__( 'UPS did not answer in time and may have created this label. Check Shipping History on ups.com before creating another.', 'anchor-schema' ), false );
 	}
 
 	private function error( array $res ): CarrierError {

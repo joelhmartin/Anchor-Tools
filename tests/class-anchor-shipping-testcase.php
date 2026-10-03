@@ -37,9 +37,9 @@ abstract class Anchor_Shipping_TestCase extends WP_UnitTestCase {
 		parent::tear_down();
 	}
 
-	/** @param array|string $body */
+	/** @param array|string|WP_Error $body a WP_Error is returned as a transport failure ($code is ignored) */
 	protected function queue_response( int $code, $body ): void {
-		$this->http_queue[] = [ 'code' => $code, 'body' => is_string( $body ) ? $body : wp_json_encode( $body ) ];
+		$this->http_queue[] = $body instanceof WP_Error ? $body : [ 'code' => $code, 'body' => is_string( $body ) ? $body : wp_json_encode( $body ) ];
 	}
 
 	protected function queue_token(): void {
@@ -52,6 +52,9 @@ abstract class Anchor_Shipping_TestCase extends WP_UnitTestCase {
 		$next             = array_shift( $this->http_queue );
 		if ( null === $next ) {
 			return new WP_Error( 'unexpected_http', 'No fake response queued for ' . $url );
+		}
+		if ( $next instanceof WP_Error ) {
+			return $next;
 		}
 		return [
 			'headers'  => [],

@@ -77,4 +77,60 @@ class Test_Shipping_Ups_Client extends Anchor_Shipping_TestCase {
 		$this->expectExceptionMessage( 'ClientId is Invalid' );
 		$this->client()->request( 'GET', '/api/x' );
 	}
+
+	public function test_non_idempotent_timeout_is_uncertain_and_not_retryable() {
+		$this->queue_token();
+		$this->queue_response( 0, new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out after 30001 milliseconds' ) );
+		try {
+			$this->client()->request( 'POST', '/api/ship', [], false );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertSame( 'uncertain', $e->carrier_code );
+			$this->assertFalse( $e->retryable );
+			$this->assertStringContainsString( 'may have created this label', $e->getMessage() );
+		}
+	}
+
+	public function test_non_idempotent_connect_failure_is_retryable_because_it_never_reached_ups() {
+		$this->queue_token();
+		$this->queue_response( 0, new WP_Error( 'http_request_failed', 'cURL error 7: Failed to connect to wwwcie.ups.com' ) );
+		try {
+			$this->client()->request( 'POST', '/api/ship', [], false );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertSame( 'http', $e->carrier_code );
+			$this->assertTrue( $e->retryable );
+		}
+	}
+
+	public function test_idempotent_timeout_stays_retryable() {
+		$this->queue_token();
+		$this->queue_response( 0, new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' ) );
+		try {
+			$this->client()->request( 'DELETE', '/api/void' );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertSame( 'http', $e->carrier_code );
+			$this->assertTrue( $e->retryable );
+		}
+	}
+
+	public function test_non_idempotent_504_is_uncertain_but_503_stays_retryable() {
+		$this->queue_token();
+		$this->queue_response( 504, 'Gateway Timeout' );
+		try {
+			$this->client()->request( 'POST', '/api/ship', [], false );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertSame( 'uncertain', $e->carrier_code );
+			$this->assertFalse( $e->retryable );
+		}
+		$this->queue_response( 503, 'Unavailable' );
+		try {
+			$this->client()->request( 'POST', '/api/ship', [], false );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertTrue( $e->retryable );
+		}
+	}
 }

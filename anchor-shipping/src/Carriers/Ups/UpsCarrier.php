@@ -57,7 +57,7 @@ final class UpsCarrier implements CarrierInterface {
 	public function create_label( ShipmentRequest $request ): LabelResult {
 		$creds  = Settings::carrier( 'ups' );
 		$format = 'ZPL' === Settings::all()['label_format'] ? 'ZPL' : 'GIF';
-		$json   = $this->client()->request( 'POST', '/api/shipments/v2409/ship', $this->build_ship_body( $request, $creds['account'], $format ) );
+		$json   = $this->client()->request( 'POST', '/api/shipments/v2409/ship', $this->build_ship_body( $request, $creds['account'], $format ), false );
 
 		$results  = $json['ShipmentResponse']['ShipmentResults'] ?? null;
 		if ( ! is_array( $results ) || empty( $results['ShipmentIdentificationNumber'] ) ) {

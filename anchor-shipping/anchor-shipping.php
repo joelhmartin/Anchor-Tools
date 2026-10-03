@@ -24,6 +24,12 @@ class Module {
 
 	public Carriers\CarrierRegistry $carriers;
 
+	public Services\LabelStore $store;
+
+	public Packing\Packer $packer;
+
+	public Services\LabelService $labels;
+
 	private static ?Module $instance = null;
 
 	public static function instance(): ?Module {
@@ -55,6 +61,9 @@ class Module {
 		}
 		// Later tasks register their services below this line.
 		$this->carriers = new Carriers\CarrierRegistry();
+		$this->store    = new Services\LabelStore();
+		$this->packer   = new Packing\Packer();
+		$this->labels   = new Services\LabelService( $this->carriers, $this->shipments, $this->store, $this->packer );
 		if ( \is_admin() ) {
 			new Admin\SettingsPage( $this->carriers );
 			new Admin\ProductFields();

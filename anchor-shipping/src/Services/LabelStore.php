@@ -36,7 +36,9 @@ final class LabelStore {
 		$is_zpl = 'ZPL' === strtoupper( $label->format );
 		$bytes  = $is_zpl ? $label->bytes : $this->gif_to_pdf( $label->bytes );
 		$name   = sprintf( '%d-%s-%s.%s', $order_id, preg_replace( '/[^A-Za-z0-9]/', '', $label->tracking_number ), \wp_generate_password( 32, false ), $is_zpl ? 'zpl' : 'pdf' );
-		file_put_contents( $this->dir() . '/' . $name, $bytes );
+		if ( false === @file_put_contents( $this->dir() . '/' . $name, $bytes ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			throw new \RuntimeException( 'Could not write the label file.' );
+		}
 		return [ 'path' => $name, 'format' => $is_zpl ? 'ZPL' : 'PDF' ];
 	}
 

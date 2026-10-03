@@ -66,7 +66,7 @@ final class ProtectionFields {
 		}
 		echo '</div>';
 		// Re-total when ticked: Woo only refreshes on its own address fields.
-		echo "<script>jQuery(function($){ $(document.body).on('change', '.anchor-shipping-protection input', function(){ $(document.body).trigger('update_checkout'); }); });</script>";
+		echo "<script>jQuery(function($){ $(document.body).off('change.anchorShipping').on('change.anchorShipping', '.anchor-shipping-protection input', function(){ $(document.body).trigger('update_checkout'); }); });</script>";
 	}
 
 	/** @param string $post_data serialized checkout form from update_order_review */
@@ -93,7 +93,17 @@ final class ProtectionFields {
 	}
 
 	public function save_to_order( \WC_Order $order ): void {
-		$order->update_meta_data( Protection::META_INSURE, $this->chosen( 'insurance' ) ? 'yes' : '' );
-		$order->update_meta_data( Protection::META_SIGNATURE, $this->chosen( 'signature' ) ? 'yes' : '' );
+		$cart     = \WC()->cart;
+		$shipping = $cart && $cart->needs_shipping();
+		$insure   = $shipping && $this->chosen( 'insurance' ) && Protection::insurance_fee( $this->cart_shippable_subtotal( $cart ) ) > 0;
+		$sign     = $shipping && $this->chosen( 'signature' ) && Protection::signature_fee() > 0;
+		$order->update_meta_data( Protection::META_INSURE, $insure ? 'yes' : '' );
+		$order->update_meta_data( Protection::META_SIGNATURE, $sign ? 'yes' : '' );
+		// Don't pre-tick paid options on the customer's next checkout.
+		if ( \WC()->session ) {
+			foreach ( self::OPTIONS as $key ) {
+				\WC()->session->set( $key, '' );
+			}
+		}
 	}
 }

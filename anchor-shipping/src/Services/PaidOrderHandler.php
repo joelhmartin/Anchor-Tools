@@ -3,7 +3,9 @@ declare(strict_types=1);
 
 namespace Anchor\Shipping\Services;
 
+use Anchor\Shipping\Domain\AlreadyLabelled;
 use Anchor\Shipping\Domain\CarrierError;
+use Anchor\Shipping\Domain\LabelNotSaved;
 use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Support\Settings;
 
@@ -63,12 +65,22 @@ final class PaidOrderHandler {
 				\as_schedule_single_action( time() + 300 * $attempt, self::ACTION, [ $order_id, $attempt + 1 ], self::GROUP );
 				return;
 			}
-			/* translators: %s: carrier error message */
-			$this->labels->mark_needs_attention( $order, sprintf( \__( 'The carrier refused the label: %s', 'anchor-schema' ), $e->getMessage() ) );
-		} catch ( \LogicException $e ) {
+			if ( $e->retryable ) {
+				/* translators: 1: attempts, 2: carrier error message */
+				$reason = sprintf( \__( 'The carrier could not be reached after %1$d attempts: %2$s', 'anchor-schema' ), $attempt, $e->getMessage() );
+			} else {
+				/* translators: %s: carrier error message */
+				$reason = sprintf( \__( 'The carrier refused the label: %s', 'anchor-schema' ), $e->getMessage() );
+			}
+			$this->labels->mark_needs_attention( $order, $reason );
+		} catch ( AlreadyLabelled $e ) {
 			return; // labelled concurrently
-		} catch ( \RuntimeException $e ) {
+		} catch ( LabelNotSaved $e ) {
 			return; // label bought but not saved: LabelService already flagged + noted the order; a retry could buy a second label
+		} catch ( \Throwable $e ) {
+			// Never leave a paid order silently unlabelled and unflagged.
+			/* translators: %s: error message */
+			$this->labels->mark_needs_attention( $order, sprintf( \__( 'Automatic label failed: %s', 'anchor-schema' ), $e->getMessage() ) );
 		}
 	}
 }

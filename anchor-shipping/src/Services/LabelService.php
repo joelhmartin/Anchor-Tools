@@ -6,6 +6,8 @@ namespace Anchor\Shipping\Services;
 use Anchor\Shipping\Carriers\CarrierRegistry;
 use Anchor\Shipping\Database\ShipmentRepository;
 use Anchor\Shipping\Domain\Address;
+use Anchor\Shipping\Domain\AlreadyLabelled;
+use Anchor\Shipping\Domain\LabelNotSaved;
 use Anchor\Shipping\Domain\CarrierError;
 use Anchor\Shipping\Domain\Parcel;
 use Anchor\Shipping\Domain\ShipmentRequest;
@@ -36,7 +38,7 @@ final class LabelService {
 	 */
 	public function create_for_order( \WC_Order $order, array $parcels, string $source, array $opts = [] ): array {
 		if ( empty( $opts['additional'] ) && $this->is_labelled( $order ) ) {
-			throw new \LogicException( \__( 'This order already has a label. Void it first, or tick "additional package".', 'anchor-schema' ) );
+			throw new AlreadyLabelled( \__( 'This order already has a label. Void it first, or tick "additional package".', 'anchor-schema' ) );
 		}
 		$parcels    = array_values( $parcels );
 		$s          = Settings::all();
@@ -105,7 +107,7 @@ final class LabelService {
 			);
 			// Flags the order (and adds the note) so the paid-order job never buys a second label.
 			$this->mark_needs_attention( $order, $message );
-			throw new \RuntimeException( $message, 0, $e );
+			throw new LabelNotSaved( $message, 0, $e );
 		}
 
 		$services = $carrier->services();

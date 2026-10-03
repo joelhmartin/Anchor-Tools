@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Shipping\Services;
 
 use Anchor\Shipping\Domain\PackageLabel;
+use Anchor\Shipping\Support\ImagePdf;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -75,16 +76,6 @@ final class LabelStore {
 		if ( \imagesy( $im ) > $target ) {
 			$im = \imagecrop( $im, [ 'x' => 0, 'y' => 0, 'width' => $w, 'height' => $target ] );
 		}
-		$tmp = \wp_tempnam( 'anchor-shipping-label' ) . '.png';
-		\imagepng( $im, $tmp );
-
-		$pdf = new \FPDF( 'P', 'in', [ 4, 6 ] );
-		$pdf->SetMargins( 0, 0, 0 );
-		$pdf->SetAutoPageBreak( false );
-		$pdf->AddPage();
-		$pdf->Image( $tmp, 0, 0, 4, 0, 'PNG' );
-		$out = $pdf->Output( 'S' );
-		@unlink( $tmp );
-		return $out;
+		return ImagePdf::from_images( [ $im ], 4, 6 );
 	}
 }

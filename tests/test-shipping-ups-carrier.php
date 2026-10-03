@@ -8,7 +8,7 @@ use Anchor\Shipping\Support\Settings;
 
 class Test_Shipping_Ups_Carrier extends Anchor_Shipping_TestCase {
 
-	private function request( array $parcels = null, float $declared = 0.0, bool $signature = false ): ShipmentRequest {
+	private function request( ?array $parcels = null, float $declared = 0.0, bool $signature = false ): ShipmentRequest {
 		$from = new Address( 'Shipping', 'DEKA Test', '400 North Ashley Drive', '', 'Tampa', 'FL', '33602', 'US', '8133208285' );
 		$to   = new Address( 'Pat Doe', 'Doe Dental', '1 Infinite Loop', '', 'Cupertino', 'CA', '95014', 'US', '5555555555' );
 		return new ShipmentRequest( $from, $to, $parcels ?? [ new Parcel( 1.0, 25.4, 20.32, 10.16, 'small' ) ], '03', 'Order 123', $declared, $signature );

@@ -56,7 +56,21 @@
           el.querySelectorAll('input, select, textarea')
         ));
       });
-      return out.filter(function (f) { return !f.disabled && f.type !== 'hidden'; });
+      return out.filter(function (f) {
+        return !f.disabled && f.type !== 'hidden' && !inHiddenContainer(f);
+      });
+    }
+
+    /**
+     * True when any ancestor was switched off by the mode/type logic (inline
+     * display:none, e.g. the registration-fields wrappers when "Use external
+     * signup form" is ticked) — its stored values must not block Next.
+     */
+    function inHiddenContainer(field) {
+      for (var n = field.parentNode; n && n !== form; n = n.parentNode) {
+        if (n.style && n.style.display === 'none') { return true; }
+      }
+      return false;
     }
 
     function clearErrors(scope) {

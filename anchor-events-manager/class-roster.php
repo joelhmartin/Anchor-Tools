@@ -341,6 +341,9 @@ class Roster {
 
         echo '<ul class="ul-disc">';
         foreach ( $events as $event ) {
+            if ( ! $this->module->roster_capable( $event->ID ) ) {
+                continue; // external registration: nothing to list
+            }
             echo '<li><a href="' . \esc_url( $this->roster_url( $event->ID ) ) . '">'
                 . \esc_html( \get_the_title( $event ) ? \get_the_title( $event ) : ( '#' . (int) $event->ID ) )
                 . '</a></li>';
@@ -357,6 +360,11 @@ class Roster {
         echo ' <a href="' . \esc_url( (string) \get_edit_post_link( $event_id ) ) . '" class="page-title-action">'
             . \esc_html__( 'Edit event', 'anchor-schema' ) . '</a>';
         echo '<hr class="wp-header-end" />';
+
+        if ( ! $this->module->roster_capable( $event_id ) ) {
+            echo '<div class="notice notice-info inline"><p>' . \esc_html__( 'This event takes registrations on an external form, so it has no roster here.', 'anchor-schema' ) . '</p></div>';
+            return;
+        }
 
         $this->maybe_render_notice();
         $this->render_summary( $event_id );
@@ -785,6 +793,13 @@ class Roster {
             $this->redirect( $event_id, 'error', \__( 'This is a multi-date offering — add the attendee to one of its dates, not to the container.', 'anchor-schema' ), 'invalid' );
         }
 
+        // An external-signup event has no roster here, so it takes no
+        // hand-added seats either: they would get this plugin's emails and
+        // count toward a capacity nobody manages.
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            $this->redirect( $event_id, 'error', \__( 'This event takes sign-ups on an external form, so attendees cannot be added here.', 'anchor-schema' ), 'invalid' );
+        }
+
         $name   = \sanitize_text_field( \wp_unslash( $_POST['roster_name'] ?? '' ) );
         $raw_email = \sanitize_text_field( \wp_unslash( $_POST['roster_email'] ?? '' ) );
         $email  = \sanitize_email( $raw_email );
@@ -1055,6 +1070,9 @@ class Roster {
         if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
             $this->redirect( $event_id, 'error', \__( 'That seat is not on this event.', 'anchor-schema' ), 'invalid' );
         }
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            $this->redirect( $event_id, 'error', \__( 'This event takes sign-ups on an external form, so it grants no event role.', 'anchor-schema' ), 'invalid' );
+        }
         $user_id = $this->module->entitlements->ensure_user( [ 'id' => $seat_id ] );
         if ( $user_id <= 0 ) {
             $this->redirect( $event_id, 'error', \__( 'That seat has no usable email address, so no account could be resolved.', 'anchor-schema' ), 'invalid' );
@@ -1128,7 +1146,10 @@ class Roster {
             // Nothing was sent and nothing went wrong. The error channel would
             // send the operator to an error log with nothing in it, so this
             // goes to the ordinary notice channel and says which it is.
-            $this->redirect( $event_id, 'success', \__( 'Roster not sent — the roster email is switched off for this event.', 'anchor-schema' ) );
+            $message = $result->reason() === 'external_signup'
+                ? \__( 'Roster not sent — this event takes sign-ups on an external form, so it has no roster.', 'anchor-schema' )
+                : \__( 'Roster not sent — the roster email is switched off for this event.', 'anchor-schema' );
+            $this->redirect( $event_id, 'success', $message );
         } else {
             $this->redirect( $event_id, 'error', \__( 'Roster could not be sent — check the error log.', 'anchor-schema' ) );
         }
@@ -1317,6 +1338,11 @@ class Roster {
         // return a CSV of real attendee names and emails named after that id.
         if ( ! self::is_exportable_event( $event_id ) ) {
             \wp_die( \esc_html__( 'Invalid event.', 'anchor-schema' ) );
+        }
+        // An external-signup event has no roster to export (links are hidden,
+        // this refuses a bookmarked or hand-typed URL).
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            \wp_die( \esc_html__( 'This event takes sign-ups on an external form, so there is no roster to export.', 'anchor-schema' ) );
         }
         $scope = isset( $_GET['scope'] ) ? \sanitize_key( \wp_unslash( $_GET['scope'] ) ) : 'all';
         if ( ! \in_array( $scope, [ 'active', 'access' ], true ) ) {
@@ -1588,7 +1614,7 @@ class Roster {
      */
     private function export_table_all_dates( $parent_id, $scope ) {
         $parent_id = (int) $parent_id;
-        $children  = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+        $children  = $this->visible_group_children( $parent_id );
 
         $field_owner = []; // question key => the child id whose label resolves the heading.
         $per_child   = [];
@@ -1622,6 +1648,21 @@ class Roster {
         }
 
         return [ 'header' => $header, 'rows' => $rows ];
+    }
+
+    /**
+     * A group parent's dates that can have a roster: every child except the
+     * ones taking sign-ups on an external form. Feeds the all-dates export and
+     * decides whether the "Export all dates" bar is worth showing.
+     *
+     * @param int $parent_id
+     * @return int[]
+     */
+    public function visible_group_children( $parent_id ) {
+        $children = $this->module->occurrences ? $this->module->occurrences->children_any_status( (int) $parent_id ) : [];
+        return \array_values( \array_filter( $children, function ( $cid ) {
+            return ! $this->module->uses_external_signup( (int) $cid );
+        } ) );
     }
 
     /**
@@ -1961,7 +2002,10 @@ class Roster {
         $list_url   = \remove_query_arg( [ 'event_action', 'event_id', 'seat_id', 'roster_msg', 'roster_type', 'occurrence' ], $return_url );
         $page_url   = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $parent_id ], $list_url );
 
-        $children = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+        // $all keeps a bookmarked external child resolvable (its panel says "no
+        // roster"); $children is what can be picked: external dates get no tab.
+        $all      = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+        $children = $this->visible_group_children( $parent_id );
 
         // ?seat_id= is a single global query var; scope its "not found"
         // notice to the page level (once) rather than to every panel — every
@@ -1972,7 +2016,7 @@ class Roster {
         $seat_id    = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
         $seat_owner = 0;
         if ( $seat_id > 0 ) {
-            foreach ( $children as $cid ) {
+            foreach ( $all as $cid ) {
                 if ( self::seat_belongs_to_event( $seat_id, $cid ) ) {
                     $seat_owner = (int) $cid;
                     break;
@@ -1985,7 +2029,7 @@ class Roster {
             // The seat's own tab always wins, so the edit form it opened is
             // the one a reader actually sees.
             $active = $seat_owner;
-        } elseif ( \in_array( $requested, $children, true ) ) {
+        } elseif ( \in_array( $requested, $all, true ) ) {
             $active = $requested;
         } else {
             $active = isset( $children[0] ) ? (int) $children[0] : 0;
@@ -2006,8 +2050,10 @@ class Roster {
                 <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'Seat not found.', 'anchor-schema' ); ?></p>
             <?php endif; ?>
 
-            <?php if ( empty( $children ) ) : ?>
+            <?php if ( empty( $all ) ) : ?>
                 <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'No dates currently scheduled.', 'anchor-schema' ); ?></p>
+            <?php elseif ( empty( $children ) ) : ?>
+                <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'Every date of this event takes sign-ups on an external form, so there are no attendees to show here.', 'anchor-schema' ); ?></p>
             <?php else : ?>
                 <div class="anchor-roster-fe-tabs">
                     <div class="anchor-roster-fe-tabbar">
@@ -2035,10 +2081,12 @@ class Roster {
                             ><?php echo \esc_html( $label ); ?><?php if ( '' !== $badge ) : ?> <span class="anchor-roster-fe-badge anchor-roster-fe-badge--<?php echo \esc_attr( $badge ); ?>"><?php echo \esc_html( $this->child_badge_label( $badge ) ); ?></span><?php endif; ?></a>
                         <?php endforeach; ?>
                     </div>
+                    <?php if ( $this->visible_group_children( $parent_id ) ) : ?>
                     <p class="anchor-roster-fe-tools anchor-roster-fe-all-dates">
                         <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export all dates', 'anchor-schema' ); ?></a>
                         <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export all dates (confirmed only)', 'anchor-schema' ); ?></a>
                     </p>
+                    <?php endif; ?>
                     </div><!-- .anchor-roster-fe-tabbar -->
 
                     <?php
@@ -2199,6 +2247,9 @@ class Roster {
      */
     private function render_roster_panel( $event_id, $self_url, $announce_missing_seat = true ) {
         $event_id = (int) $event_id;
+        if ( ! $this->module->roster_capable( $event_id ) ) {
+            return '<p class="anchor-event-notice">' . \esc_html__( 'This event takes registrations on an external form, so it has no roster here.', 'anchor-schema' ) . '</p>';
+        }
         $seat_id  = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
 
         $questions = $this->module_questions( $event_id );

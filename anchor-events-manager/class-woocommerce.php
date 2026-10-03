@@ -1253,6 +1253,14 @@ class WooCommerce {
         // WooCommerce treats a draft product as purchasable, sailed past it
         // entirely. The event-level answer is now taken once, up front, from
         // the same authority the storefront rendered from, and it says why.
+        // An event switched to an external signup form keeps its synced product
+        // and tiers; the public nonce must not still sell it. (Not folded into
+        // bookability(): the schema Offer and the external render read that
+        // for external events and rely on it staying open.)
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            \wp_send_json_error( [ 'messages' => [ \__( 'This event takes sign-ups on an external form, so it cannot be added to the cart.', 'anchor-schema' ) ] ] );
+        }
+
         $event_state = $this->module->bookability( $event_id );
         if ( ! $this->module->is_bookable( $event_state ) ) {
             \wp_send_json_error( [ 'messages' => [ $this->bookability_message( $event_state, '', $event_id ) ] ] );
@@ -1468,6 +1476,12 @@ class WooCommerce {
             if ( $parent_id > 0 && \get_post_status( $parent_id ) !== 'publish' ) {
                 return false;
             }
+        }
+
+        // A leftover product of an event now signing up externally is not for
+        // sale, on any purchase path (cart, checkout, permalink).
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            return false;
         }
 
         // WOO-D2: one question, one authority. This used to re-implement the
@@ -3798,7 +3812,7 @@ class WooCommerce {
                 if ( ! $result->is_skipped() ) {
                     $evaluated['customer_email'] = true;
                 }
-                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
+                if ( $result->is_sent() || $this->is_settled_skip( $result ) ) {
                     // Sent, or the organizer switched THIS event's confirmation
                     // off — either way this event is settled, not failed, and
                     // stamping it stops the next reconcile re-deciding it
@@ -3840,7 +3854,7 @@ class WooCommerce {
 
             if ( $notify_organizer && $has_confirm && empty( $sent[ $gate_key ] ) ) {
                 $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed', $review_flags );
-                if ( $notice->is_sent() || ( $notice->is_skipped() && 'disabled' === $notice->reason() ) ) {
+                if ( $notice->is_sent() || $this->is_settled_skip( $notice ) ) {
                     // Same rule as the buyer confirmation: a type the organizer
                     // switched off is settled, not failed. This gate is already
                     // per event, so there is nothing to narrow.
@@ -3951,6 +3965,15 @@ class WooCommerce {
     }
 
     /**
+     * A skip that settles the event rather than failing it: the organizer
+     * switched the email off, or the event takes sign-ups on an external form
+     * and so sends no order mail at all. Either way stamp the gate and move on.
+     */
+    private function is_settled_skip( Outcome $outcome ) {
+        return $outcome->is_skipped() && \in_array( $outcome->reason(), [ 'disabled', 'external_signup' ], true );
+    }
+
+    /**
      * Build + send the buyer confirmation for ONE event's active seats on this
      * order. Also used by the manual "Resend confirmation" button, which loops
      * this over every event the order currently has active seats for
@@ -3976,9 +3999,12 @@ class WooCommerce {
      * @param int        $event_id     The event this confirmation is scoped to.
      * @param array|null $review_flags (by ref) Forwarded to collect_order_seats() —
      *                                 see its docblock (CodeRabbit finding-1).
-     * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
+     * @return Outcome sent | skipped (nothing_to_send, disabled, external_signup) | failed.
      */
     private function send_customer_confirmation( \WC_Order $order, array $settings, $event_id = 0, ?array &$review_flags = null ) {
+        if ( $this->module->uses_external_signup( (int) $event_id ) ) {
+            return Outcome::skipped( 'external_signup' ); // sign-ups happen on an external form
+        }
         $to = (string) $order->get_billing_email();
         if ( $to === '' ) {
             return Outcome::failed( 'no_address' );
@@ -4110,10 +4136,13 @@ class WooCommerce {
      *                                 see its docblock (CodeRabbit finding-1). Only
      *                                 ever called from dispatch_emails()'s batched
      *                                 pass, so always pass its $review_flags through.
-     * @return Outcome sent | skipped (disabled) | failed (no_address, wp_mail).
+     * @return Outcome sent | skipped (disabled, external_signup) | failed (no_address, wp_mail).
      */
     private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind, ?array &$review_flags = null ) {
         $event_id = (int) $event_id;
+        if ( $this->module->uses_external_signup( $event_id ) ) {
+            return Outcome::skipped( 'external_signup' );
+        }
         // The event can switch this email type off. Checked before anything is
         // built, so a disabled type resolves no template and never fires the
         // anchor_events_registration_email_html filter — send_customer_confirmation()
@@ -4428,7 +4457,7 @@ class WooCommerce {
             foreach ( $by_event as $eid => $seats ) {
                 $eid    = (int) $eid;
                 $result = $this->send_customer_confirmation( $order, $settings, $eid );
-                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
+                if ( $result->is_sent() || $this->is_settled_skip( $result ) ) {
                     // Sent, or the organizer switched THIS event's confirmation
                     // off — either way this event is settled (audit REG-D6).
                     $sent[ 'customer:' . $eid ] = \time();

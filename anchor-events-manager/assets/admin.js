@@ -40,12 +40,19 @@
     });
   }
 
+  function currentMode(){
+    return window.AnchorEventsRegistrationMode.effective(
+      $('#anchor_event_external_signup').is(':checked'),
+      $('#anchor_event_registration_mode').val()
+    );
+  }
+
+  // Capacity, dates, waitlist, sold-out and price only mean something for a
+  // registration taken here: shown when registration is on AND the event is
+  // not using an external signup form.
   function toggleRegistration(){
-    if($('#anchor_event_registration_enabled').is(':checked')){
-      $('.anchor-event-registration-fields').show();
-    } else {
-      $('.anchor-event-registration-fields').hide();
-    }
+    var on = $('#anchor_event_registration_enabled').is(':checked') && currentMode() !== 'external';
+    $('.anchor-event-registration-fields').toggle(on);
   }
 
   function toggleRegistrationType(){
@@ -57,6 +64,7 @@
     }
   }
 
+  // The mode comes from registration-mode.js (checkbox wins, then the select).
   // Task 1.3+1.4: show/hide the type-dependent and mode-dependent metabox
   // sections. A container carries data-when-type="a b" and/or
   // data-when-mode="c d" (space-separated). No such attribute on a container
@@ -64,18 +72,21 @@
   // only shows when both match.
   function applyConditionalVisibility(){
     var type = $('#anchor_event_type').val();
-    var mode = $('#anchor_event_registration_mode').val();
+    var mode = currentMode();
+    var rule = window.AnchorEventsRegistrationMode;
 
     $('.anchor-event-conditional').each(function(){
       var $el = $(this);
       var whenType = $el.attr('data-when-type');
-      var whenMode = $el.attr('data-when-mode');
-
       var typeMatches = !whenType || whenType.split(/\s+/).indexOf(type) !== -1;
-      var modeMatches = !whenMode || whenMode.split(/\s+/).indexOf(mode) !== -1;
-
-      $el.toggle(typeMatches && modeMatches);
+      $el.toggle(typeMatches && rule.matches($el.attr('data-when-mode'), mode));
     });
+
+    toggleRegistration();
+    // The wp-admin postboxes that only serve native registration. A class,
+    // not .toggle(): Screen Options owns these boxes' own display state.
+    $('#anchor_event_ticket_types, #anchor_event_registrants, #anchor_event_emails')
+      .toggleClass('anchor-event-native-only-hidden', mode === 'external');
   }
 
   // Session repeater (Sessions section, data-when-type="multisession").
@@ -344,6 +355,6 @@
     guardVirtualUrl();
     $('#anchor_event_registration_enabled').on('change', toggleRegistration);
     $('#anchor_event_registration_type').on('change', toggleRegistrationType);
-    $('#anchor_event_type, #anchor_event_registration_mode').on('change', applyConditionalVisibility);
+    $('#anchor_event_type, #anchor_event_registration_mode, #anchor_event_external_signup').on('change', applyConditionalVisibility);
   });
 })(jQuery);

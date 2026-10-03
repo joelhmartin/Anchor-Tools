@@ -79,11 +79,12 @@ test('type/registration-mode choosers toggle the conditional sections', async ({
 
   const typeSelect = page.locator('#anchor_event_type');
   const modeSelect = page.locator('#anchor_event_registration_mode');
+  const externalBox = page.locator('#anchor_event_external_signup');
   await expect(typeSelect).toBeVisible();
   await expect(modeSelect).toBeVisible();
 
   const sessionsSection = page.locator('.anchor-event-sessions-table').locator('..');
-  const externalSection = page.locator('[data-when-mode="external"]');
+  const externalSection = page.locator('.anchor-event-external-signup');
   const ticketsBox = page.locator('#anchor-event-tickets');
 
   // Default type=single, mode derives to 'free' for a brand-new event — the
@@ -98,14 +99,16 @@ test('type/registration-mode choosers toggle the conditional sections', async ({
   await typeSelect.selectOption('multisession');
   await expect(sessionsSection).toBeVisible();
 
-  // Selecting External reveals the external fields and hides the
-  // WooCommerce ticket-tiers metabox (data-when-mode="wc").
-  await modeSelect.selectOption('external');
+  // Ticking "Use external signup form" reveals the external fields, hides the
+  // Registration select and the WooCommerce ticket tiers.
+  await externalBox.check();
   await expect(externalSection).toBeVisible();
+  await expect(modeSelect).toBeHidden();
   await expect(ticketsBox).toBeHidden();
 
-  // Switching to WooCommerce mode brings the ticket-tiers box back and
-  // hides the external fields again.
+  // Unticking hands control back to the select; WooCommerce brings the tiers back.
+  await externalBox.uncheck();
+  await expect(modeSelect).toBeVisible();
   await modeSelect.selectOption('wc');
   await expect(ticketsBox).toBeVisible();
   await expect(externalSection).toBeHidden();
@@ -119,7 +122,7 @@ test('session repeater add/remove keeps field names contiguous, and values persi
 
   await page.locator('#anchor_event_start_date').fill('2026-09-01');
   await page.locator('#anchor_event_type').selectOption('multisession');
-  await page.locator('#anchor_event_registration_mode').selectOption('external');
+  await page.locator('#anchor_event_external_signup').check();
 
   // A brand-new event has no sessions yet, so the repeater starts EMPTY
   // (no template-seeded row) — each row is added explicitly.
@@ -207,7 +210,7 @@ test('session repeater add/remove keeps field names contiguous, and values persi
   // Reload the editor and assert everything persisted, including the
   // sanitized embed (script stripped, iframe kept).
   await expect(page.locator('#anchor_event_type')).toHaveValue('multisession');
-  await expect(page.locator('#anchor_event_registration_mode')).toHaveValue('external');
+  await expect(page.locator('#anchor_event_external_signup')).toBeChecked();
   await expect(page.locator('#anchor_event_external_url')).toHaveValue('https://example.test/register-e2e');
   await expect(page.locator('#anchor_event_external_display_price')).toHaveValue('$495');
 

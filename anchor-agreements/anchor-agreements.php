@@ -37,6 +37,7 @@ class Module {
 			new Admin\ProductFields();
 		}
 		new Frontend\SigningEndpoint();
+		new Frontend\Checkout();
 		// Later tasks register their services here (see each task's "wire it" step).
 	}
 }

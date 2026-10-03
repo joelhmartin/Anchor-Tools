@@ -114,6 +114,15 @@ Labels: `wp-content/uploads/anchor-shipping/` with a deny-all `.htaccess` plus `
   - Otherwise → fall back to the checkbox-off behaviour for this order: state `needs_attention`, email `ReadyToShipEmail` to the shipping inbox (items, address, why it couldn't auto-size, **Create label** button that deep-links to the order panel; login required). No guessing.
   - Carrier error → `needs_attention`, note with the carrier message, ReadyToShip email including the error. Retryable errors retry 3× with backoff first.
 
+**Protection: declared value (insurance) and signature.** Two independent options, each with a mode setting:
+
+| Setting | `off` | `customer` | `auto` |
+|---|---|---|---|
+| Insurance (declared value) | never | checkout checkbox "Insure my shipment" adds a fee; label declares the order's shippable subtotal | label declares the shippable subtotal whenever it exceeds a threshold (default $100, UPS's free coverage); no checkout UI |
+| Signature required | never | checkout checkbox "Require a signature" adds a fee | every label requires a signature when the shippable subtotal exceeds a threshold |
+
+Customer fees are simple rules, not live quotes: insurance = `rate per $100` × ceil((subtotal − 100) / 100) (0 at or under $100); signature = flat amount. Both amounts are settings with no default (the checkbox is hidden until the store sets a fee). The choice is stored on the order (`_anchor_shipping_insure`, `_anchor_shipping_signature`) as a Woo fee line plus meta, and every label path (auto, manual, bulk) reads it; the order panel shows it and lets staff override per label. Reference prices verified 2026-10-03 on DEKA's account (2 lb Ground, Tampa→CA): base 11.66; declared $500 +4.75; declared $2,000 +19.00; signature +7.70. UPS: `PackageServiceOptions.DeclaredValue` and `PackageServiceOptions.DeliveryConfirmation.DCISType = 2` (signature required).
+
 **Manual (order panel).** Carrier, service, box preset or custom dims, weight → Create label. (UPS labels carry no ship date; the label is valid until scanned or auto-voided.) Lists shipments with Print / Void / Track. Address validation warning (UPS XAV) shown but not blocking — phase 3.
 
 **Bulk.** Orders list bulk action "Create shipping labels" → confirm screen with one row per order (box + weight prefilled from Packer, editable) → creates sequentially → one merged PDF (new Composer dependency `setasign/fpdi`; ZPL labels are concatenated instead) plus per-order results. Orders already labelled are skipped and listed.
@@ -139,7 +148,7 @@ Labels: `wp-content/uploads/anchor-shipping/` with a deny-all `.htaccess` plus `
 ## Phases
 
 1. Core + UPS adapter + manual order panel + label storage + settings (incl. box presets, product box field).
-2. Auto-ship + ReadyToShip/Label emails + cancel/refund void.
+2. Paid-order handling (checkbox) + ReadyToShip/Label emails + cancel/refund void + protection (insurance/signature, all three modes).
 3. Tracking poller + customer Shipped email + My Account + complete-on-delivery + bulk labels.
 4. Live checkout rates.
 

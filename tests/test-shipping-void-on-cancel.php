@@ -32,6 +32,8 @@ class Test_Shipping_Void_On_Cancel extends Anchor_Shipping_TestCase {
 		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( '_anchor_shipping_state' ) );
 		$notes = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
 		$this->assertStringContainsString( 'allowed void period', $notes );
+		$this->assertStringContainsString( 'Shipping problem: ', $notes );
+		$this->assertStringNotContainsString( 'Shipping label needed', $notes );
 	}
 
 	public function test_unlabelled_orders_make_no_carrier_calls() {

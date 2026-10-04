@@ -35,7 +35,10 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$this->assertNotNull( Module::instance()->store->absolute( $row['label_path'] ) );
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'labelled', $order->get_meta( LabelService::STATE_META ) );
-		$this->assertStringContainsString( '1ZK877V90300000001', implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) ) );
+		$note_text = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
+		$this->assertStringContainsString( '1ZK877V90300000001', $note_text );
+		$this->assertStringContainsString( '$11.66', $note_text );
+		$this->assertStringNotContainsString( '&#36;', $note_text );
 		$this->assertSame( [ $order->get_id(), $ids ], $fired );
 	}
 

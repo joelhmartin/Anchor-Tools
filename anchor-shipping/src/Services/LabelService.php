@@ -179,7 +179,7 @@ final class LabelService {
 				$carrier->label(),
 				implode( ', ', array_map( static fn( $p ) => $p->tracking_number, $result->packages ) ),
 				$services[ $service ] ?? $service,
-				null !== $result->cost ? ', ' . \wp_strip_all_tags( \wc_price( $result->cost, [ 'currency' => $result->currency ] ) ) : ''
+				null !== $result->cost ? ', ' . html_entity_decode( \wp_strip_all_tags( \wc_price( $result->cost, [ 'currency' => $result->currency ] ) ), ENT_QUOTES, 'UTF-8' ) : ''
 			)
 		);
 		$order->update_meta_data( self::STATE_META, 'labelled' );
@@ -227,8 +227,11 @@ final class LabelService {
 		$order->add_order_note(
 			'' === $reason
 				? \__( 'Shipping label needed.', 'anchor-schema' )
-				/* translators: %s: reason */
-				: sprintf( \__( 'Shipping label needed: %s', 'anchor-schema' ), $reason )
+				: ( 'problem' === $kind
+					/* translators: %s: reason */
+					? sprintf( \__( 'Shipping problem: %s', 'anchor-schema' ), $reason )
+					/* translators: %s: reason */
+					: sprintf( \__( 'Shipping label needed: %s', 'anchor-schema' ), $reason ) )
 		);
 		$order->save();
 		\do_action( 'problem' === $kind ? 'anchor_shipping_problem' : 'anchor_shipping_needs_attention', $order->get_id(), $reason );

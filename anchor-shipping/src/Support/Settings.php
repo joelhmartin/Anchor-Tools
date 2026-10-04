@@ -66,9 +66,13 @@ final class Settings {
 		return array_map( 'strval', $c );
 	}
 
-	/** wp_get_environment_type(), behind a filter so tests (and odd hosts) can override it. */
+	/**
+	 * wp_get_environment_type(), behind a filter so tests (and odd hosts) can override it.
+	 * Kinsta staging reports 'production' there but defines KINSTA_DEV_ENV, so that counts as 'staging'.
+	 */
 	public static function environment_type(): string {
-		return (string) \apply_filters( 'anchor_shipping_environment_type', \wp_get_environment_type() );
+		$type = ( \defined( 'KINSTA_DEV_ENV' ) && \KINSTA_DEV_ENV ) ? 'staging' : \wp_get_environment_type();
+		return (string) \apply_filters( 'anchor_shipping_environment_type', $type );
 	}
 
 	/**

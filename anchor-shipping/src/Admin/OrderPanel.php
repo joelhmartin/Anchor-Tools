@@ -52,6 +52,7 @@ final class OrderPanel {
 		$pack       = $this->packer->pack_order( $order );
 		$protection = Protection::for_order( $order, $this->packer->shippable_subtotal( $order ) );
 		$boxes      = Settings::boxes();
+		$unrecorded = (string) $order->get_meta( '_anchor_shipping_unrecorded' );
 
 		ob_start();
 		?>
@@ -79,8 +80,12 @@ final class OrderPanel {
 				<p class="anchor-shipping-note"><?php echo \esc_html( $pack->reason ); ?></p>
 			<?php endif; ?>
 
+			<?php if ( '' !== $unrecorded ) : ?>
+				<p class="anchor-shipping-note"><?php echo \esc_html( sprintf( /* translators: %s: UPS shipment identifier */ \__( 'UPS shipment %s was created but not recorded here. Void it at ups.com before creating another label.', 'anchor-schema' ), $unrecorded ) ); ?></p>
+			<?php endif; ?>
+
 			<div class="anchor-shipping-create">
-				<?php if ( $active ) : ?>
+				<?php if ( $active || '' !== $unrecorded ) : ?>
 					<label><input type="checkbox" name="additional" value="1"> <?php \esc_html_e( 'Additional package', 'anchor-schema' ); ?></label>
 				<?php endif; ?>
 				<p><select name="carrier"><?php foreach ( $this->carriers->all() as $id => $c ) : if ( ! $c->supports( 'labels' ) ) { continue; } ?><option value="<?php echo \esc_attr( $id ); ?>" <?php \selected( $s['default_carrier'], $id ); ?>><?php echo \esc_html( $c->label() ); ?></option><?php endforeach; ?></select>

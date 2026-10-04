@@ -78,4 +78,16 @@ class Test_Shipping_Admin_Ajax extends Anchor_Shipping_TestCase {
 		$this->assertMatchesRegularExpression( '/name="insure" value="1"\s+checked=/', $panel );
 		$this->assertStringContainsString( 'anchor-shipping-create', $panel );
 	}
+
+	public function test_panel_warns_about_an_unrecorded_shipment_and_allows_a_replacement() {
+		$this->configure_ups();
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$order->update_meta_data( '_anchor_shipping_unrecorded', '1ZUNREC0001' );
+		$order->save();
+		$m     = Module::instance();
+		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( $m->shipments, $m->packer, $m->carriers ) )->render_panel( $order );
+		$this->assertStringContainsString( 'UPS shipment 1ZUNREC0001 was created but not recorded here', $panel );
+		$this->assertStringContainsString( 'name="additional"', $panel );
+	}
 }

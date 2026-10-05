@@ -9,6 +9,9 @@
 use Anchor\Events\Events_Log;
 use Anchor\Events\Registrations;
 
+/** Thrown from the wp_redirect filter so a handler's exit() never runs. */
+class Anchor_Caps_Redirected_Woo extends \Exception {}
+
 /**
  * @group woocommerce
  */
@@ -321,5 +324,96 @@ class Test_WooCommerce_Confirmation_Emails extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( esc_url( $this->module()->room_url( $event_id ) ), $html, 'The attendee still gets the plain room URL.' );
 
 		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* External signup: Woo order mail is refused too                      */
+	/* ------------------------------------------------------------------ */
+
+	public function capture_mail( $short_circuit, $atts ) {
+		$this->mails[] = $atts;
+		return true;
+	}
+
+	/** @var array */
+	private $mails = [];
+
+	private function external_order( $mode = 'external' ) {
+		$event_id = $this->make_event( [ 'registration_mode' => $mode, 'external_url' => 'https://form.example/x' ] );
+		$order    = wc_create_order();
+		$order->set_billing_email( 'buyer@example.test' );
+		$order->save();
+		$this->make_seat( $event_id, [ 'order_id' => $order->get_id() ] );
+		return [ $event_id, $order ];
+	}
+
+	public function test_external_event_order_sends_no_buyer_confirmation() {
+		add_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10, 2 );
+		list( $event_id, $order ) = $this->external_order();
+
+		$outcome = $this->send_customer_confirmation( $order, $event_id );
+		$this->assertTrue( $outcome->is_skipped() );
+		$this->assertSame( 'external_signup', $outcome->reason() );
+
+		remove_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10 );
+		$this->assertCount( 0, $this->mails );
+	}
+
+	public function test_external_event_order_sends_no_organizer_notice() {
+		add_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10, 2 );
+		list( $event_id, $order ) = $this->external_order();
+		$method = new ReflectionMethod( get_class( $this->woocommerce() ), 'send_organizer_notice' );
+		$method->setAccessible( true );
+
+		foreach ( [ 'confirmed', 'released' ] as $kind ) {
+			$outcome = $method->invokeArgs( $this->woocommerce(), [ $order, $this->module()->get_settings(), $event_id, [ 'confirmed' => 1, 'waitlist' => 0, 'released' => 1 ], $kind ] );
+			$this->assertSame( 'external_signup', $outcome->reason(), $kind );
+		}
+
+		remove_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10 );
+		$this->assertCount( 0, $this->mails );
+	}
+
+	public function test_native_event_order_still_gets_its_buyer_confirmation() {
+		add_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10, 2 );
+		list( $event_id, $order ) = $this->external_order( 'wc' );
+
+		$outcome = $this->send_customer_confirmation( $order, $event_id );
+		remove_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10 );
+		$this->assertTrue( $outcome->is_sent(), 'Control: ' . $outcome->reason() );
+		$this->assertCount( 1, $this->mails );
+	}
+
+	public function test_manual_resend_settles_an_external_event_without_a_review_flag() {
+		add_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10, 2 );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_id, $order ) = $this->external_order();
+		$order_id = $order->get_id();
+
+		$_POST    = [ 'order_id' => $order_id, '_wpnonce' => wp_create_nonce( 'anchor_events_resend_' . $order_id ) ];
+		$_REQUEST = $_POST;
+		$trap     = function ( $location ) {
+			throw new Anchor_Caps_Redirected_Woo( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$this->woocommerce()->handle_resend_confirmation();
+			$this->fail( 'handle_resend_confirmation() did not redirect.' );
+		} catch ( Anchor_Caps_Redirected_Woo $e ) {
+			$this->assertNotEmpty( $e->getMessage() );
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+			remove_filter( 'pre_wp_mail', [ $this, 'capture_mail' ], 10 );
+			$_POST    = [];
+			$_REQUEST = [];
+		}
+
+		$fresh = wc_get_order( $order_id );
+		$sent  = $fresh->get_meta( Anchor\Events\WooCommerce::EMAILS_SENT_META );
+		$this->assertIsArray( $sent );
+		$this->assertNotEmpty( $sent[ 'customer:' . $event_id ] ?? 0, 'The gate is stamped settled.' );
+		$flags = $fresh->get_meta( Events_Log::ORDER_REVIEW_META );
+		$this->assertEmpty( $flags, 'A deliberate skip is not a defect.' );
+		$this->assertCount( 0, $this->mails );
 	}
 }

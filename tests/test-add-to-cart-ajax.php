@@ -161,6 +161,34 @@ class Test_Add_To_Cart_Ajax extends WP_Ajax_UnitTestCase {
 		$this->assertStringContainsString( 'closed', strtolower( $this->messages( $decoded ) ) );
 	}
 
+	/**
+	 * An event switched wc -> external keeps its synced product and tiers; the
+	 * public add-to-cart nonce must not still sell it (checkout would mint
+	 * seats on an event that takes sign-ups elsewhere).
+	 */
+	public function test_wc_event_switched_to_external_cannot_be_carted() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		$this->assertSame( 'open', $this->module()->bookability( $event ), 'Control: native wc event is bookable.' );
+
+		update_post_meta( $event, '_anchor_event_registration_mode', 'external' );
+		$decoded = $this->post( $event, [ $tiers[0]['id'] => 1 ] );
+
+		$this->assertFalse( $decoded['success'] );
+		$this->assertStringContainsString( 'external form', $this->messages( $decoded ) );
+		$this->assertSame( 0, WC()->cart->get_cart_contents_count() );
+	}
+
+	/** The leftover tier variation is not purchasable either (WooCommerce's own gate). */
+	public function test_leftover_variation_of_an_external_event_is_not_purchasable() {
+		list( $event ) = $this->make_ticketed_event();
+		$variations = wc_get_product( $this->product_sync()->managed_product_id( $event ) )->get_children();
+		$this->assertNotEmpty( $variations );
+		$this->assertTrue( wc_get_product( $variations[0] )->is_purchasable(), 'Control: purchasable while native wc.' );
+
+		update_post_meta( $event, '_anchor_event_registration_mode', 'external' );
+		$this->assertFalse( wc_get_product( $variations[0] )->is_purchasable() );
+	}
+
 	/** "Enable registration" unticked means no sale, by any route. */
 	public function test_registration_disabled_event_is_refused() {
 		list( $event, $tiers ) = $this->make_ticketed_event();

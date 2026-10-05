@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true,"announcements":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true,"announcements":true,"agreements":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery + Compliance + Courses + Announcements modules enabled."
+log "Events + Gallery + Compliance + Courses + Announcements + Agreements modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -890,4 +890,38 @@ log "Stream event URL: ${STREAM_EVENT_URL}"
 log "Stream event token URL: ${STREAM_TOKEN_URL}"
 log "In-person toggle-off room URL: ${IN_PERSON_TOGGLE_OFF_ROOM_URL}"
 log "In-person toggle-on room URL: ${IN_PERSON_TOGGLE_ON_ROOM_URL}"
+# ---------------------------------------------------------------------------
+# Anchor Agreements fixture (Task 8): a default agreement "Cancellation Policy"
+# plus a virtual product (slug agreement-test) that requires it, so
+# e2e/agreements-checkout.spec.js can drive the signing modal at checkout.
+# Idempotent: both are looked up by slug. The product id is merged into
+# e2e/.seed.json as agreements_product_id.
+# ---------------------------------------------------------------------------
+AAGR_DOC="$(wp post list --post_type=anchor_agreement --post_status=any --name=cancellation-policy --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${AAGR_DOC}" ]; then
+  AAGR_DOC="$(wp post create --post_type=anchor_agreement --post_status=publish --post_title='Cancellation Policy' --post_name=cancellation-policy --post_content='<p>Cancellations within 30 days forfeit the deposit.</p>' --porcelain)"
+  log "Created agreement #${AAGR_DOC}."
+fi
+wp eval 'update_option( "anchor_agreements_settings", array_merge( (array) get_option( "anchor_agreements_settings", [] ), [ "default_agreement_id" => '"${AAGR_DOC}"' ] ), false );'
+AAGR_PRODUCT="$(wp post list --post_type=product --post_status=any --name=agreement-test --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${AAGR_PRODUCT}" ]; then
+  AAGR_PRODUCT="$(wp wc product create --name='Agreement Test' --slug=agreement-test --regular_price=10 --virtual=true --user=1 --porcelain)"
+  log "Created agreement product #${AAGR_PRODUCT}."
+fi
+wp post meta update "${AAGR_PRODUCT}" _anchor_agreement_required yes >/dev/null
+# Second agreement + product so the modal's multi-document step/review flow is testable.
+AAGR_DOC2="$(wp post list --post_type=anchor_agreement --post_status=any --name=privacy-addendum --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${AAGR_DOC2}" ]; then
+  AAGR_DOC2="$(wp post create --post_type=anchor_agreement --post_status=publish --post_title='Privacy Addendum' --post_name=privacy-addendum --post_content='<p>We keep your signature on file.</p>' --porcelain)"
+fi
+AAGR_PRODUCT2="$(wp post list --post_type=product --post_status=any --name=agreement-test-2 --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${AAGR_PRODUCT2}" ]; then
+  AAGR_PRODUCT2="$(wp wc product create --name='Agreement Test 2' --slug=agreement-test-2 --regular_price=10 --virtual=true --user=1 --porcelain)"
+fi
+wp post meta update "${AAGR_PRODUCT2}" _anchor_agreement_required yes >/dev/null
+wp post meta update "${AAGR_PRODUCT2}" _anchor_agreement_id "${AAGR_DOC2}" >/dev/null
+wp eval '$p = ABSPATH . "wp-content/plugins/'"${PLUGIN_SLUG}"'/e2e/.seed.json"; $d = json_decode( (string) file_get_contents( $p ), true ) ?: []; $d["agreements_product_id"] = '"${AAGR_PRODUCT}"'; $d["agreements_product2_id"] = '"${AAGR_PRODUCT2}"'; file_put_contents( $p, json_encode( $d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );'
+log "Agreements fixture ready: agreement #${AAGR_DOC}, product #${AAGR_PRODUCT}."
+echo "AAGR_PRODUCT_ID=${AAGR_PRODUCT}"
+
 log "Seed complete."

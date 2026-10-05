@@ -64,7 +64,7 @@ class Anchor_Compliance_Dsar {
 		// the column list — with one space a later re-run can mis-parse the
 		// line and emit a duplicate-key ALTER.
 		$sql = "CREATE TABLE {$table} (
-			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
 			created_at DATETIME NOT NULL,
 			type VARCHAR(16) NOT NULL DEFAULT 'access',
 			email VARCHAR(255) NOT NULL DEFAULT '',

@@ -40,7 +40,7 @@ class Anchor_Compliance_Consent_Log {
 		$charset = $wpdb->get_charset_collate();
 
 		$sql = "CREATE TABLE {$table} (
-			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
 			consent_id CHAR(36) NOT NULL,
 			created_at DATETIME NOT NULL,
 			ip_hash CHAR(64) NOT NULL DEFAULT '',
@@ -50,7 +50,7 @@ class Anchor_Compliance_Consent_Log {
 			policy_version VARCHAR(16) NOT NULL DEFAULT '1',
 			method VARCHAR(32) NOT NULL DEFAULT 'banner',
 			ua_hash CHAR(64) NOT NULL DEFAULT '',
-			PRIMARY KEY (id),
+			PRIMARY KEY  (id),
 			KEY consent_id (consent_id),
 			KEY created_at (created_at),
 			KEY method (method)

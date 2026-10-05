@@ -16,6 +16,7 @@
         "psr-4": {
             "Anchor\\Courses\\": "anchor-courses/src/",
             "Anchor\\Announcements\\": "anchor-announcements/src/",
+            "Anchor\\Agreements\\": "anchor-agreements/src/",
             "Anchor\\Shipping\\": "anchor-shipping/src/"
         }
     },

@@ -37,6 +37,7 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
             'Anchor\\Shipping\\' => 16,
             'Anchor\\Courses\\' => 15,
             'Anchor\\Announcements\\' => 21,
+            'Anchor\\Agreements\\' => 18,
         ),
     );
 
@@ -76,6 +77,10 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
         'Anchor\\Announcements\\' => 
         array (
             0 => __DIR__ . '/../..' . '/anchor-announcements/src',
+        ),
+        'Anchor\\Agreements\\' => 
+        array (
+            0 => __DIR__ . '/../..' . '/anchor-agreements/src',
         ),
     );
 

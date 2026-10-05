@@ -193,3 +193,6 @@
 .anchor-event-recurrence-error{
   margin:0 0 12px;
 }
+
+/* "Use external signup form": postboxes that only serve native registration step aside (admin.js). */
+.anchor-event-native-only-hidden { display: none !important; }

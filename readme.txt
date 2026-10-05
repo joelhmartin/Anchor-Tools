@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.35.0
+Stable tag: 3.35.1
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,12 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.35.1 =
+
+Compliance: the consent-log and privacy-request tables now declare their ID column the
+way MariaDB reports it, so the table installer no longer runs a needless ALTER TABLE
+on every run. No data or behaviour change. Also fixes a test-suite leak.
 
 = 3.35.0 =
 

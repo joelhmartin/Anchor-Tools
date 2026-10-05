@@ -85,17 +85,6 @@ if ( class_exists( 'WooCommerce' ) && class_exists( 'WC_Install' ) ) {
 	}
 }
 
-// Same for the Compliance tables, whose installers run from admin_init. Left to run
-// inside a test, dbDelta's ALTER TABLE implicitly COMMITs the per-test transaction
-// and the version flag written after it is rolled back, so every Ajax test that
-// fires admin_init re-installs and commits whatever else that test wrote (e.g. the
-// events status backfill's option, which then broke Test_Status in full runs).
-foreach ( [ 'Anchor_Compliance_Consent_Log', 'Anchor_Compliance_Dsar' ] as $anchor_installer ) {
-	if ( class_exists( $anchor_installer ) ) {
-		$anchor_installer::maybe_install();
-	}
-}
-
 // Shared base test case.
 require __DIR__ . '/class-anchor-events-testcase.php';
 require __DIR__ . '/class-anchor-courses-testcase.php';

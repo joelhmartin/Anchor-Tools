@@ -26,8 +26,9 @@ final class UpsClient {
 	}
 
 	/**
-	 * @param bool $idempotent false for calls that spend money (ship): a transport timeout
-	 *                         then means "UPS may have acted", so it is not retryable.
+	 * @param bool $idempotent false for calls that spend money (ship): a transport timeout or a
+	 *                         5xx other than 503 then means "UPS may have acted", so it is
+	 *                         'uncertain' and not retryable. Idempotent calls retry any 5xx.
 	 */
 	public function request( string $method, string $path, ?array $body = null, bool $idempotent = true ): array {
 		$res = $this->send( $method, $path, $body, $this->token(), $idempotent );
@@ -38,7 +39,9 @@ final class UpsClient {
 				throw new CarrierError( 'auth', \__( 'UPS rejected the API credentials. Check the Client ID and Secret.', 'anchor-schema' ) );
 			}
 		}
-		if ( 504 === $res['code'] && ! $idempotent ) {
+		// A purchase that hit a server error may still have gone through (500/502/504 can all
+		// come after UPS acted). Only 503 and 429 mean "not processed", so only those retry.
+		if ( ! $idempotent && $res['code'] >= 500 && 503 !== $res['code'] ) {
 			throw $this->uncertain();
 		}
 		if ( $res['code'] >= 400 ) {
@@ -115,7 +118,7 @@ final class UpsClient {
 	}
 
 	private function uncertain(): CarrierError {
-		return new CarrierError( 'uncertain', \__( 'UPS did not answer in time and may have created this label. Check Shipping History on ups.com before creating another.', 'anchor-schema' ), false );
+		return new CarrierError( 'uncertain', \__( 'UPS did not confirm the result and may have created this label. Check Shipping History on ups.com before creating another.', 'anchor-schema' ), false );
 	}
 
 	private function error( array $res ): CarrierError {

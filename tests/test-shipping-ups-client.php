@@ -133,4 +133,40 @@ class Test_Shipping_Ups_Client extends Anchor_Shipping_TestCase {
 			$this->assertTrue( $e->retryable );
 		}
 	}
+
+	/** 500/502 can come after UPS acted on a purchase: never retried. 503/429 mean "not processed". */
+	public function test_non_idempotent_500_and_502_are_uncertain_but_429_stays_retryable() {
+		$this->queue_token();
+		foreach ( [ 500, 502 ] as $code ) {
+			$this->queue_response( $code, 'Server Error' );
+			try {
+				$this->client()->request( 'POST', '/api/ship', [], false );
+				$this->fail( 'expected CarrierError' );
+			} catch ( CarrierError $e ) {
+				$this->assertSame( 'uncertain', $e->carrier_code, "HTTP {$code}" );
+				$this->assertFalse( $e->retryable, "HTTP {$code}" );
+			}
+		}
+		$this->queue_response( 429, 'Too Many Requests' );
+		try {
+			$this->client()->request( 'POST', '/api/ship', [], false );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertNotSame( 'uncertain', $e->carrier_code );
+			$this->assertTrue( $e->retryable );
+		}
+		$this->assertCount( 4, $this->requests, 'one token + one request each, nothing re-sent' );
+	}
+
+	public function test_idempotent_500_stays_retryable() {
+		$this->queue_token();
+		$this->queue_response( 500, 'Server Error' );
+		try {
+			$this->client()->request( 'DELETE', '/api/void' );
+			$this->fail( 'expected CarrierError' );
+		} catch ( CarrierError $e ) {
+			$this->assertNotSame( 'uncertain', $e->carrier_code );
+			$this->assertTrue( $e->retryable );
+		}
+	}
 }

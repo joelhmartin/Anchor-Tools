@@ -29,6 +29,46 @@ class Test_Shipping_Settings_Page extends Anchor_Shipping_TestCase {
 		$this->assertSame( 25.4, $out['boxes'][0]['length'] );
 	}
 
+	public function test_renaming_a_box_keeps_its_id() {
+		$current = Settings::all();
+		$current['boxes'] = [ [ 'id' => 'small-box', 'name' => 'Small Box', 'length' => 25.4, 'width' => 20.3, 'height' => 10.2, 'empty_weight' => 0.2, 'max_weight' => 10 ] ];
+		$out = $this->page()->sanitize(
+			[ 'boxes' => [
+				[ 'id' => 'small-box', 'name' => 'Small mailer', 'length' => '25.4', 'width' => '20.3', 'height' => '10.2' ],
+				[ 'id' => '', 'name' => 'Small Box', 'length' => '30', 'width' => '20', 'height' => '10' ], // new row reusing the old name
+			] ],
+			$current
+		);
+		$this->assertSame( [ 'small-box', 'small-box-2' ], wp_list_pluck( $out['boxes'], 'id' ) );
+		$this->assertSame( 'Small mailer', $out['boxes'][0]['name'] );
+	}
+
+	public function test_names_differing_only_in_case_get_distinct_ids() {
+		$out = $this->page()->sanitize(
+			[ 'boxes' => [
+				[ 'name' => 'Small Box', 'length' => '1', 'width' => '1', 'height' => '1' ],
+				[ 'name' => 'small box', 'length' => '2', 'width' => '2', 'height' => '2' ],
+				[ 'name' => 'Custom', 'length' => '3', 'width' => '3', 'height' => '3' ],
+			] ],
+			Settings::all()
+		);
+		$ids = wp_list_pluck( $out['boxes'], 'id' );
+		$this->assertSame( [ 'small-box', 'small-box-2', 'custom-2' ], $ids, "unique, and never the order panel's 'custom'" );
+		Settings::save( $out );
+		$this->assertCount( 3, Settings::boxes() );
+	}
+
+	public function test_render_posts_each_box_id_back() {
+		$this->configure_ups();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		get_user_by( 'id', get_current_user_id() )->add_cap( 'manage_woocommerce' );
+		ob_start();
+		$this->page()->render();
+		$html = ob_get_clean();
+		$box  = Settings::all()['boxes'][0];
+		$this->assertStringContainsString( 'name="anchor_shipping[boxes][0][id]" value="' . esc_attr( $box['id'] ) . '"', $html );
+	}
+
 	public function test_modes_and_flags_are_whitelisted() {
 		$out = $this->page()->sanitize( [ 'insurance' => [ 'mode' => 'evil' ], 'signature' => [ 'mode' => 'auto' ], 'auto_label' => '1', 'label_format' => 'PDF' ], Settings::all() );
 		$this->assertSame( 'off', $out['insurance']['mode'] );

@@ -106,6 +106,35 @@ class Test_Shipping_Paid_Orders extends Anchor_Shipping_TestCase {
 		$this->assertStringContainsString( 'Shipping problem', $sent[0]['subject'] );
 	}
 
+	/** UPS answered 200 but the label is unusable / the body unreadable / a 500: a person checks, nothing re-buys. */
+	public function test_possibly_billed_failures_go_to_the_problem_inbox_never_ready_to_ship_and_never_retry() {
+		$this->configure_ups( [ 'auto_label' => true ] );
+		$bad_label = $this->fixture( 'ups-ship-single' );
+		unset( $bad_label['ShipmentResponse']['ShipmentResults']['PackageResults']['ShippingLabel']['GraphicImage'] );
+		$cases = [
+			'billed, bad label' => [ 200, $bad_label ],
+			'truncated body'    => [ 200, '{"ShipmentResponse":{"ShipmentResults":{"Shipment' ],
+			'HTTP 500'          => [ 500, 'Internal Server Error' ],
+		];
+		foreach ( $cases as $label => [ $code, $body ] ) {
+			$order = $this->make_order( [], 'processing' );
+			$this->requests = [];
+			delete_transient( 'anchor_shipping_ups_token_' . md5( 'sandbox|cid' ) );
+			$this->queue_token();
+			$this->queue_response( $code, $body );
+			reset_phpmailer_instance();
+			$this->handler()->run( $order->get_id() );
+			$this->assertSame( 'needs_attention', $this->state( $order->get_id() ), $label );
+			$this->assertFalse( (bool) as_has_scheduled_action( PaidOrderHandler::ACTION, [ $order->get_id(), 2 ], PaidOrderHandler::GROUP ), "{$label}: no retry" );
+			$this->assertCount( 2, $this->requests, "{$label}: one token + one purchase only" );
+			$sent = tests_retrieve_phpmailer_instance()->mock_sent;
+			$this->assertCount( 1, $sent, $label );
+			$this->assertStringContainsString( 'Shipping problem', $sent[0]['subject'], $label );
+			$this->assertStringNotContainsString( 'Ready to ship', $sent[0]['subject'], $label );
+			$this->assertStringNotContainsString( 'Create label', $sent[0]['body'], $label );
+		}
+	}
+
 	public function test_unexpected_exception_still_flags_the_order() {
 		$this->configure_ups( [ 'auto_label' => true, 'default_carrier' => 'boom' ] );
 		$order = $this->make_order( [], 'processing' );

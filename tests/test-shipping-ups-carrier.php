@@ -88,7 +88,7 @@ class Test_Shipping_Ups_Carrier extends Anchor_Shipping_TestCase {
 		$this->assertStringEndsWith( '/api/shipments/v2409/void/cancel/1ZK877V90300000001', $this->requests[1]['url'] );
 	}
 
-	public function test_label_without_image_is_rejected_with_the_shipment_id() {
+	public function test_label_without_image_is_uncertain_and_keeps_the_billed_identifiers() {
 		$this->configure_ups();
 		$this->queue_token();
 		$json = $this->fixture( 'ups-ship-single' );
@@ -98,12 +98,15 @@ class Test_Shipping_Ups_Carrier extends Anchor_Shipping_TestCase {
 			( new UpsCarrier() )->create_label( $this->request() );
 			$this->fail( 'Expected CarrierError' );
 		} catch ( CarrierError $e ) {
-			$this->assertSame( 'parse', $e->carrier_code );
+			$this->assertSame( 'uncertain', $e->carrier_code );
+			$this->assertFalse( $e->retryable );
+			$this->assertSame( '1ZK877V90300000001', $e->shipment_id );
+			$this->assertSame( [ '1ZK877V90300000001' ], $e->tracking_numbers );
 			$this->assertStringContainsString( '1ZK877V90300000001', $e->getMessage() );
 		}
 	}
 
-	public function test_package_count_mismatch_is_rejected() {
+	public function test_package_count_mismatch_is_uncertain() {
 		$this->configure_ups();
 		$this->queue_token();
 		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
@@ -111,8 +114,28 @@ class Test_Shipping_Ups_Carrier extends Anchor_Shipping_TestCase {
 			( new UpsCarrier() )->create_label( $this->request( [ new Parcel( 1, 10, 10, 10 ), new Parcel( 1, 10, 10, 10 ) ] ) );
 			$this->fail( 'Expected CarrierError' );
 		} catch ( CarrierError $e ) {
-			$this->assertSame( 'parse', $e->carrier_code );
+			$this->assertSame( 'uncertain', $e->carrier_code );
+			$this->assertSame( '1ZK877V90300000001', $e->shipment_id );
 			$this->assertStringContainsString( '1ZK877V90300000001', $e->getMessage() );
+		}
+	}
+
+	/** A 200 whose body is cut off or reshaped: the purchase may have happened, so never 'parse'. */
+	public function test_unreadable_200_is_uncertain_not_parse() {
+		$this->configure_ups();
+		foreach ( [ substr( (string) wp_json_encode( $this->fixture( 'ups-ship-single' ) ), 0, 120 ), [ 'ShipmentResponse' => [ 'Results' => [] ] ] ] as $body ) {
+			$this->queue_token();
+			$this->queue_response( 200, $body );
+			delete_transient( 'anchor_shipping_ups_token_' . md5( 'sandbox|cid' ) );
+			try {
+				( new UpsCarrier() )->create_label( $this->request() );
+				$this->fail( 'Expected CarrierError' );
+			} catch ( CarrierError $e ) {
+				$this->assertSame( 'uncertain', $e->carrier_code );
+				$this->assertFalse( $e->retryable );
+				$this->assertSame( '', $e->shipment_id );
+				$this->assertStringContainsString( 'may have been created', $e->getMessage() );
+			}
 		}
 	}
 }

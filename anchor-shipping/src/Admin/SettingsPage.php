@@ -49,23 +49,7 @@ final class SettingsPage {
 			$out['ship_from'][ $k ] = $txt( $post['ship_from'][ $k ] ?? $current['ship_from'][ $k ] );
 		}
 
-		$boxes = [];
-		foreach ( (array) ( $post['boxes'] ?? $current['boxes'] ) as $row ) {
-			$name = $txt( $row['name'] ?? '' );
-			if ( '' === $name || $num( $row['length'] ?? 0 ) <= 0 || $num( $row['width'] ?? 0 ) <= 0 || $num( $row['height'] ?? 0 ) <= 0 ) {
-				continue;
-			}
-			$boxes[] = [
-				'id'           => \sanitize_key( str_replace( ' ', '-', strtolower( $name ) ) ),
-				'name'         => $name,
-				'length'       => $num( $row['length'] ),
-				'width'        => $num( $row['width'] ),
-				'height'       => $num( $row['height'] ),
-				'empty_weight' => $num( $row['empty_weight'] ?? 0 ),
-				'max_weight'   => $num( $row['max_weight'] ?? 0 ),
-			];
-		}
-		$out['boxes'] = $boxes;
+		$out['boxes'] = $this->sanitize_boxes( (array) ( $post['boxes'] ?? $current['boxes'] ), $num );
 
 		foreach ( $this->carriers->all() as $id => $carrier ) {
 			foreach ( $carrier->settings_fields() as $key => $field ) {
@@ -88,6 +72,59 @@ final class SettingsPage {
 		$out['signature']['fee']         = '' === ( $post['signature']['fee'] ?? '' ) ? '' : (string) $num( $post['signature']['fee'] );
 
 		return $out;
+	}
+
+	/**
+	 * A box's id is what products store (_anchor_shipping_box), so it is fixed when the row is
+	 * created and posted back unchanged afterwards: renaming a box never orphans its products.
+	 * New rows get an id from the name, made unique (and never the order panel's 'custom').
+	 */
+	private function sanitize_boxes( array $rows, callable $num ): array {
+		$valid = [];
+		foreach ( $rows as $row ) {
+			$row  = (array) $row;
+			$name = \sanitize_text_field( (string) ( $row['name'] ?? '' ) );
+			if ( '' === $name || $num( $row['length'] ?? 0 ) <= 0 || $num( $row['width'] ?? 0 ) <= 0 || $num( $row['height'] ?? 0 ) <= 0 ) {
+				continue;
+			}
+			$valid[] = [ 'id' => \sanitize_key( (string) ( $row['id'] ?? '' ) ), 'name' => $name, 'row' => $row ];
+		}
+
+		// Existing ids first, so a new row can never take an id an existing box keeps.
+		$taken = [];
+		foreach ( $valid as $i => $v ) {
+			if ( '' !== $v['id'] && ! isset( $taken[ $v['id'] ] ) ) {
+				$taken[ $v['id'] ] = true;
+			} else {
+				$valid[ $i ]['id'] = ''; // blank, or a duplicated row: give it its own id below
+			}
+		}
+
+		$taken['custom'] = true; // the order panel's "Custom size" choice: never generate it
+		$boxes           = [];
+		foreach ( $valid as $v ) {
+			$id = $v['id'];
+			if ( '' === $id ) {
+				$base = \sanitize_key( str_replace( ' ', '-', strtolower( $v['name'] ) ) );
+				$base = '' !== $base ? $base : 'box';
+				$id   = $base;
+				for ( $n = 2; isset( $taken[ $id ] ); $n++ ) {
+					$id = $base . '-' . $n;
+				}
+				$taken[ $id ] = true;
+			}
+			$row     = $v['row'];
+			$boxes[] = [
+				'id'           => $id,
+				'name'         => $v['name'],
+				'length'       => $num( $row['length'] ),
+				'width'        => $num( $row['width'] ),
+				'height'       => $num( $row['height'] ),
+				'empty_weight' => $num( $row['empty_weight'] ?? 0 ),
+				'max_weight'   => $num( $row['max_weight'] ?? 0 ),
+			];
+		}
+		return $boxes;
 	}
 
 	public function render(): void {
@@ -137,7 +174,7 @@ final class SettingsPage {
 					<tbody>
 					<?php foreach ( array_merge( $s['boxes'], [ [], [] ] ) as $i => $b ) : ?>
 						<tr><?php foreach ( [ 'name', 'length', 'width', 'height', 'empty_weight', 'max_weight' ] as $k ) : ?>
-							<td><input type="text" name="<?php echo \esc_attr( $name( "[boxes][{$i}][{$k}]" ) ); ?>" value="<?php echo \esc_attr( (string) ( $b[ $k ] ?? '' ) ); ?>"></td>
+							<td><?php if ( 'name' === $k ) : ?><input type="hidden" name="<?php echo \esc_attr( $name( "[boxes][{$i}][id]" ) ); ?>" value="<?php echo \esc_attr( (string) ( $b['id'] ?? '' ) ); ?>"><?php endif; ?><input type="text" name="<?php echo \esc_attr( $name( "[boxes][{$i}][{$k}]" ) ); ?>" value="<?php echo \esc_attr( (string) ( $b[ $k ] ?? '' ) ); ?>"></td>
 						<?php endforeach; ?></tr>
 					<?php endforeach; ?>
 					</tbody>

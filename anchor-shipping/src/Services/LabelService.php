@@ -58,7 +58,7 @@ final class LabelService {
 			$shipment_id,
 			$numbers,
 			$row_exists ? \__( 'its label file could not be saved', 'anchor-schema' ) : \__( 'it could not be recorded', 'anchor-schema' ),
-			$e->getMessage()
+			rtrim( $e->getMessage(), '. ' )
 		);
 		$this->mark_needs_attention( $order, $message, 'problem' );
 		throw new LabelNotSaved( $message, 0, $e );
@@ -113,18 +113,25 @@ final class LabelService {
 		$declared   = isset( $opts['declared_value'] ) ? max( 0.0, (float) $opts['declared_value'] ) : $protection['declared_value'];
 		$signature  = isset( $opts['signature'] ) ? (bool) $opts['signature'] : $protection['signature'];
 
-		$result = $carrier->create_label(
-			new ShipmentRequest(
-				Settings::ship_from(),
-				$to,
-				$parcels,
-				$service,
-				sprintf( 'Order %s', $order->get_order_number() ),
-				$declared,
-				$signature,
-				$order->get_currency() ?: 'USD'
-			)
-		);
+		try {
+			$result = $carrier->create_label(
+				new ShipmentRequest(
+					Settings::ship_from(),
+					$to,
+					$parcels,
+					$service,
+					sprintf( 'Order %s', $order->get_order_number() ),
+					$declared,
+					$signature,
+					$order->get_currency() ?: 'USD'
+				)
+			);
+		} catch ( CarrierError $e ) {
+			if ( 'uncertain' === $e->carrier_code && ( '' !== $e->shipment_id || $e->tracking_numbers ) ) {
+				$this->keep_billed_without_label( $order, $carrier->label(), $carrier_id, $service, $parcels, $declared, $signature, $source, $e );
+			}
+			throw $e;
+		}
 
 		// The carrier label exists (and is billed) from here on. Record the row FIRST so a
 		// failed file save still blocks a second purchase and can be voided from the panel.
@@ -134,25 +141,7 @@ final class LabelService {
 		foreach ( $result->packages as $i => $pkg ) {
 			$parcel = $parcels[ $i ] ?? end( $parcels );
 			try {
-				$id = $this->shipments->insert(
-					[
-						'order_id'        => $order->get_id(),
-						'carrier'         => $carrier_id,
-						'service'         => $service,
-						'shipment_id'     => $result->shipment_id,
-						'tracking_number' => $pkg->tracking_number,
-						'cost'            => 0 === $i ? $result->cost : null,
-						'currency'        => $result->currency,
-						'declared_value'  => count( $result->packages ) ? round( $declared / count( $result->packages ), 2 ) : 0,
-						'signature'       => $signature ? 1 : 0,
-						'label_path'      => '',
-						'label_format'    => '',
-						'box'             => $parcel->box_id,
-						'weight_kg'       => $parcel->weight_kg,
-						'dims_cm'         => $parcel->dims_label(),
-						'source'          => $source,
-					]
-				);
+				$id = $this->insert_row( $order, $carrier_id, $service, $result->shipment_id, $pkg->tracking_number, 0 === $i ? $result->cost : null, $result->currency, count( $result->packages ) ? round( $declared / count( $result->packages ), 2 ) : 0, $signature, $parcel, $source );
 			} catch ( \Throwable $e ) {
 				// No row: nothing else will stop a second purchase, so leave a marker on the order.
 				$order->update_meta_data( self::UNRECORDED_META, $result->shipment_id );
@@ -187,6 +176,55 @@ final class LabelService {
 
 		\do_action( 'anchor_shipping_label_created', $order->get_id(), $ids );
 		return $ids;
+	}
+
+	private function insert_row( \WC_Order $order, string $carrier_id, string $service, string $shipment_id, string $tracking, ?float $cost, string $currency, float $declared_each, bool $signature, Parcel $parcel, string $source ): int {
+		return $this->shipments->insert(
+			[
+				'order_id'        => $order->get_id(),
+				'carrier'         => $carrier_id,
+				'service'         => $service,
+				'shipment_id'     => $shipment_id,
+				'tracking_number' => $tracking,
+				'cost'            => $cost,
+				'currency'        => $currency,
+				'declared_value'  => $declared_each,
+				'signature'       => $signature ? 1 : 0,
+				'label_path'      => '',
+				'label_format'    => '',
+				'box'             => $parcel->box_id,
+				'weight_kg'       => $parcel->weight_kg,
+				'dims_cm'         => $parcel->dims_label(),
+				'source'          => $source,
+			]
+		);
+	}
+
+	/**
+	 * The carrier answered the purchase and named what it created, but gave no usable label.
+	 * Keep it on the order (rows when it can be voided from the panel, else the unrecorded
+	 * marker) so nothing invites a second purchase, then flag a person. Never returns.
+	 *
+	 * @param Parcel[] $parcels
+	 */
+	private function keep_billed_without_label( \WC_Order $order, string $carrier_label, string $carrier_id, string $service, array $parcels, float $declared, bool $signature, string $source, CarrierError $e ): never {
+		$numbers  = array_values( array_unique( $e->tracking_numbers ) );
+		$recorded = 0;
+		if ( '' !== $e->shipment_id && $numbers ) {
+			try {
+				foreach ( $numbers as $i => $tracking ) {
+					$this->insert_row( $order, $carrier_id, $service, $e->shipment_id, $tracking, null, $order->get_currency() ?: 'USD', round( $declared / count( $numbers ), 2 ), $signature, $parcels[ $i ] ?? end( $parcels ), $source );
+					++$recorded;
+				}
+			} catch ( \Throwable $ignored ) {
+				// fall through to the marker
+			}
+		}
+		if ( $recorded < max( 1, count( $numbers ) ) ) {
+			$order->update_meta_data( self::UNRECORDED_META, '' !== $e->shipment_id ? $e->shipment_id : implode( ', ', $numbers ) );
+			$order->save();
+		}
+		$this->fail_after_billing( $order, $carrier_label, '' !== $e->shipment_id ? $e->shipment_id : '?', $numbers ? implode( ', ', $numbers ) : '?', $e, $recorded > 0 );
 	}
 
 	public function void_shipment( int $row_id ): void {

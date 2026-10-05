@@ -129,7 +129,7 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( Module::instance()->shipments, Module::instance()->packer, Module::instance()->carriers ) )->render_panel( $order );
 		$this->assertStringContainsString( 'Label file missing', $panel );
 		$this->assertStringContainsString( 'anchor-shipping-void', $panel );
-		$this->assertStringNotContainsString( 'action=anchor_shipping_download', $panel );
+		$this->assertStringNotContainsString( 'action=anchor_shipping_label', $panel, 'no Print link for a missing file' );
 	}
 
 	public function test_failed_row_insert_after_billing_leaves_an_unrecorded_marker_that_blocks_auto_creation() {
@@ -239,5 +239,62 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$row = Module::instance()->shipments->find( $ids[0] );
 		$this->assertSame( '900.00', $row['declared_value'] );
 		$this->assertSame( '1', $row['signature'] );
+	}
+
+	public function test_billed_shipment_with_unusable_label_is_recorded_flagged_and_blocks_a_second_purchase() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$json  = $this->fixture( 'ups-ship-single' );
+		unset( $json['ShipmentResponse']['ShipmentResults']['PackageResults']['ShippingLabel']['GraphicImage'] );
+		$this->queue_token();
+		$this->queue_response( 200, $json );
+		reset_phpmailer_instance();
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+			$this->fail( 'expected LabelNotSaved' );
+		} catch ( \Anchor\Shipping\Domain\LabelNotSaved $e ) {
+			$this->assertStringContainsString( '1ZK877V90300000001', $e->getMessage() );
+			$this->assertInstanceOf( CarrierError::class, $e->getPrevious() );
+			$this->assertSame( 'uncertain', $e->getPrevious()->carrier_code );
+		}
+		$rows = Module::instance()->shipments->for_order( $order->get_id() );
+		$this->assertCount( 1, $rows, 'the billed shipment is on record so it can be voided from the panel' );
+		$this->assertSame( '1ZK877V90300000001', $rows[0]['shipment_id'] );
+		$this->assertSame( '1ZK877V90300000001', $rows[0]['tracking_number'] );
+		$this->assertSame( '', $rows[0]['label_path'] );
+		$order = wc_get_order( $order->get_id() );
+		$this->assertTrue( Module::instance()->labels->is_labelled( $order ) );
+		$this->assertSame( 'needs_attention', $order->get_meta( LabelService::STATE_META ) );
+		$sent = tests_retrieve_phpmailer_instance()->mock_sent;
+		$this->assertCount( 1, $sent );
+		$this->assertStringContainsString( 'Shipping problem', $sent[0]['subject'] );
+		$this->assertStringNotContainsString( 'Create label', $sent[0]['body'] );
+		$this->expectException( \Anchor\Shipping\Domain\AlreadyLabelled::class );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+		} finally {
+			$this->assertCount( 2, $this->requests, 'no second purchase' );
+		}
+	}
+
+	public function test_billed_shipment_without_tracking_numbers_leaves_the_unrecorded_marker() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$json  = $this->fixture( 'ups-ship-single' );
+		unset( $json['ShipmentResponse']['ShipmentResults']['PackageResults'] );
+		$this->queue_token();
+		$this->queue_response( 200, $json );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+			$this->fail( 'expected LabelNotSaved' );
+		} catch ( \Anchor\Shipping\Domain\LabelNotSaved $e ) {
+			$this->assertStringContainsString( 'could not be recorded', $e->getMessage() );
+		}
+		$this->assertSame( [], Module::instance()->shipments->for_order( $order->get_id() ) );
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( '1ZK877V90300000001', $order->get_meta( LabelService::UNRECORDED_META ) );
+		$this->assertTrue( Module::instance()->labels->is_labelled( $order ) );
+		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( Module::instance()->shipments, Module::instance()->packer, Module::instance()->carriers ) )->render_panel( $order );
+		$this->assertStringContainsString( 'was created but not recorded here', $panel );
 	}
 }

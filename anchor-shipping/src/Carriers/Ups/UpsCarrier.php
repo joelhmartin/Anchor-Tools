@@ -59,19 +59,20 @@ final class UpsCarrier implements CarrierInterface {
 		$format = 'ZPL' === Settings::all()['label_format'] ? 'ZPL' : 'GIF';
 		$json   = $this->client()->request( 'POST', '/api/shipments/v2409/ship', $this->build_ship_body( $request, $creds['account'], $format ), false );
 
-		$results  = $json['ShipmentResponse']['ShipmentResults'] ?? null;
-		if ( ! is_array( $results ) || empty( $results['ShipmentIdentificationNumber'] ) ) {
-			throw new CarrierError( 'parse', \__( 'UPS returned an unexpected response for the label.', 'anchor-schema' ) );
-		}
-		$pkgs     = $results['PackageResults'] ?? [];
-		$pkgs     = isset( $pkgs['TrackingNumber'] ) ? [ $pkgs ] : (array) $pkgs;
-		$shipment_id = (string) $results['ShipmentIdentificationNumber'];
+		// From here UPS answered 2xx to a purchase: whatever is wrong with the body, a label
+		// may exist and be billed, so every failure below is 'uncertain', never 'parse'.
+		$results     = $json['ShipmentResponse']['ShipmentResults'] ?? null;
+		$results     = is_array( $results ) ? $results : [];
+		$pkgs        = $results['PackageResults'] ?? [];
+		$pkgs        = is_array( $pkgs ) && isset( $pkgs['TrackingNumber'] ) ? [ $pkgs ] : ( is_array( $pkgs ) ? array_values( $pkgs ) : [] );
+		$shipment_id = is_scalar( $results['ShipmentIdentificationNumber'] ?? null ) ? trim( (string) $results['ShipmentIdentificationNumber'] ) : '';
 		$packages    = [];
 		$numbers     = [];
-		$usable      = count( $pkgs ) === count( $request->parcels );
+		$usable      = '' !== $shipment_id && count( $pkgs ) === count( $request->parcels );
 		foreach ( $pkgs as $p ) {
-			$tracking = is_array( $p ) ? (string) ( $p['TrackingNumber'] ?? '' ) : '';
-			$bytes    = is_array( $p ) ? base64_decode( (string) ( $p['ShippingLabel']['GraphicImage'] ?? '' ), true ) : false;
+			$tracking = is_array( $p ) && is_scalar( $p['TrackingNumber'] ?? null ) ? trim( (string) $p['TrackingNumber'] ) : '';
+			$image    = is_array( $p ) ? ( $p['ShippingLabel']['GraphicImage'] ?? '' ) : '';
+			$bytes    = is_string( $image ) ? base64_decode( $image, true ) : false;
 			if ( '' !== $tracking ) {
 				$numbers[] = $tracking;
 			}
@@ -82,16 +83,7 @@ final class UpsCarrier implements CarrierInterface {
 			$packages[] = new PackageLabel( $tracking, $bytes, (string) ( $p['ShippingLabel']['ImageFormat']['Code'] ?? $format ) );
 		}
 		if ( ! $usable ) {
-			// UPS has already billed this shipment, so staff need its numbers to void it.
-			throw new CarrierError(
-				'parse',
-				sprintf(
-					/* translators: 1: UPS shipment number, 2: tracking numbers */
-					\__( 'UPS created shipment %1$s%2$s but returned an unusable label. Void it at ups.com or retry.', 'anchor-schema' ),
-					$shipment_id,
-					$numbers ? ' (' . implode( ', ', $numbers ) . ')' : ''
-				)
-			);
+			throw $this->billed_but_unusable( $shipment_id, $numbers );
 		}
 		$charge = $results['NegotiatedRateCharges']['TotalCharge'] ?? $results['ShipmentCharges']['TotalCharges'] ?? null;
 
@@ -101,6 +93,21 @@ final class UpsCarrier implements CarrierInterface {
 			isset( $charge['MonetaryValue'] ) ? (float) $charge['MonetaryValue'] : null,
 			(string) ( $charge['CurrencyCode'] ?? 'USD' )
 		);
+	}
+
+	/** UPS answered the purchase but not with a usable label: keep whatever it said it created. */
+	private function billed_but_unusable( string $shipment_id, array $numbers ): CarrierError {
+		if ( '' === $shipment_id && ! $numbers ) {
+			$message = \__( 'UPS accepted the label request but its answer could not be read, so a label may have been created and billed. Check Shipping History on ups.com before creating another.', 'anchor-schema' );
+		} else {
+			$message = sprintf(
+				/* translators: 1: UPS shipment number, 2: tracking numbers */
+				\__( 'UPS created shipment %1$s%2$s but returned an unusable label. Void it before creating another.', 'anchor-schema' ),
+				'' !== $shipment_id ? $shipment_id : \__( '(number not returned)', 'anchor-schema' ),
+				$numbers ? ' (' . implode( ', ', $numbers ) . ')' : ''
+			);
+		}
+		return new CarrierError( 'uncertain', $message, false, $shipment_id, $numbers );
 	}
 
 	public function void_label( string $shipment_id ): void {

@@ -34,6 +34,7 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
         ),
         'A' => 
         array (
+            'Anchor\\Shipping\\' => 16,
             'Anchor\\Courses\\' => 15,
             'Anchor\\Announcements\\' => 21,
             'Anchor\\Agreements\\' => 18,
@@ -64,6 +65,10 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
         'Dotenv\\' => 
         array (
             0 => __DIR__ . '/..' . '/vlucas/phpdotenv/src',
+        ),
+        'Anchor\\Shipping\\' => 
+        array (
+            0 => __DIR__ . '/../..' . '/anchor-shipping/src',
         ),
         'Anchor\\Courses\\' => 
         array (

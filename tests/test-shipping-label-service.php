@@ -297,4 +297,31 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( Module::instance()->shipments, Module::instance()->packer, Module::instance()->carriers ) )->render_panel( $order );
 		$this->assertStringContainsString( 'was created but not recorded here', $panel );
 	}
+
+	/** A billed-maybe answer with no identifiers still blocks the next purchase until a person confirms. */
+	public function test_unidentified_uncertain_purchase_blocks_the_next_label_until_confirmed() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, '{"ShipmentResponse":{"ShipmentResults":{"Shipment' );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+			$this->fail( 'expected an uncertain CarrierError' );
+		} catch ( \Anchor\Shipping\Domain\CarrierError $e ) {
+			$this->assertSame( 'uncertain', $e->carrier_code );
+		}
+		$order  = wc_get_order( $order->get_id() );
+		$marker = (string) $order->get_meta( LabelService::UNRECORDED_META );
+		$this->assertStringStartsWith( 'unidentified (', $marker );
+		$this->assertTrue( Module::instance()->labels->is_labelled( $order ) );
+
+		$sent = count( $this->requests );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual', [ 'additional' => 1 ] );
+			$this->fail( 'expected the void confirmation to be required' );
+		} catch ( \Anchor\Shipping\Domain\AlreadyLabelled $e ) {
+			$this->assertStringContainsString( 'not recorded here', $e->getMessage() );
+		}
+		$this->assertCount( $sent, $this->requests, 'no second purchase without the confirmation' );
+	}
 }

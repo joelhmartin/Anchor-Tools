@@ -137,6 +137,17 @@ final class LabelService {
 			if ( 'uncertain' === $e->carrier_code && ( '' !== $e->shipment_id || $e->tracking_numbers ) ) {
 				$this->keep_billed_without_label( $order, $carrier->label(), $carrier_id, $service, $parcels, $declared, $signature, $source, $e );
 			}
+			if ( 'uncertain' === $e->carrier_code ) {
+				// The carrier may have billed a label we cannot identify. Block the next
+				// purchase behind the same void confirmation an unrecorded shipment needs.
+				$marker = sprintf( 'unidentified (%s UTC)', gmdate( 'Y-m-d H:i' ) );
+				$order->update_meta_data( self::UNRECORDED_META, $marker );
+				$order->add_order_note(
+					/* translators: %s: carrier name */
+					sprintf( \__( '%s may have created and billed a label but returned no shipment id. Check the carrier\'s shipping history and void anything found before creating another label.', 'anchor-schema' ), $carrier->label() )
+				);
+				$order->save();
+			}
 			throw $e;
 		}
 

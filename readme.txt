@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.35.1
+Stable tag: 3.36.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,15 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.36.0 =
+
+Shipping: a new module (off until enabled in Settings > Anchor Tools). Creates, prints,
+emails and voids UPS labels for WooCommerce orders, by hand from the order screen or
+automatically on payment (behind a setting, off by default), with optional insurance and
+signature at checkout. Defaults to the UPS sandbox; non-production sites are always
+sandboxed. A label UPS may have billed is never lost or bought twice: anything uncertain
+is flagged for a person and needs an explicit void confirmation before a replacement.
 
 = 3.35.1 =
 

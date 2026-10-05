@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.34.1
+Stable tag: 3.35.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,15 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.35.0 =
+
+Agreements: a new module (off until enabled in Settings > Anchor Tools). Products can
+require a signed agreement at checkout (draw or type a signature); each signature
+is stored against the exact document version signed, with a private signed-copy page,
+links in customer order emails, a Signed documents account tab, an order metabox, a
+Signatures list with CSV export, and an optional staff email. Block checkout is refused
+for orders that need a signature.
 
 = 3.34.1 =
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, schema, galleries, forms, and content utilities.
- * Version: 3.34.1
+ * Version: 3.35.0
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -320,6 +320,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-courses/anchor-courses.php',
                 'class'       => '\\Anchor\\Courses\\Module',
             ],
+            'agreements' => [
+                'label'       => __( 'Anchor Agreements', 'anchor-schema' ),
+                'description' => __( 'Require a signed agreement (drawn or generated signature) at WooCommerce checkout.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-agreements/anchor-agreements.php',
+                'class'       => '\\Anchor\\Agreements\\Module',
+            ],
             'announcements' => [
                 'label'       => __( 'Anchor Announcements', 'anchor-schema' ),
                 'description' => __( 'Compose and send tracked email announcements to filtered audiences.', 'anchor-schema' ),
@@ -422,4 +428,29 @@ if ( ! function_exists( 'anchor_tools_announcements_clear_tick' ) ) {
         },
         26
     );
+}
+
+/**
+ * Agreements: unschedule the abandoned-signature cleanup (and reset the rewrite flush) when the module is switched off
+ * (literal hook name, so no module code is needed while it is off) and on deactivation.
+ */
+if ( ! function_exists( 'anchor_tools_agreements_clear_cleanup' ) ) {
+    function anchor_tools_agreements_clear_cleanup() {
+        wp_clear_scheduled_hook( 'anchor_agreements_cleanup' );
+        // Forget the rewrite flush too, so switching the module back on re-adds /signed-agreement/.
+        delete_option( 'anchor_agreements_rewrite_version' );
+    }
+
+    /**
+     * @param mixed $old_value Previous settings.
+     * @param mixed $value     New settings.
+     */
+    function anchor_tools_agreements_maybe_clear_cleanup( $old_value, $value ) {
+        if ( ! empty( $old_value['modules']['agreements'] ) && empty( $value['modules']['agreements'] ) ) {
+            anchor_tools_agreements_clear_cleanup();
+        }
+    }
+
+    add_action( 'update_option_' . Anchor_Schema_Admin::OPTION_KEY, 'anchor_tools_agreements_maybe_clear_cleanup', 10, 2 );
+    register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, 'anchor_tools_agreements_clear_cleanup' );
 }

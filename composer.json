@@ -15,7 +15,8 @@
     "autoload": {
         "psr-4": {
             "Anchor\\Courses\\": "anchor-courses/src/",
-            "Anchor\\Announcements\\": "anchor-announcements/src/"
+            "Anchor\\Announcements\\": "anchor-announcements/src/",
+            "Anchor\\Agreements\\": "anchor-agreements/src/"
         }
     },
     "scripts": {

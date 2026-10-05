@@ -324,4 +324,44 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		}
 		$this->assertCount( $sent, $this->requests, 'no second purchase without the confirmation' );
 	}
+
+	/** A confirmed replacement that is itself ambiguous gets a fresh marker, and a manual one alerts the shipping inbox. */
+	public function test_repeat_unidentified_purchase_needs_a_fresh_confirmation_and_alerts() {
+		$this->configure_ups();
+		$order    = $this->make_order( [], 'processing' );
+		$problems = 0;
+		add_action( 'anchor_shipping_problem', function () use ( &$problems ) { $problems++; } );
+		$truncated = '{"ShipmentResponse":{"ShipmentResults":{"Shipment';
+
+		$this->queue_token();
+		$this->queue_response( 200, $truncated );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+		} catch ( \Anchor\Shipping\Domain\CarrierError $e ) {
+			unset( $e );
+		}
+		$order = wc_get_order( $order->get_id() );
+		$first = (string) $order->get_meta( LabelService::UNRECORDED_META );
+		$this->assertSame( 1, $problems, 'a manual unidentified purchase alerts the shipping inbox' );
+
+		$this->queue_response( 200, $truncated );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual', [ 'unrecorded_voided' => $first ] );
+		} catch ( \Anchor\Shipping\Domain\CarrierError $e ) {
+			unset( $e );
+		}
+		$order  = wc_get_order( $order->get_id() );
+		$second = (string) $order->get_meta( LabelService::UNRECORDED_META );
+		$this->assertStringStartsWith( 'unidentified (', $second );
+		$this->assertNotSame( $first, $second, 'each ambiguous purchase gets its own marker' );
+
+		$sent = count( $this->requests );
+		try {
+			Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual', [ 'unrecorded_voided' => $first ] );
+			$this->fail( 'the stale confirmation must not match the new marker' );
+		} catch ( \Anchor\Shipping\Domain\AlreadyLabelled $e ) {
+			unset( $e );
+		}
+		$this->assertCount( $sent, $this->requests, 'no purchase on a stale confirmation' );
+	}
 }

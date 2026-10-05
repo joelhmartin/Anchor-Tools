@@ -140,13 +140,19 @@ final class LabelService {
 			if ( 'uncertain' === $e->carrier_code ) {
 				// The carrier may have billed a label we cannot identify. Block the next
 				// purchase behind the same void confirmation an unrecorded shipment needs.
-				$marker = sprintf( 'unidentified (%s UTC)', gmdate( 'Y-m-d H:i' ) );
+				// Unique per attempt, so a stale confirmation for an earlier unidentified
+				// purchase can never match this one.
+				$marker = sprintf( 'unidentified (%s UTC, %s)', gmdate( 'Y-m-d H:i:s' ), substr( \wp_generate_uuid4(), 0, 8 ) );
 				$order->update_meta_data( self::UNRECORDED_META, $marker );
-				$order->add_order_note(
-					/* translators: %s: carrier name */
-					sprintf( \__( '%s may have created and billed a label but returned no shipment id. Check the carrier\'s shipping history and void anything found before creating another label.', 'anchor-schema' ), $carrier->label() )
-				);
-				$order->save();
+				/* translators: %s: carrier name */
+				$reason = sprintf( \__( '%s may have created and billed a label but returned no shipment id. Check the carrier\'s shipping history and void anything found before creating another label.', 'anchor-schema' ), $carrier->label() );
+				if ( 'manual' === $source ) {
+					// The paid-order job flags its own failures; a manual one must reach the shipping inbox too.
+					$this->mark_needs_attention( $order, $reason, 'problem' );
+				} else {
+					$order->add_order_note( $reason );
+					$order->save();
+				}
 			}
 			throw $e;
 		}

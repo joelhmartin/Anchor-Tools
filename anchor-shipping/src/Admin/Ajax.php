@@ -95,6 +95,7 @@ final class Ajax {
 					'carrier'        => \sanitize_key( (string) ( $post['carrier'] ?? '' ) ) ?: null,
 					'service'        => \sanitize_text_field( (string) ( $post['service'] ?? '' ) ) ?: null,
 					'additional'     => ! empty( $post['additional'] ),
+					'unrecorded_voided' => \sanitize_text_field( (string) ( $post['unrecorded_voided'] ?? '' ) ),
 					'declared_value' => ! empty( $post['insure'] ) ? $subtotal : 0.0,
 					'signature'      => ! empty( $post['signature'] ),
 				]

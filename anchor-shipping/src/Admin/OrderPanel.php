@@ -33,7 +33,7 @@ final class OrderPanel {
 			return;
 		}
 		\wp_enqueue_style( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.css', [], '1.0.0' );
-		\wp_enqueue_script( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.js', [ 'jquery' ], '1.0.0', true );
+		\wp_enqueue_script( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.js', [ 'jquery' ], '1.0.1', true );
 		\wp_localize_script( 'anchor-shipping-admin', 'anchorShipping', [ 'ajax' => \admin_url( 'admin-ajax.php' ), 'nonce' => \wp_create_nonce( Ajax::NONCE ), 'confirmVoid' => \__( 'Void this label? It cannot be used afterwards.', 'anchor-schema' ) ] );
 	}
 
@@ -85,7 +85,10 @@ final class OrderPanel {
 			<?php endif; ?>
 
 			<div class="anchor-shipping-create">
-				<?php if ( $active || '' !== $unrecorded ) : ?>
+				<?php if ( '' !== $unrecorded ) : ?>
+					<p><label><input type="checkbox" name="unrecorded_voided" value="<?php echo \esc_attr( $unrecorded ); ?>" required> <?php echo \esc_html( sprintf( /* translators: %s: UPS shipment identifier */ \__( 'UPS shipment %s has been voided at ups.com', 'anchor-schema' ), $unrecorded ) ); ?></label></p>
+				<?php endif; ?>
+				<?php if ( $active ) : ?>
 					<label><input type="checkbox" name="additional" value="1"> <?php \esc_html_e( 'Additional package', 'anchor-schema' ); ?></label>
 				<?php endif; ?>
 				<p><select name="carrier"><?php foreach ( $this->carriers->all() as $id => $c ) : if ( ! $c->supports( 'labels' ) ) { continue; } ?><option value="<?php echo \esc_attr( $id ); ?>" <?php \selected( $s['default_carrier'], $id ); ?>><?php echo \esc_html( $c->label() ); ?></option><?php endforeach; ?></select>

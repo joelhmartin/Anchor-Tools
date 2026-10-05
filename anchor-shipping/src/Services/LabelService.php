@@ -92,8 +92,15 @@ final class LabelService {
 	 * @return int[]
 	 */
 	private function create_locked( \WC_Order $order, array $parcels, string $source, array $opts ): array {
-		if ( empty( $opts['additional'] ) && $this->is_labelled( $order ) ) {
+		$unrecorded = (string) $order->get_meta( self::UNRECORDED_META );
+		if ( '' !== $unrecorded ) {
+			$this->require_void_acknowledgement( $unrecorded, (string) ( $opts['unrecorded_voided'] ?? '' ) );
+		}
+		if ( empty( $opts['additional'] ) && [] !== $this->shipments->active_for_order( $order->get_id() ) ) {
 			throw new AlreadyLabelled( \__( 'This order already has a label. Void it first, or tick "additional package".', 'anchor-schema' ) );
+		}
+		if ( '' !== $unrecorded ) {
+			$this->clear_unrecorded( $order, $unrecorded );
 		}
 		$parcels    = array_values( $parcels );
 		$s          = Settings::all();
@@ -176,6 +183,34 @@ final class LabelService {
 
 		\do_action( 'anchor_shipping_label_created', $order->get_id(), $ids );
 		return $ids;
+	}
+
+	/**
+	 * A shipment the carrier created but this order never recorded can only be replaced once a
+	 * person confirms they voided it at the carrier, naming that shipment. "Additional package"
+	 * does not bypass this, and the auto-label job never passes the confirmation.
+	 */
+	private function require_void_acknowledgement( string $unrecorded, string $acknowledged ): void {
+		if ( '' === $acknowledged || ! hash_equals( $unrecorded, $acknowledged ) ) {
+			throw new AlreadyLabelled(
+				sprintf(
+					/* translators: %s: carrier shipment id */
+					\__( 'Shipment %s was created at the carrier but not recorded here. Void it at the carrier, then tick the box confirming it before creating another label.', 'anchor-schema' ),
+					$unrecorded
+				)
+			);
+		}
+	}
+
+	private function clear_unrecorded( \WC_Order $order, string $unrecorded ): void {
+		$user = \wp_get_current_user();
+		$who  = $user->exists() ? sprintf( '%s (#%d)', $user->user_login, $user->ID ) : \__( 'an unknown user', 'anchor-schema' );
+		$order->delete_meta_data( self::UNRECORDED_META );
+		$order->add_order_note(
+			/* translators: 1: carrier shipment id, 2: user login and id */
+			sprintf( \__( 'Unrecorded shipment %1$s confirmed voided at the carrier by %2$s; a replacement label may now be created.', 'anchor-schema' ), $unrecorded, $who )
+		);
+		$order->save();
 	}
 
 	private function insert_row( \WC_Order $order, string $carrier_id, string $service, string $shipment_id, string $tracking, ?float $cost, string $currency, float $declared_each, bool $signature, Parcel $parcel, string $source ): int {

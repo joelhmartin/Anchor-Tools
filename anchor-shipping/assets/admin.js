@@ -5,7 +5,7 @@
 	function panelData($panel) {
 		var data = { nonce: cfg.nonce, order_id: $panel.data('order') };
 		$panel.find('.anchor-shipping-create').find('input, select').each(function () {
-			if (this.type === 'checkbox') { if (this.checked) { data[this.name] = 1; } return; }
+			if (this.type === 'checkbox') { if (this.checked) { data[this.name] = this.value || 1; } return; }
 			data[this.name] = $(this).val();
 		});
 		return data;

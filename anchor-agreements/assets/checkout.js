@@ -200,13 +200,14 @@
 			const body = new FormData();
 			body.append( 'nonce', cfg.nonce );
 			body.append( 'agreement_id', doc.dataset.agreementId );
+			body.append( 'version_id', doc.dataset.versionId );
 			body.append( 'name', nameValue() );
 			body.append( 'method', state.method );
 			body.append( 'font', state.method === 'generate' ? state.font : '' );
 			body.append( 'image', state.method === 'draw' ? pad.toDataURL() : renderGenerated( nameValue(), family ) );
 			body.append( 'consent', '1' );
 			const res = await fetch( cfg.endpoint, { method: 'POST', body, credentials: 'same-origin' } ).then( ( r ) => r.json() );
-			if ( ! res.ok ) throw new Error( res.error || 'error' );
+			if ( ! res.ok ) throw new Error( res.message || '' );
 			doc.dataset.signed = '1';
 			if ( index < queue.length - 1 ) {
 				index++;
@@ -216,7 +217,7 @@
 				$( document.body ).trigger( 'update_checkout' );
 			}
 		} catch ( e ) {
-			err.textContent = t.error;
+			err.textContent = e.message || t.error;
 			err.hidden = false;
 			btn.disabled = false;
 		}

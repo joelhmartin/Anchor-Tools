@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Agreements\Services;
 
 use Anchor\Agreements\Database\SignatureRepository;
+use Anchor\Agreements\Database\VersionRepository;
 use Anchor\Agreements\Support\Settings;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -64,6 +65,9 @@ final class SignatureCheck {
 		if ( ! $row || $row['agreement_id'] !== $agreement_id || $row['session_key'] !== self::session_key() ) {
 			return 0;
 		}
+		if ( ! self::is_current_version( $row ) ) {
+			return 0;
+		}
 		if ( strtotime( $row['signed_at'] . ' UTC' ) < time() - Settings::reuse_seconds() ) {
 			return 0;
 		}
@@ -71,6 +75,17 @@ final class SignatureCheck {
 			return 0;
 		}
 		return $sig_id;
+	}
+
+	/**
+	 * A signature only counts for the text the buyer signed: if the agreement has been
+	 * edited since, its current version differs from the row's and they must re-sign.
+	 *
+	 * @param array $row A signature row (needs agreement_id and version_id).
+	 */
+	public static function is_current_version( array $row ): bool {
+		$current = ( new VersionRepository() )->current_for( (int) ( $row['agreement_id'] ?? 0 ) );
+		return $current && (int) $current['id'] === (int) ( $row['version_id'] ?? -1 );
 	}
 
 	/** @param array<int,int> $required agreement_id => product_id. @return array<int,int> agreement_id => signature_id, signed ones only. */

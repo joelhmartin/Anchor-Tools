@@ -69,7 +69,8 @@ class Test_Agreements_Checkout extends WP_UnitTestCase {
 	}
 
 	private function sign( int $aid ): int {
-		return ( new SigningEndpoint() )->handle( [ 'agreement_id' => $aid, 'name' => 'A B', 'method' => 'draw', 'font' => '', 'image' => self::PNG, 'consent' => '1' ] )['signature_id'];
+		$v = ( new \Anchor\Agreements\Database\VersionRepository() )->current_for( $aid );
+		return ( new SigningEndpoint() )->handle( [ 'agreement_id' => $aid, 'version_id' => $v['id'], 'name' => 'A B', 'method' => 'draw', 'font' => '', 'image' => self::PNG, 'consent' => '1' ] )['signature_id'];
 	}
 
 	private function render(): string {
@@ -208,6 +209,37 @@ class Test_Agreements_Checkout extends WP_UnitTestCase {
 		$order->save();
 		$checkout->attach( $order );
 		$this->assertSame( $order->get_id(), ( new SignatureRepository() )->get( $sig )['order_id'] );
+	}
+
+	public function test_edit_after_signing_shows_unsigned_blocks_validate_and_attach_refuses() {
+		[ $aid, $p ] = $this->product_with_agreement( 'Cancellation Policy' );
+		WC()->cart->add_to_cart( $p->get_id() );
+		$sig      = $this->sign( $aid );
+		$checkout = new Checkout();
+		$errors   = new WP_Error();
+		$checkout->validate( [], $errors ); // Approved while current...
+		$this->assertSame( [], $errors->get_error_codes() );
+		wp_update_post( [ 'ID' => $aid, 'post_content' => 'New terms' ] ); // ...then edited before the order is created.
+		$this->assertStringContainsString( 'data-complete="0"', $this->render() );
+		$order = wc_create_order();
+		$order->add_product( $p, 1 );
+		$order->save();
+		try {
+			$checkout->attach( $order );
+			$this->fail( 'attach must refuse a stale signature' );
+		} catch ( \Exception $e ) {
+			$this->assertNull( ( new SignatureRepository() )->get( $sig )['order_id'] );
+		}
+		$errors = new WP_Error();
+		( new Checkout() )->validate( [], $errors );
+		$this->assertContains( 'anchor_agreements_unsigned', $errors->get_error_codes() );
+	}
+
+	public function test_render_emits_the_version_id() {
+		[ $aid, $p ] = $this->product_with_agreement( 'Cancellation Policy' );
+		WC()->cart->add_to_cart( $p->get_id() );
+		$v = ( new \Anchor\Agreements\Database\VersionRepository() )->current_for( $aid );
+		$this->assertStringContainsString( 'data-version-id="' . $v['id'] . '"', $this->render() );
 	}
 
 	/** C2: the awaiting order was abandoned (cart changed), WooCommerce makes order B; B gets the signature. */

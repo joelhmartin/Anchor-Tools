@@ -121,8 +121,13 @@ final class SignatureRepository {
 		$vals  = [];
 		if ( ! empty( $args['s'] ) ) {
 			$like    = '%' . $wpdb->esc_like( (string) $args['s'] ) . '%';
-			$where[] = '(signer_name LIKE %s OR signer_email LIKE %s OR order_id = %d)';
-			array_push( $vals, $like, $like, (int) $args['s'] );
+			$term     = (string) $args['s'];
+			$by_order = ctype_digit( $term ); // '12abc' must not match order 12.
+			$where[]  = '(signer_name LIKE %s OR signer_email LIKE %s' . ( $by_order ? ' OR order_id = %d' : '' ) . ')';
+			array_push( $vals, $like, $like );
+			if ( $by_order ) {
+				$vals[] = (int) $term;
+			}
 		}
 		if ( ! empty( $args['agreement_id'] ) ) {
 			$where[] = 'agreement_id = %d';

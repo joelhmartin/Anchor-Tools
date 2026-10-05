@@ -63,6 +63,14 @@ class Test_Agreements_Signatures extends WP_UnitTestCase {
 		$this->assertArrayNotHasKey( 'image', $res['rows'][0] );
 	}
 
+	public function test_search_numeric_prefix_does_not_match_order_id() {
+		$repo = new SignatureRepository();
+		$id   = $repo->insert( $this->data() );
+		$repo->attach( $id, 12 );
+		$this->assertSame( 1, $repo->search( [ 's' => '12' ] )['total'] );
+		$this->assertSame( 0, $repo->search( [ 's' => '12abc' ] )['total'] );
+	}
+
 	public function test_attach_moves_only_from_the_named_order() {
 		$repo = new SignatureRepository();
 		$id   = $repo->insert( $this->data() );

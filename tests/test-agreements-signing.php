@@ -26,7 +26,8 @@ class Test_Agreements_Signing extends WP_UnitTestCase {
 	}
 
 	private function input( array $over = [] ): array {
-		return array_merge( [ 'agreement_id' => $this->agreement, 'name' => 'Pari Example', 'method' => 'draw', 'font' => '', 'image' => self::PNG, 'consent' => '1' ], $over );
+		$v = ( new \Anchor\Agreements\Database\VersionRepository() )->current_for( $this->agreement );
+		return array_merge( [ 'agreement_id' => $this->agreement, 'version_id' => $v['id'], 'name' => 'Pari Example', 'method' => 'draw', 'font' => '', 'image' => self::PNG, 'consent' => '1' ], $over );
 	}
 
 	public function test_valid_signature_is_stored_and_remembered() {
@@ -80,5 +81,40 @@ class Test_Agreements_Signing extends WP_UnitTestCase {
 		// Once that order is paid, its signature is spent: a new checkout needs a new one.
 		$order->payment_complete();
 		$this->assertSame( [ $this->agreement ], $check->unsigned( [ $this->agreement => 1 ], $order->get_id() ) );
+	}
+
+	public function test_rejects_stale_version_id() {
+		$input = $this->input();
+		wp_update_post( [ 'ID' => $this->agreement, 'post_content' => 'Terms, edited after the page rendered' ] );
+		$res = ( new SigningEndpoint() )->handle( $input );
+		$this->assertFalse( $res['ok'] );
+		$this->assertSame( 'version', $res['error'] );
+		$this->assertNotEmpty( $res['message'] );
+		$this->assertSame( [], SignatureCheck::session_map() );
+	}
+
+	public function test_rejects_missing_version_id() {
+		$input = $this->input();
+		unset( $input['version_id'] );
+		$this->assertSame( 'version', ( new SigningEndpoint() )->handle( $input )['error'] );
+	}
+
+	public function test_edit_after_signing_makes_it_unsigned() {
+		( new SigningEndpoint() )->handle( $this->input() );
+		$check = new SignatureCheck();
+		$this->assertSame( [], $check->unsigned( [ $this->agreement => 1 ] ) );
+		wp_update_post( [ 'ID' => $this->agreement, 'post_content' => 'Terms v2' ] );
+		$this->assertSame( [ $this->agreement ], $check->unsigned( [ $this->agreement => 1 ] ) );
+	}
+
+	public function test_rejects_when_there_is_no_session() {
+		$input        = $this->input();
+		$session      = WC()->session;
+		WC()->session = null;
+		$res          = ( new SigningEndpoint() )->handle( $input );
+		WC()->session = $session;
+		$this->assertFalse( $res['ok'] );
+		$this->assertSame( 'session', $res['error'] );
+		$this->assertSame( 0, ( new SignatureRepository() )->search( [] )['total'] );
 	}
 }

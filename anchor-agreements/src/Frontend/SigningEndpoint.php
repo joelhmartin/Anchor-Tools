@@ -34,6 +34,7 @@ final class SigningEndpoint {
 			'font'         => $in['font'] ?? '',
 			'image'        => $in['image'] ?? '',
 			'consent'      => $in['consent'] ?? '',
+			'version_id'   => $in['version_id'] ?? 0,
 		] );
 		\wp_send_json( $res, $res['ok'] ? 200 : 400 );
 	}
@@ -68,12 +69,18 @@ final class SigningEndpoint {
 		}
 		$repo    = new SignatureRepository();
 		$session = SignatureCheck::session_key();
+		if ( '' === $session ) {
+			return [ 'ok' => false, 'error' => 'session', 'message' => \__( 'Your checkout session could not be found. Please reload the page and try again.', 'anchor-schema' ) ];
+		}
 		if ( $repo->count_recent_for_session( $session, HOUR_IN_SECONDS ) >= self::LIMIT ) {
 			return [ 'ok' => false, 'error' => 'rate_limited' ];
 		}
 		$version = ( new VersionRepository() )->current_for( $aid );
 		if ( ! $version ) {
 			return [ 'ok' => false, 'error' => 'agreement' ];
+		}
+		if ( \absint( $in['version_id'] ?? 0 ) !== $version['id'] ) {
+			return [ 'ok' => false, 'error' => 'version', 'message' => \__( 'This document changed while you were reading it. Please reload the page and read it again before signing.', 'anchor-schema' ) ];
 		}
 		$user = \wp_get_current_user();
 		$id   = $repo->insert( [

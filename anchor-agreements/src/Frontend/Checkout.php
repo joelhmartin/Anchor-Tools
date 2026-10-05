@@ -90,8 +90,9 @@ final class Checkout {
 		foreach ( $docs as $d ) {
 			$signed = ! \in_array( $d['agreement_id'], $unsigned, true );
 			printf(
-				'<template class="aagr-doc" data-agreement-id="%d" data-title="%s" data-version-date="%s" data-signed="%d">%s</template>',
+				'<template class="aagr-doc" data-agreement-id="%d" data-version-id="%d" data-title="%s" data-version-date="%s" data-signed="%d">%s</template>',
 				$d['agreement_id'],
+				$d['id'],
 				\esc_attr( $d['title'] ),
 				\esc_attr( \wp_date( \get_option( 'date_format' ), strtotime( $d['created_at'] . ' UTC' ) ) ),
 				$signed ? 1 : 0,
@@ -149,6 +150,7 @@ final class Checkout {
 		foreach ( array_keys( $required ) as $aid ) {
 			$aid = (int) $aid;
 			$sig = $approved[ $aid ] ?? 0;
+			$sig = $sig && SignatureCheck::is_current_version( (array) $repo->get( $sig ) ) ? $sig : 0; // The agreement may have changed since validate().
 			$sig = $sig ?: $check->valid_signature_id( $aid, $awaiting );
 			$sig = $sig ?: $check->valid_signature_id( $aid, $order_id ); // Already ours (hook re-run).
 			$row = $sig ? $repo->get( $sig ) : null;

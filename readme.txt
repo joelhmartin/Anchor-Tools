@@ -33,6 +33,9 @@ links in customer order emails, a Signed documents account tab, an order metabox
 Signatures list with CSV export, and an optional staff email. Block checkout is refused
 for orders that need a signature.
 
+Events: a "Use external signup form" checkbox. Events that take sign-ups on an external
+form get no roster, registration emails, seats, waitlist counts or native-only settings.
+
 = 3.34.1 =
 
 * Fix: email subjects are plain text. Event titles and the site name reached

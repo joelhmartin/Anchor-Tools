@@ -34,6 +34,12 @@ class Test_Status extends Anchor_Events_TestCase {
 	/** A date far enough out that no test-run clock skew can make it 'ongoing'. */
 	const FUTURE = '2099-06-01';
 
+	/** The backfill tests assert on this flag, so never inherit it from an earlier test. */
+	public function set_up() {
+		parent::set_up();
+		delete_option( 'anchor_events_status_version' );
+	}
+
 	/** The status meta key, spelled once. */
 	private function key() {
 		return '_anchor_event_status';

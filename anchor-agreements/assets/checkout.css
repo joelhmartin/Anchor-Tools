@@ -33,7 +33,10 @@
 .aagr-font-choice { height: 80px; border: 1px solid #d0d5dd; border-radius: 8px; background: #fff; cursor: pointer; font-size: 30px; overflow: hidden; white-space: nowrap; padding: 0 10px; }
 .aagr-font-choice[aria-pressed="true"] { border: 2px solid #101828; }
 .aagr-modal__foot { padding: 12px 18px; border-top: 1px solid #eaecf0; display: flex; flex-direction: column; gap: 10px; background: #fff; }
-.aagr-modal__consent { display: flex; gap: 8px; align-items: flex-start; font-size: .9em; }
+.aagr-modal__consent { display: flex; gap: 10px; align-items: center; font-size: .9em; line-height: 1.45; cursor: pointer; }
+/* An explicit box: the modal sits on <body>, outside the checkout form, so theme checkbox skins
+   scoped to the form never reach it and it fell back to a small browser box riding above its text. */
+.aagr-modal__consent input[type="checkbox"] { width: 18px; height: 18px; min-width: 18px; margin: 0; accent-color: #101828; cursor: pointer; }
 .aagr-modal__sign { padding: 14px; font-size: 1em; font-weight: 600; border: 0; border-radius: 8px; background: #101828; color: #fff; cursor: pointer; }
 .aagr-modal__sign:disabled { opacity: .45; cursor: not-allowed; }
 .aagr-modal__error { color: #b42318; font-size: .9em; }

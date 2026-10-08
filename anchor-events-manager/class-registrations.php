@@ -1860,6 +1860,21 @@ class Registrations {
             }
         }
 
+        // Applied coupon codes for every order, in ONE query: WC_Order::get_coupon_codes()
+        // reads each order's items separately, which would undo the batching above.
+        // Coupon lines live in woocommerce_order_items under both HPOS and posts storage.
+        $coupons_by_order = [];
+        if ( ! empty( $order_ids ) ) {
+            global $wpdb;
+            $ids = \array_map( 'intval', \array_keys( $order_ids ) );
+            $in  = \implode( ',', \array_fill( 0, \count( $ids ), '%d' ) );
+            // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $in is %d placeholders only.
+            $lines = $wpdb->get_results( $wpdb->prepare( "SELECT order_id, order_item_name FROM {$wpdb->prefix}woocommerce_order_items WHERE order_item_type = 'coupon' AND order_id IN ($in) ORDER BY order_item_id", $ids ) );
+            foreach ( (array) $lines as $line ) {
+                $coupons_by_order[ (int) $line->order_id ][] = (string) $line->order_item_name;
+            }
+        }
+
         $field_keys = [];
         $rows       = [];
         foreach ( $q->posts as $post ) {
@@ -1881,9 +1896,9 @@ class Registrations {
                 $created      = $o->get_date_created();
                 $order_date   = $created ? $created->date( 'Y-m-d' ) : '';
                 $cust_email   = $o->get_billing_email();
-                // The order's applied coupon codes (WC_Abstract_Order::get_coupon_codes()),
-                // so a roster export shows who registered on which promo.
-                $coupons      = \implode( ', ', \array_map( 'strval', (array) $o->get_coupon_codes() ) );
+                // The order's applied coupon codes, so a roster export shows who
+                // registered on which promo (batch-read above).
+                $coupons      = \implode( ', ', $coupons_by_order[ $oid ] ?? [] );
             }
 
             $product_name = $dto['product_id'] > 0 ? \get_the_title( $dto['product_id'] ) : '';

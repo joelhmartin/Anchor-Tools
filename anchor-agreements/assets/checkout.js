@@ -214,13 +214,28 @@
 				show();
 			} else {
 				close();
-				$( document.body ).trigger( 'update_checkout' );
+				markComplete();
 			}
 		} catch ( e ) {
 			err.textContent = e.message || t.error;
 			err.hidden = false;
 			btn.disabled = false;
 		}
+	}
+
+	/* Show the box as signed in place. No update_checkout: that re-renders WooCommerce's
+	   payment section, which reloads hosted card-field iframes (Global Payments, Stripe...) and
+	   wipes a card number the buyer already typed. The signature is stored server-side by the
+	   endpoint, so the next natural refresh renders the box complete and validate() still
+	   refuses an order without it. */
+	function markComplete() {
+		document.querySelectorAll( '.aagr-checkout' ).forEach( ( box ) => {
+			box.dataset.complete = '1';
+			const tick = box.querySelector( '#aagr-confirm' );
+			if ( tick ) tick.checked = true;
+			const btn = box.querySelector( '.aagr-open' );
+			if ( btn ) btn.textContent = t.view;
+		} );
 	}
 
 	/* Delegated on body: WooCommerce/FunnelKit replace this fragment on every update_checkout.

@@ -511,4 +511,18 @@ class Test_Registration_Questions extends Anchor_Events_TestCase {
 		$this->assertMatchesRegularExpression( '/value="Dairy-free" checked/', $html );
 		$this->assertStringNotContainsString( ' required', $html, 'No HTML required on the boxes: it would demand every one.' );
 	}
+
+	public function test_multiselect_other_is_stored_last_even_when_not_the_last_option() {
+		$q = [ 'key' => 'diet', 'label' => 'Diet', 'type' => 'multiselect', 'options' => [ 'Vegetarian', 'Other', 'Vegan' ], 'required' => false ];
+		$a = $this->module()->sanitize_registration_answers( 0, [ 'diet' => [ 'Other', 'Vegan' ], 'diet__other' => 'no garlic, no onion' ], [ $q ] );
+		$this->assertSame( 'Vegan, Other: no garlic, no onion', $a['answers']['diet'] );
+		$p = $this->module()->multiselect_parse( $q, $a['answers']['diet'] );
+		$this->assertSame( 'no garlic, no onion', $p['other'] );
+		$this->assertContains( 'Vegan', $p['chosen'] );
+	}
+
+	public function test_multiselect_option_commas_become_slashes() {
+		$q = $this->module()->normalize_registration_questions( [ [ 'label' => 'Allergies', 'type' => 'multiselect', 'options' => "Peanuts, tree nuts\nShellfish" ] ] );
+		$this->assertSame( [ 'Peanuts / tree nuts', 'Shellfish' ], $q[0]['options'] );
+	}
 }

@@ -353,7 +353,8 @@
 
     // "Choices" only means anything for a select.
     function toggleChoices(row){
-      var isSelect = row.find('.anchor-question-type').val() === 'select';
+      var qtype = row.find('.anchor-question-type').val();
+      var isSelect = qtype === 'select' || qtype === 'multiselect';
       row.find('textarea[name*="[options]"]').prop('disabled', !isSelect).toggle(isSelect);
     }
     wrap.on('change', '.anchor-question-type', function(){ toggleChoices($(this).closest('.anchor-event-question-row')); });

@@ -14748,12 +14748,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $other === '' && $parsed ) {
             $other = $parsed['other'];
         }
-        $out = [];
+        $out  = [];
+        $tail = '';
         foreach ( (array) ( $q['options'] ?? [] ) as $opt ) {
             if ( ! \in_array( $opt, $ticked, true ) ) {
                 continue;
             }
-            $out[] = ( self::is_other_choice( $opt ) && $other !== '' ) ? $opt . ': ' . $other : $opt;
+            if ( self::is_other_choice( $opt ) ) {
+                // Always LAST, whatever its position among the options: the write-in may
+                // contain commas, and multiselect_parse() reads "Other: ..." to the end.
+                $tail = $other !== '' ? $opt . ': ' . $other : $opt;
+                continue;
+            }
+            $out[] = $opt;
+        }
+        if ( $tail !== '' ) {
+            $out[] = $tail;
         }
         return \implode( ', ', $out );
     }
@@ -14845,7 +14855,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // then demand every one; the validator enforces "at least one".
             $parsed  = $this->multiselect_parse( $q, $value );
             $summary = $parsed['chosen'] ? \implode( ', ', $parsed['labels'] ) : \__( 'Select all that apply', 'anchor-schema' );
-            $out     = '<details class="anchor-event-multi"' . $id . '><summary class="anchor-event-multi__summary">' . \esc_html( $summary ) . '</summary><div class="anchor-event-multi__list">';
+            $out     = '<details class="anchor-event-multi"' . $id . ' role="group" aria-label="' . \esc_attr( (string) ( $q['label'] ?? '' ) ) . '"><summary class="anchor-event-multi__summary">' . \esc_html( $summary ) . '</summary><div class="anchor-event-multi__list">';
             foreach ( (array) ( $q['options'] ?? [] ) as $opt ) {
                 $on   = \in_array( $opt, $parsed['chosen'], true );
                 $out .= '<label class="anchor-event-multi__opt"><input type="checkbox" name="' . \esc_attr( $args['name'] . '[]' ) . '" value="' . \esc_attr( $opt ) . '"' . ( $on ? ' checked' : '' ) . ' /> ' . \esc_html( $opt ) . '</label>';
@@ -14994,6 +15004,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 }
                 foreach ( (array) $raw_options as $opt ) {
                     $opt = \sanitize_text_field( (string) $opt );
+                    if ( $type === 'multiselect' ) {
+                        // A stored "Choose any" answer is ", "-joined, so a comma inside a
+                        // choice would make it ambiguous: "Peanuts, tree nuts" -> "Peanuts / tree nuts".
+                        $opt = \trim( (string) \preg_replace( '/\s*,\s*/', ' / ', $opt ) );
+                    }
                     if ( $opt !== '' ) {
                         $options[] = $opt;
                     }

@@ -466,4 +466,49 @@ class Test_Registration_Questions extends Anchor_Events_TestCase {
 			'get_registration_fields() and its consumer-less filter are replaced by the question model.'
 		);
 	}
+
+	/* "Choose any" (multiselect) questions, owner request 2026-10-08. */
+
+	private function diet_question( $required = false ) {
+		return [ 'key' => 'diet', 'label' => 'Dietary Restrictions?', 'type' => 'multiselect', 'options' => [ 'Vegetarian', 'Gluten-free', 'Dairy-free', 'Other' ], 'required' => $required ];
+	}
+
+	public function test_multiselect_survives_normalisation_with_its_options() {
+		$q = $this->module()->normalize_registration_questions( [ $this->diet_question() ] );
+		$this->assertSame( 'multiselect', $q[0]['type'] );
+		$this->assertSame( [ 'Vegetarian', 'Gluten-free', 'Dairy-free', 'Other' ], $q[0]['options'] );
+	}
+
+	public function test_multiselect_keeps_offered_choices_in_question_order_and_drops_others() {
+		$a = $this->module()->sanitize_registration_answers( 0, [ 'diet' => [ 'Dairy-free', 'Pizza', 'Vegetarian' ] ], [ $this->diet_question() ] );
+		$this->assertSame( 'Vegetarian, Dairy-free', $a['answers']['diet'] );
+	}
+
+	public function test_multiselect_other_carries_its_write_in() {
+		$a = $this->module()->sanitize_registration_answers( 0, [ 'diet' => [ 'Other', 'Gluten-free' ], 'diet__other' => 'shellfish' ], [ $this->diet_question() ] );
+		$this->assertSame( 'Gluten-free, Other: shellfish', $a['answers']['diet'] );
+	}
+
+	public function test_multiselect_stored_string_parses_back_for_redisplay() {
+		$p = $this->module()->multiselect_parse( $this->diet_question(), 'Gluten-free, Other: shellfish' );
+		$this->assertSame( [ 'Gluten-free', 'Other' ], $p['chosen'] );
+		$this->assertSame( 'shellfish', $p['other'] );
+		$a = $this->module()->sanitize_registration_answers( 0, [ 'diet' => 'Gluten-free, Other: shellfish' ], [ $this->diet_question() ] );
+		$this->assertSame( 'Gluten-free, Other: shellfish', $a['answers']['diet'], 'A redisplayed string round-trips unchanged.' );
+	}
+
+	public function test_required_multiselect_needs_at_least_one_choice() {
+		$a = $this->module()->sanitize_registration_answers( 0, [ 'diet' => [] ], [ $this->diet_question( true ) ] );
+		$this->assertCount( 1, $a['missing'] );
+		$b = $this->module()->sanitize_registration_answers( 0, [ 'diet' => [ 'Vegetarian' ] ], [ $this->diet_question( true ) ] );
+		$this->assertCount( 0, $b['missing'] );
+	}
+
+	public function test_multiselect_renders_checkboxes_and_an_other_write_in() {
+		$html = $this->module()->render_registration_question_control( $this->diet_question(), [ 'name' => 'anchor_event_field[diet]', 'value' => 'Dairy-free' ] );
+		$this->assertStringContainsString( 'name="anchor_event_field[diet][]"', $html );
+		$this->assertStringContainsString( 'name="anchor_event_field[diet__other]"', $html );
+		$this->assertMatchesRegularExpression( '/value="Dairy-free" checked/', $html );
+		$this->assertStringNotContainsString( ' required', $html, 'No HTML required on the boxes: it would demand every one.' );
+	}
 }

@@ -1973,6 +1973,9 @@ class WooCommerce {
         if ( $type === 'checkbox' ) {
             return '';
         }
+        if ( $type === 'multiselect' ) {
+            return 'input-text'; // lands on the "Other" write-in only; the boxes carry no class
+        }
         return $type === 'select' ? 'select' : 'input-text';
     }
 

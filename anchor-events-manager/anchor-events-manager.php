@@ -14682,6 +14682,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $questions as $q ) {
             $raw    = $posted[ $q['key'] ] ?? '';
             $answer = '';
+            if ( $q['type'] === 'multiselect' ) {
+                // "Choose any": the posted value is the list of ticked choices (or the
+                // stored string on redisplay); only offered choices survive, in the
+                // question's own order. An "Other" choice carries the write-in posted as
+                // <key>__other, stored as "Other: <text>". The answer is ONE string
+                // ("Gluten-free, Other: shellfish"), so the roster, CSV and emails read it
+                // like any other answer.
+                $answer = $this->multiselect_answer( $q, $raw, $posted[ $q['key'] . '__other' ] ?? '' );
+                if ( ! empty( $q['required'] ) && $answer === '' ) {
+                    $missing[] = $q;
+                }
+                $answers[ $q['key'] ] = $answer;
+                continue;
+            }
             if ( \is_scalar( $raw ) ) {
                 // A textarea is the one type whose newlines are part of the
                 // answer; sanitize_text_field() would flatten them.
@@ -14704,6 +14718,69 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'answers' => $answers,
             'missing' => $missing,
         ];
+    }
+
+    /** Whether a choice is the write-in "Other" option (case-insensitive, "Other" or "Other (please specify)"). */
+    public static function is_other_choice( $opt ) {
+        return 1 === \preg_match( '/^\s*other\b/i', (string) $opt );
+    }
+
+    /**
+     * The write-in field's name for a multiselect control named $name: the question's
+     * key with "__other" appended, as a sibling inside the same answers array
+     * ("x[fields][diet]" -> "x[fields][diet__other]").
+     */
+    public static function other_field_name( $name ) {
+        $name = (string) $name;
+        return \substr( $name, -1 ) === ']' ? \substr( $name, 0, -1 ) . '__other]' : $name . '__other';
+    }
+
+    /**
+     * Normalise a "Choose any" answer to its stored string. $raw is the ticked choices
+     * (array) on a submit, or the stored string on redisplay; $other is the write-in.
+     *
+     * @return string Offered choices in question order, ", "-joined; "Other: <text>" for a filled write-in.
+     */
+    public function multiselect_answer( array $q, $raw, $other = '' ) {
+        $parsed = \is_array( $raw ) ? null : $this->multiselect_parse( $q, (string) $raw );
+        $ticked = \is_array( $raw ) ? \array_map( 'strval', \array_filter( $raw, 'is_scalar' ) ) : $parsed['chosen'];
+        $other  = \is_scalar( $other ) ? \sanitize_text_field( (string) $other ) : '';
+        if ( $other === '' && $parsed ) {
+            $other = $parsed['other'];
+        }
+        $out = [];
+        foreach ( (array) ( $q['options'] ?? [] ) as $opt ) {
+            if ( ! \in_array( $opt, $ticked, true ) ) {
+                continue;
+            }
+            $out[] = ( self::is_other_choice( $opt ) && $other !== '' ) ? $opt . ': ' . $other : $opt;
+        }
+        return \implode( ', ', $out );
+    }
+
+    /**
+     * Read a stored "Choose any" string back into ticked choices + write-in text.
+     *
+     * @return array{chosen:string[],labels:string[],other:string}
+     */
+    public function multiselect_parse( array $q, $value ) {
+        $chosen = [];
+        $labels = [];
+        $other  = '';
+        $value  = (string) $value;
+        foreach ( (array) ( $q['options'] ?? [] ) as $opt ) {
+            if ( self::is_other_choice( $opt ) && \preg_match( '/(?:^|,\s*)' . \preg_quote( $opt, '/' ) . ':\s*(.*)$/u', $value, $m ) ) {
+                $chosen[] = $opt;
+                $other    = \trim( $m[1] );
+                $labels[] = $opt . ': ' . $other;
+                continue;
+            }
+            if ( \preg_match( '/(?:^|,\s*)' . \preg_quote( $opt, '/' ) . '(?=\s*(?:,|$))/u', $value ) ) {
+                $chosen[] = $opt;
+                $labels[] = $opt;
+            }
+        }
+        return [ 'chosen' => $chosen, 'labels' => $labels, 'other' => $other ];
     }
 
     /**
@@ -14760,6 +14837,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 $out .= '<option value="' . \esc_attr( $opt ) . '"' . \selected( $value, $opt, false ) . '>' . \esc_html( $opt ) . '</option>';
             }
             return $out . '</select>';
+        }
+
+        if ( $type === 'multiselect' ) {
+            // A compact dropdown of checkboxes (no script needed: <details>), with a
+            // write-in beside an "Other" choice. No `required` on the boxes - HTML would
+            // then demand every one; the validator enforces "at least one".
+            $parsed  = $this->multiselect_parse( $q, $value );
+            $summary = $parsed['chosen'] ? \implode( ', ', $parsed['labels'] ) : \__( 'Select all that apply', 'anchor-schema' );
+            $out     = '<details class="anchor-event-multi"' . $id . '><summary class="anchor-event-multi__summary">' . \esc_html( $summary ) . '</summary><div class="anchor-event-multi__list">';
+            foreach ( (array) ( $q['options'] ?? [] ) as $opt ) {
+                $on   = \in_array( $opt, $parsed['chosen'], true );
+                $out .= '<label class="anchor-event-multi__opt"><input type="checkbox" name="' . \esc_attr( $args['name'] . '[]' ) . '" value="' . \esc_attr( $opt ) . '"' . ( $on ? ' checked' : '' ) . ' /> ' . \esc_html( $opt ) . '</label>';
+                if ( self::is_other_choice( $opt ) ) {
+                    $out .= '<input type="text" class="anchor-event-multi__other' . ( $args['class'] !== '' ? ' ' . \esc_attr( $args['class'] ) : '' ) . '" name="' . \esc_attr( self::other_field_name( $args['name'] ) ) . '" value="' . \esc_attr( $parsed['other'] ) . '" placeholder="' . \esc_attr__( 'Please specify', 'anchor-schema' ) . '" aria-label="' . \esc_attr( $opt ) . '" />';
+                }
+            }
+            return $out . '</div></details>';
         }
 
         if ( $type === 'checkbox' ) {
@@ -14888,12 +14982,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $seen[ $key ] = true;
 
             $type = \sanitize_key( (string) ( $row['type'] ?? 'text' ) );
-            if ( ! \in_array( $type, [ 'text', 'textarea', 'select', 'checkbox' ], true ) ) {
+            if ( ! \in_array( $type, [ 'text', 'textarea', 'select', 'multiselect', 'checkbox' ], true ) ) {
                 $type = 'text';
             }
 
             $options = [];
-            if ( $type === 'select' ) {
+            if ( $type === 'select' || $type === 'multiselect' ) {
                 $raw_options = $row['options'] ?? '';
                 if ( ! \is_array( $raw_options ) ) {
                     $raw_options = \preg_split( '/\r\n|\r|\n/', (string) $raw_options );
@@ -14984,6 +15078,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     <option value="text" <?php selected( $type, 'text' ); ?>><?php echo esc_html__( 'Short text', 'anchor-schema' ); ?></option>
                     <option value="textarea" <?php selected( $type, 'textarea' ); ?>><?php echo esc_html__( 'Long text', 'anchor-schema' ); ?></option>
                     <option value="select" <?php selected( $type, 'select' ); ?>><?php echo esc_html__( 'Choose one', 'anchor-schema' ); ?></option>
+                    <option value="multiselect" <?php selected( $type, 'multiselect' ); ?>><?php echo esc_html__( 'Choose any', 'anchor-schema' ); ?></option>
                     <option value="checkbox" <?php selected( $type, 'checkbox' ); ?>><?php echo esc_html__( 'Yes / no', 'anchor-schema' ); ?></option>
                 </select>
             </td>

@@ -1395,6 +1395,7 @@ class Roster {
             \__( 'Order ID', 'anchor-schema' ),
             \__( 'Order Status', 'anchor-schema' ),
             \__( 'Order Date', 'anchor-schema' ),
+            \__( 'Coupons', 'anchor-schema' ),
             \__( 'Customer ID', 'anchor-schema' ),
             \__( 'Customer Email', 'anchor-schema' ),
             \__( 'Product', 'anchor-schema' ),
@@ -1437,7 +1438,7 @@ class Roster {
         $cells = [
             $row['seat_id'] ?? '', $row['event'] ?? '', $row['name'] ?? '', $row['email'] ?? '', $row['phone'] ?? '',
             $row['status'] ?? '', $row['source'] ?? '', $tier_label, $row['guests'] ?? '', $row['party_size'] ?? '', $row['reg_date'] ?? '',
-            $row['order_number'] ?? '', $row['order_id'] ?? '', $row['order_status'] ?? '', $row['order_date'] ?? '',
+            $row['order_number'] ?? '', $row['order_id'] ?? '', $row['order_status'] ?? '', $row['order_date'] ?? '', $row['coupons'] ?? '',
             $row['customer_id'] ?? '', $row['customer_email'] ?? '', $row['product'] ?? '', $row['product_id'] ?? '',
             $row['variation_id'] ?? '', $row['order_item_id'] ?? '', $row['seat_index'] ?? '',
         ];

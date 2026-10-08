@@ -1872,6 +1872,7 @@ class Registrations {
             $order_status = '';
             $order_date   = '';
             $cust_email   = '';
+            $coupons      = '';
             $oid          = $dto['order_id'];
             if ( $oid > 0 && isset( $orders[ $oid ] ) ) {
                 $o            = $orders[ $oid ];
@@ -1880,6 +1881,9 @@ class Registrations {
                 $created      = $o->get_date_created();
                 $order_date   = $created ? $created->date( 'Y-m-d' ) : '';
                 $cust_email   = $o->get_billing_email();
+                // The order's applied coupon codes (WC_Abstract_Order::get_coupon_codes()),
+                // so a roster export shows who registered on which promo.
+                $coupons      = \implode( ', ', \array_map( 'strval', (array) $o->get_coupon_codes() ) );
             }
 
             $product_name = $dto['product_id'] > 0 ? \get_the_title( $dto['product_id'] ) : '';
@@ -1899,6 +1903,7 @@ class Registrations {
                 'order_id'       => $oid > 0 ? $oid : '',
                 'order_status'   => (string) $order_status,
                 'order_date'     => (string) $order_date,
+                'coupons'        => (string) $coupons,
                 'customer_id'    => $dto['customer_id'] > 0 ? $dto['customer_id'] : '',
                 'customer_email' => (string) $cust_email,
                 'product'        => (string) $product_name,

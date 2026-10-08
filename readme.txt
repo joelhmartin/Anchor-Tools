@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.36.2
+Stable tag: 3.36.3
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,12 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.36.3 =
+
+Events: "Choose any" attendee questions (multi-choice dropdown of checkboxes, with a write-in
+beside an "Other" choice). Answers are stored as one readable string, so the roster, CSV export
+and emails show them like any other answer.
 
 = 3.36.2 =
 

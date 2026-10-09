@@ -1936,7 +1936,11 @@ class WooCommerce {
                 foreach ( $q_rows as $q ) {
                     $req_mark = $q['required'] ? ' <abbr class="required" title="required">*</abbr>' : '';
 
-                    echo '<p class="form-row ' . \esc_attr( $row_class( $q['type'] === 'textarea' ) ) . '">';
+                    // Full width, and a <div> not a <p>: a multiselect is a <details>, which a
+                    // <p> cannot contain (the parser closes the <p> early and the control falls
+                    // out of its row). Full width also stops the seat's hidden name/e-mail rows
+                    // from pushing a question into the right-hand half.
+                    echo '<div class="form-row form-row-wide anchor-event-question anchor-event-question--' . \esc_attr( $q['type'] ) . '">';
                     echo '<label>' . \esc_html( $q['label'] ) . $req_mark . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- $req_mark is a literal.
                     echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
                         'name'           => $base . '[fields][' . $q['key'] . ']',
@@ -1948,7 +1952,7 @@ class WooCommerce {
                         'checkbox_label' => \__( 'Yes', 'anchor-schema' ),
                         'checkbox_class' => 'anchor-event-attendee-check',
                     ] );
-                    echo '</p>';
+                    echo '</div>';
                 }
 
                 echo '</div>';

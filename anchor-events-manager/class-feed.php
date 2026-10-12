@@ -137,7 +137,7 @@ class Feed {
             'end'          => (string) ( $node['endDate'] ?? $node['startDate'] ),
             'all_day'      => ! empty( $meta['all_day'] ),
             'timezone'     => $this->module->event_timezone( $meta )->getName(),
-            'location'     => $this->location( $node ),
+            'location'     => $this->location( $node, (string) ( $meta['venue'] ?? '' ) ),
             'registration' => [
                 'mode'         => [ 'wc' => 'paid', 'free' => 'free', 'external' => 'external' ][ $mode ] ?? 'free',
                 'status'       => $this->map_status( (string) $this->module->bookability( $id ), $mode ),
@@ -182,8 +182,12 @@ class Feed {
         return [ number_format( (float) $best['price'], 2, '.', '' ), isset( $best['priceCurrency'] ) ? (string) $best['priceCurrency'] : null ];
     }
 
-    /** Venue/city/state/country from the node's Place; online from its VirtualLocation. Never the URL. */
-    private function location( array $node ) {
+    /**
+     * Venue/city/state/country from the node's Place; online from its VirtualLocation. Never the URL.
+     * Event_Schema names the Place after the post title when there is no venue,
+     * so the venue is only trusted when the event's own venue meta is set.
+     */
+    private function location( array $node, $venue_meta ) {
         $loc   = $node['location'] ?? [];
         $nodes = isset( $loc['@type'] ) ? [ $loc ] : (array) $loc;
         $out   = [ 'venue' => '', 'city' => '', 'state' => '', 'country' => '', 'online' => false ];
@@ -194,7 +198,7 @@ class Feed {
             if ( ( $n['@type'] ?? '' ) === 'VirtualLocation' ) {
                 $out['online'] = true;
             } elseif ( ( $n['@type'] ?? '' ) === 'Place' ) {
-                $out['venue']   = $this->plain( $n['name'] ?? '' );
+                $out['venue']   = trim( (string) $venue_meta ) === '' ? '' : $this->plain( $n['name'] ?? '' );
                 $out['city']    = (string) ( $n['address']['addressLocality'] ?? '' );
                 $out['state']   = (string) ( $n['address']['addressRegion'] ?? '' );
                 $out['country'] = (string) ( $n['address']['addressCountry'] ?? '' );

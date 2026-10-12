@@ -125,6 +125,13 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'zoom.example', wp_json_encode( $row ) );
 	}
 
+	public function test_venue_is_blank_without_a_venue_of_its_own() {
+		$id  = $this->event( [ 'venue' => '', 'address_city' => 'Toronto' ] );
+		$row = $this->module()->feed->row( $id );
+		$this->assertSame( '', $row['location']['venue'] );
+		$this->assertSame( 'Toronto', $row['location']['city'] );
+	}
+
 	public function test_all_day_dates_are_date_only() {
 		$id  = $this->event( [ 'all_day' => true ] );
 		$row = $this->module()->feed->row( $id );

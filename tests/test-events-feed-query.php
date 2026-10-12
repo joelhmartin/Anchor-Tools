@@ -8,6 +8,11 @@
 /** @group events-feed */
 class Test_Events_Feed_Query extends Anchor_Events_TestCase {
 
+	public function tear_down() {
+		remove_role( 'centre' );
+		parent::tear_down();
+	}
+
 	private function dated( $title, $start, $end, array $meta = [] ) {
 		$id = $this->make_event( array_merge( [
 			'title'      => $title,
@@ -116,7 +121,6 @@ class Test_Events_Feed_Query extends Anchor_Events_TestCase {
 
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'centre' ] ) );
 		$this->assertContains( $gated, $this->module()->feed->visible_ids( ...$range ) );
-		remove_role( 'centre' );
 	}
 
 	public function test_same_start_orders_by_id() {

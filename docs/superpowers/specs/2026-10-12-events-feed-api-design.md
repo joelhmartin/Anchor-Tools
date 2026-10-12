@@ -3,6 +3,7 @@
 **Date:** 2026-10-12
 **Status:** Approved in chat (sections 1–3). Site side only; the phone app has its own spec.
 **First site:** TMJ & Sleep Therapy Centre International. The feed ships in the events module, so every Anchor site that runs it gets the same API.
+**Roadmap:** project 1 of 5 in the member-app roadmap ([Member App v1](2026-10-12-member-app-v1-design.md)). It is the first module API built to the common pattern described there, so later module APIs (courses, library) copy its shape.
 
 ---
 
@@ -22,7 +23,7 @@ The site already exposes events at `/wp-json/wp/v2/<events CPT>`, with about a d
 | How "Centre" is decided | The site's existing **`centre` role** (81 accounts on TMJ). Centres sign in with their own WordPress login. |
 | How an event becomes Centre-only | Reuse the event's existing **Prerequisites** (`required_roles`). An event that requires the `centre` role is Centre-only. One setting decides both who may register and who sees the event in the app. |
 | How the app signs in | **WordPress Application Passwords**, through core's "authorize application" flow. The app opens the site's own login, the Centre approves, and the app receives a revocable per-device password. No custom auth code. |
-| Which events the app shows | The app's settings pick **event categories**, and the feed filters by category slug. |
+| Which events the app shows | A site setting, **App categories** (Events settings), picks the event categories the app shows. It is the feed's default filter, so the admin decides in one place and the app has no category settings of its own. An explicit `category` param still overrides it. |
 | Registration (this build) | **Link out**: "Register" opens the event page on the site, so the real checkout, Agreements and emails run unchanged. |
 | Later stages (separate specs) | One-tap in-app RSVP for free events; paid events through a cart handoff to the site's own checkout. |
 | Row shape | **One row per actual date.** Recurring and pick-one events expand into their dates, and group parents never appear. |
@@ -41,7 +42,7 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
 |---|---|---|---|
 | `from` | `YYYY-MM-DD` | today, in the site's zone | Inclusive. |
 | `to` | `YYYY-MM-DD` | `from` + 12 months | Inclusive. The range may not exceed 24 months; a longer one returns 400. |
-| `category` | comma-separated slugs | all | `event_category` slugs. An unknown slug returns 400, so app settings stay honest. |
+| `category` | comma-separated slugs | the **App categories** setting; all categories if that is empty | `event_category` slugs. An unknown slug returns 400. |
 | `page` | int ≥ 1 | 1 | |
 | `per_page` | int 1–100 | 50 | |
 
@@ -87,7 +88,7 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
 
 ### `GET /anchor-events/v1/categories`
 
-Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `event_category` terms that have at least one event the caller could see, so a public caller never learns that Centre-only categories exist. The app's settings screen shows them as checkboxes.
+Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `event_category` terms that have at least one event the caller could see, so a public caller never learns that Centre-only categories exist. It is limited to the App categories setting when that is set. The app can use it for a filter chip row; v1 does not need it to work.
 
 ### `GET /anchor-events/v1/me`
 
@@ -104,6 +105,12 @@ Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `even
 - **Bad or revoked key:** core rejects it with `401` before the route runs. The app then drops to the public view.
 - **No personal data, ever:** no rosters, registrant or seat counts, attendee data, email templates or private meta. Rows hold only what the event's public page already shows, plus the restricted events for callers who qualify.
 - **Pre-flight check:** confirm that Application Passwords are available on the target site (`wp_is_application_passwords_available()`). Some security plugins disable them. If they are off, that is a site setting to flip, not a design change.
+
+## App categories setting
+
+- A multi-select of `event_category` terms on the Events settings tab, labelled **App categories**, with help text "Categories the member app shows. Leave empty to show all."
+- Stored as an array of term IDs (not slugs, so renaming a category doesn't break it) in its own option with `autoload=false`. Deleted terms are ignored.
+- Saving it bumps the cache generation, so app ETags change.
 
 ## Reuse (no second implementation)
 
@@ -136,6 +143,7 @@ Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `even
 - **Expansion:** recurring and pick-one events expand to one row per live child, the parent never appears, and drafts and private events are excluded.
 - **Range overlap:** a course that started before `from` but ends inside the range is included; events outside the range are not.
 - **Category filter:** filters correctly, and an unknown slug returns 400.
+- **App categories:** with the setting saved and no `category` param, only those categories return; an explicit `category` overrides it; an empty setting returns all.
 - **Visibility:**
   - Signed out: Prerequisite events are absent.
   - Signed in as a `centre` user: they appear with `audience: restricted`.
@@ -145,13 +153,13 @@ Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `even
 - **Mapping:** row fields match `Event_Schema::for_event()` for the same event, and `registration.status` matches `bookability()`.
 - **ETag:** 304 on a repeat request, and a changed ETag after `clear_caches()`.
 - **Calendar regression:** the month calendar's output is unchanged after the query extraction.
-- **Docs:** `EVENTS.md` gains a "REST feed" section (endpoints, params, row, auth) for the app's developers.
+- **Docs:** `EVENTS.md` gains a "REST feed" section (endpoints, params, row, auth, App categories) for the app's developers.
 
 ## Out of this spec
 
 | Item | Where it goes |
 |---|---|
-| The phone app (screens, calendar UI, category settings, offline cache, push, store publishing) | Its own spec, next |
+| The phone app (screens, calendar UI, offline cache, store publishing) | [Member App v1](2026-10-12-member-app-v1-design.md) |
 | In-app RSVP for free events (`POST /events/{id}/register`, attendee-question schema) | A later spec |
 | Paid registration (cart handoff to the site's checkout) | A later spec |
 | Multi-site aggregation | Not needed. The app is configured per site. |

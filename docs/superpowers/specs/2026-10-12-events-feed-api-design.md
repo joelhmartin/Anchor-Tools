@@ -49,7 +49,9 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
 **Selection**
 
 - Rows are published events whose time overlaps `[from, to]`. Overlap means `start_ts < end of to` and `end_ts >= start of from`, so a multi-day course that started yesterday still appears.
-- Group parents and every other listing-excluded post are removed with the same hide rule the website's listings use.
+- Listing-excluded posts are removed with the same hide rule the website's listings use (`build_hide_clause()`).
+- Group parents are removed explicitly (`Occurrences::is_group_parent()`, plus an `offering`/`recurring` event not yet reconciled). The hide rule does not cover them.
+- A group child's categories are its **parent's** `event_category` terms, because reconcile does not copy that taxonomy to children. One helper answers "this row's categories" for both filtering and output.
 - Rows are ordered by `start_ts` ascending, with id as the tiebreak.
 - The visibility rules below are applied on top.
 
@@ -72,8 +74,8 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
   "timezone": "America/Toronto",
   "location": { "venue": "…", "city": "Toronto", "state": "ON", "country": "CA", "online": false },
   "registration": {
-    "mode": "paid | free | rsvp | external",
-    "status": "open | sold_out | waitlist | closed | not_open_yet",
+    "mode": "paid | free | external",
+    "status": "open | waitlist | sold_out | closed | unavailable",
     "price": "950.00",
     "currency": "USD",
     "register_url": "https://site/events/…/"
@@ -84,6 +86,13 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
 
 - **Text fields:** `title` and `summary` are plain text with entities decoded. No HTML is sent.
 - **Times:** `start` and `end` are ISO 8601 strings in the event's own timezone.
+- **Registration vocabulary** (corrected against the code during planning):
+  - `mode` maps `registration_mode()`: `wc` → `paid`, `free` → `free`, `external` → `external`. There is no separate RSVP mode.
+  - `status` maps `bookability()` for native events: `open` → `open`, `waitlist` → `waitlist`, `full` → `sold_out`, `disabled` → `unavailable` (registration switched off), anything else → `closed`. An external-signup event is `closed` when bookability says `closed`, otherwise `open`. The module has no "not open yet" state; a registration window that hasn't opened reads `closed`.
+  - `price` is the lowest Offer price in the schema node as a string with two decimals; `price` and `currency` are `null` when the node has no Offer.
+  - `register_url` is always the event page, which shows the right button (native or external) itself.
+  - All-day events send date-only `start`/`end` (`YYYY-MM-DD`), as the schema node does.
+  - `location` never includes a stream or room URL.
 - **Mapping:** the field mapping is pinned in the implementation plan. Values come from the sources listed in "Reuse", never from parallel calculations.
 
 ### `GET /anchor-events/v1/categories`
@@ -109,8 +118,8 @@ Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `even
 ## App categories setting
 
 - A multi-select of `event_category` terms on the Events settings tab, labelled **App categories**, with help text "Categories the member app shows. Leave empty to show all."
-- Stored as an array of term IDs (not slugs, so renaming a category doesn't break it) in its own option with `autoload=false`. Deleted terms are ignored.
-- Saving it bumps the cache generation, so app ETags change.
+- Stored as an array of term IDs (not slugs, so renaming a category doesn't break it) under `app_categories` in the module's existing settings option (`anchor_events_settings`). Deleted terms are ignored.
+- Body-hash ETags change on their own when the setting changes the rows.
 
 ## Reuse (no second implementation)
 
@@ -125,7 +134,7 @@ Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `even
 
 ## Caching
 
-- **ETag:** each response carries a weak `ETag`, built from the cache generation, the normalised query and the caller's visibility tier (public, or the user's role set). A matching `If-None-Match` returns `304` with no body.
+- **ETag:** each response carries a weak `ETag`: a hash of the response body. The cache generation alone is not enough, because seat sales change `registration.status` without bumping it. Only the event-ID query is cached (through `get_cached_ids()`); rows are built fresh. A matching `If-None-Match` returns `304` with no body.
 - **Cache-Control:** responses send `Cache-Control: private, max-age=300`. They must never be cached publicly, because restricted rows depend on who is asking. Signed-out responses could be cached publicly; that is left out for now.
 
 ## Errors
@@ -151,7 +160,7 @@ Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `even
 - **Categories endpoint:** never lists a category whose only events are hidden from the caller.
 - **`/me`:** returns 401 when signed out; `sees_restricted` is true for a Centre when a Centre-only event exists, and false for an ordinary customer.
 - **Mapping:** row fields match `Event_Schema::for_event()` for the same event, and `registration.status` matches `bookability()`.
-- **ETag:** 304 on a repeat request, and a changed ETag after `clear_caches()`.
+- **ETag:** 304 on a repeat request, and a changed ETag when a row changes (for example an event selling out).
 - **Calendar regression:** the month calendar's output is unchanged after the query extraction.
 - **Docs:** `EVENTS.md` gains a "REST feed" section (endpoints, params, row, auth, App categories) for the app's developers.
 

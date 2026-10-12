@@ -727,7 +727,7 @@ Settings > Anchor Tools > Events, **App categories**: a checkbox list of `event_
 
 ### Caching
 
-Every 200 carries a weak `ETag` (a hash of the body, not the cache generation, since a seat sale moves `registration.status` without bumping it) and `Cache-Control: private, max-age=300` (never public: restricted rows depend on who asks). A matching `If-None-Match` returns `304` with no body. Only the event-ID query is cached (`get_cached_ids()`); rows are built fresh.
+Every 200 carries a weak `ETag` (a hash of the body, not the cache generation, since a seat sale moves `registration.status` without bumping it) and `Cache-Control: private, max-age=300` (never public: restricted rows depend on who asks; the feed opts these three routes out of WordPress's `rest_send_nocache_headers`, which would otherwise overwrite it for any signed-in caller, Application Passwords included). Password-protected events are left out, and `all_day` is true exactly when the schema node's start is a bare date. A matching `If-None-Match` returns `304` with no body. Only the event-ID query is cached (`get_cached_ids()`); rows are built fresh.
 
 ### Errors
 

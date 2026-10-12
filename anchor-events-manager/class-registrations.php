@@ -947,19 +947,16 @@ class Registrations {
         // Prerequisites (spec §4.6). Placed in the single registration
         // authority so the date picker, the CTA, the storefront row and
         // WooCommerce::filter_is_purchasable() refuse together instead of each
-        // re-deciding. Guarded on required_roles being non-empty, which is the
-        // default, so every existing event's answer is unchanged — and this is
+        // re-deciding. Inert for an ungated event (the default), so every existing event's answer is unchanged — and this is
         // the one branch that depends on WHO is asking, so keeping it inert for
         // ungated events (and behind the inventory decision for gated ones)
         // keeps the rest of the decision viewer-independent and cacheable.
         // Only reachable when the inventory decision would otherwise have let
         // this viewer through (see the ranking note above) — a closed or full
         // event stays closed or full for everybody.
-        if (
-            \in_array( $decision, [ 'open', self::STATUS_WAITLIST ], true )
-            && ! empty( $meta['required_roles'] )
-        ) {
+        if ( \in_array( $decision, [ 'open', self::STATUS_WAITLIST ], true ) ) {
             $entitlements = $this->module->entitlements ?? null;
+            // Entitlements owns "is it gated": meets_prerequisites() is true for an ungated event.
             if ( $entitlements && ! $entitlements->meets_prerequisites( (int) $event_id ) ) {
                 return 'prerequisite';
             }

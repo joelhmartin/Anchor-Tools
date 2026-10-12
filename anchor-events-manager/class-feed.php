@@ -41,8 +41,18 @@ class Feed {
     public function visible_ids( $from_ts, $to_ts, array $term_ids ) {
         $term_ids = array_map( 'intval', $term_ids );
         $rows     = [];
-        foreach ( $this->module->event_ids_in_range( $from_ts, $to_ts, true ) as $id ) {
+        $in_range = $this->module->event_ids_in_range( $from_ts, $to_ts, true );
+        if ( $in_range ) {
+            // One query each instead of one per event in the loop below.
+            \_prime_post_caches( $in_range, false, false );
+            \update_meta_cache( 'post', $in_range );
+        }
+        foreach ( $in_range as $id ) {
             if ( $this->is_container( $id ) ) {
+                continue;
+            }
+            // The schema description reads post_content whatever the password says.
+            if ( \get_post_field( 'post_password', $id ) !== '' ) {
                 continue;
             }
             if ( ! $this->module->entitlements->meets_prerequisites( $id, 0 ) ) {
@@ -111,8 +121,7 @@ class Feed {
     }
 
     public function is_restricted( $event_id ) {
-        $meta = $this->module->get_meta( (int) $event_id );
-        return ! empty( $meta['required_roles'] ) && is_array( $meta['required_roles'] );
+        return $this->module->entitlements->has_prerequisites( (int) $event_id );
     }
 
     /* ── Mapping ───────────────────────────────────────────────── */
@@ -144,7 +153,8 @@ class Feed {
             }, $this->category_terms( $id ) ),
             'start'        => (string) $node['startDate'],
             'end'          => (string) ( $node['endDate'] ?? $node['startDate'] ),
-            'all_day'      => ! empty( $meta['all_day'] ),
+            // Date-only start = all day; the node is the one place that decides (themes may trim it).
+            'all_day'      => $this->is_date( (string) $node['startDate'] ),
             'timezone'     => $this->module->event_timezone( $meta )->getName(),
             'location'     => $this->location( $node, (string) ( $meta['venue'] ?? '' ) ),
             'registration' => [
@@ -233,7 +243,12 @@ class Feed {
     const DEFAULT_MONTHS = 12;
     const MAX_MONTHS     = 24;
 
+    /** Route of the request being dispatched (recorded for filter_nocache_headers()). */
+    private $dispatching = '';
+
     public function register_routes() {
+        \add_filter( 'rest_pre_dispatch', [ $this, 'note_route' ], 10, 3 );
+        \add_filter( 'rest_send_nocache_headers', [ $this, 'filter_nocache_headers' ] );
         $public = '__return_true';
         register_rest_route( Module::REST_NS, '/events', [
             'methods'             => 'GET',
@@ -258,6 +273,23 @@ class Feed {
             'permission_callback' => $public,
             'callback'            => [ $this, 'rest_me' ],
         ] );
+    }
+
+    /** @internal rest_pre_dispatch: remember which route is being served; changes nothing. */
+    public function note_route( $result, $server, $request ) {
+        $this->dispatching = $request instanceof \WP_REST_Request ? $request->get_route() : '';
+        return $result;
+    }
+
+    /**
+     * serve_request() sends no-cache headers for any signed-in caller (an
+     * Application Password counts) AFTER our response headers, overwriting
+     * `Cache-Control: private, max-age=300`. These three routes are already
+     * private (restricted rows depend on who asks), so they opt out.
+     */
+    public function filter_nocache_headers( $send ) {
+        $own = '/' . Module::REST_NS;
+        return in_array( $this->dispatching, [ $own . '/events', $own . '/categories', $own . '/me' ], true ) ? false : $send;
     }
 
     public function rest_events( \WP_REST_Request $request ) {
@@ -358,7 +390,7 @@ class Feed {
     }
 
     private function is_date( $s ) {
-        return (bool) preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m ) && checkdate( (int) $m[2], (int) $m[3], (int) $m[1] );
+        return (bool) preg_match( '/^(\d{4})-(\d{2})-(\d{2})\z/', $s, $m ) && checkdate( (int) $m[2], (int) $m[3], (int) $m[1] );
     }
 
     /** Midnight of a YYYY-MM-DD in the site zone, through the module's own converter. */

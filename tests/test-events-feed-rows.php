@@ -14,7 +14,7 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$settings                  = get_option( \Anchor\Events\Module::OPTION_KEY, [] );
 		$settings                  = is_array( $settings ) ? $settings : [];
 		$settings['timezone_mode'] = 'event';
-		update_option( \Anchor\Events\Module::OPTION_KEY, $settings );
+		update_option( \Anchor\Events\Module::OPTION_KEY, $settings, false );
 		$this->module()->clear_caches();
 	}
 
@@ -54,6 +54,50 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$this->assertSame( get_permalink( $id ), $row['registration']['register_url'] );
 		$this->assertSame( [ 'venue' => 'Hilton', 'city' => 'Toronto', 'state' => 'ON', 'country' => 'CA', 'online' => false ], $row['location'] );
 		$this->assertSame( 'public', $row['audience'] );
+	}
+
+	public function test_all_day_follows_the_schema_nodes_date_only_shape() {
+		$id   = $this->event( [ 'registration_mode' => 'free' ] );
+		$trim = static function ( $node ) {
+			$node['startDate'] = substr( $node['startDate'], 0, 10 );
+			$node['endDate']   = substr( $node['endDate'], 0, 10 );
+			return $node;
+		};
+		add_filter( 'anchor_events_schema_node', $trim );
+		$row = $this->module()->feed->row( $id );
+		remove_filter( 'anchor_events_schema_node', $trim );
+
+		$this->assertSame( '2030-11-13', $row['start'] );
+		$this->assertTrue( $row['all_day'] );
+		$this->assertFalse( $this->module()->feed->row( $id )['all_day'] );
+	}
+
+	public function test_password_protected_events_are_not_in_the_feed() {
+		$id = $this->event();
+		$ts = (int) get_post_meta( $id, '_anchor_event_start_ts', true );
+		$this->assertContains( $id, $this->module()->feed->visible_ids( $ts - 60, $ts + 60, [] ) );
+		wp_update_post( [ 'ID' => $id, 'post_password' => 'secret' ] );
+		$this->module()->clear_caches();
+		$this->assertNotContains( $id, $this->module()->feed->visible_ids( $ts - 60, $ts + 60, [] ) );
+	}
+
+	public function test_recurring_schedule_expands_to_dated_rows_and_never_the_parent() {
+		$parent = $this->make_event( [
+			'title' => 'Weekly Class', 'type' => 'recurring', 'timezone' => 'UTC',
+			'start_date' => '2030-03-04', 'registration_mode' => 'free',
+		] );
+		update_post_meta( $parent, '_anchor_event_recurrence', [
+			'freq' => 'weekly', 'interval' => 1, 'count' => 3, 'start_time' => '09:00', 'end_time' => '10:00',
+		] );
+		$kids = $this->module()->occurrences->reconcile( $parent );
+		$this->assertCount( 3, $kids );
+		$this->module()->clear_caches();
+
+		$ids = $this->module()->feed->visible_ids( strtotime( '2030-03-01 UTC' ), strtotime( '2030-04-30 UTC' ), [] );
+		$this->assertNotContains( $parent, $ids );
+		$this->assertEqualsCanonicalizing( $kids, $ids );
+		$row = $this->module()->feed->row( $kids[0] );
+		$this->assertSame( $parent, $row['parent_id'] );
 	}
 
 	public function test_summary_is_plain_text_and_capped() {

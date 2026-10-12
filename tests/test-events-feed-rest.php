@@ -48,6 +48,19 @@ class Test_Events_Feed_Rest extends Anchor_Events_TestCase {
 		return $id;
 	}
 
+	public function test_nocache_headers_are_suppressed_for_feed_routes_only() {
+		foreach ( [ '/events', '/categories', '/me' ] as $route ) {
+			$this->get( $route );
+			$this->assertFalse( apply_filters( 'rest_send_nocache_headers', true ), $route );
+		}
+		$this->server->dispatch( new WP_REST_Request( 'GET', '/wp/v2/types' ) );
+		$this->assertTrue( apply_filters( 'rest_send_nocache_headers', true ) );
+		$this->server->dispatch( new WP_REST_Request( 'GET', '/anchor-events/v1/events/5/room' ) );
+		$this->assertTrue( apply_filters( 'rest_send_nocache_headers', true ) );
+		$this->get( '/events' );
+		$this->assertFalse( apply_filters( 'rest_send_nocache_headers', false ) );
+	}
+
 	public function test_events_default_window_and_shape() {
 		$soon = $this->upcoming( 'Soon', 10 );
 		$far  = $this->upcoming( 'Far', 500 );

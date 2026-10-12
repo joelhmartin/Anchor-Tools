@@ -95,8 +95,17 @@ class Feed {
      * @return int[]
      */
     public function app_term_ids() {
-        $ids = array_map( 'intval', (array) ( $this->module->get_settings()['app_categories'] ?? [] ) );
-        return array_values( array_filter( $ids, static function ( $id ) {
+        return self::existing_category_ids( (array) ( $this->module->get_settings()['app_categories'] ?? [] ) );
+    }
+
+    /**
+     * Only the IDs that are real event_category terms, re-indexed.
+     *
+     * @param array $ids
+     * @return int[]
+     */
+    public static function existing_category_ids( array $ids ) {
+        return array_values( array_filter( array_map( 'absint', $ids ), static function ( $id ) {
             return $id > 0 && \get_term( $id, 'event_category' ) instanceof \WP_Term;
         } ) );
     }

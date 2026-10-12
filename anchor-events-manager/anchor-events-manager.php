@@ -12226,13 +12226,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'template_source' => in_array( $template_source, [ 'theme', 'plugin' ], true ) ? $template_source : 'theme',
             // Member-app feed default filter (feed spec "App categories setting").
             // Term IDs, not slugs, so renaming a category doesn't silently drop it.
-            'app_categories' => array_values( array_filter(
-                array_map( 'absint', (array) ( $input['app_categories'] ?? [] ) ),
-                static function ( $id ) {
-                    $term = $id ? \get_term( $id, 'event_category' ) : null;
-                    return $term instanceof \WP_Term;
-                }
-            ) ),
+            'app_categories' => Feed::existing_category_ids( (array) ( $input['app_categories'] ?? [] ) ),
             'registration_internal' => ! empty( $input['registration_internal'] ),
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),

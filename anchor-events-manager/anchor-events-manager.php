@@ -13984,6 +13984,67 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $am - $bm;
     }
 
+    /**
+     * WP_Query args for published, listable events in a time range — the ONE
+     * range query (feed spec "Reuse"). The month calendar uses the BETWEEN
+     * form (an event belongs to the month it starts in); the app feed uses
+     * the overlap form, so a course that started yesterday and runs through
+     * tomorrow is still "on" today.
+     *
+     * Events with no end_ts are treated as instants at start_ts in the
+     * overlap form rather than being dropped.
+     *
+     * @param int  $start_ts Range start (inclusive).
+     * @param int  $end_ts   Range end.
+     * @param bool $overlap  False = start_ts BETWEEN [start, end]; true = overlaps.
+     * @return array
+     */
+    public function range_query_args( $start_ts, $end_ts, $overlap = false ) {
+        $start_ts = (int) $start_ts;
+        $end_ts   = (int) $end_ts;
+        if ( $overlap ) {
+            $range = [
+                'relation' => 'AND',
+                [ 'key' => $this->meta_key( 'start_ts' ), 'value' => $end_ts, 'compare' => '<=', 'type' => 'NUMERIC' ],
+                [
+                    'relation' => 'OR',
+                    [ 'key' => $this->meta_key( 'end_ts' ), 'value' => $start_ts, 'compare' => '>=', 'type' => 'NUMERIC' ],
+                    [
+                        'relation' => 'AND',
+                        [ 'key' => $this->meta_key( 'end_ts' ), 'compare' => 'NOT EXISTS' ],
+                        [ 'key' => $this->meta_key( 'start_ts' ), 'value' => $start_ts, 'compare' => '>=', 'type' => 'NUMERIC' ],
+                    ],
+                ],
+            ];
+        } else {
+            $range = [
+                'key' => $this->meta_key( 'start_ts' ),
+                'value' => [ $start_ts, $end_ts ],
+                'compare' => 'BETWEEN',
+                'type' => 'NUMERIC',
+            ];
+        }
+
+        return [
+            'post_type' => self::CPT,
+            'posts_per_page' => -1,
+            'post_status' => 'publish',
+            'meta_query' => [ $range, $this->build_hide_clause() ],
+            'orderby' => 'meta_value_num',
+            'meta_key' => $this->meta_key( 'start_ts' ),
+            'order' => 'ASC',
+        ];
+    }
+
+    /**
+     * Cached event IDs for range_query_args() — the feed's entry point.
+     *
+     * @return int[]
+     */
+    public function event_ids_in_range( $start_ts, $end_ts, $overlap = false ) {
+        return array_map( 'intval', (array) $this->get_cached_ids( $this->range_query_args( $start_ts, $end_ts, $overlap ) ) );
+    }
+
     private function render_calendar_month( $atts, $force_month = '' ) {
         $show_past = $atts['show_past'] ?? 'yes';
 
@@ -14020,28 +14081,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $prev_month = ( $diff_to_now > -12 ) ? date( 'Y-m', strtotime( '-1 month', strtotime( $month_start ) ) ) : '';
         $next_month = ( $diff_to_now < 12 ) ? date( 'Y-m', strtotime( '+1 month', strtotime( $month_start ) ) ) : '';
 
-        $meta_query = [
-            [
-                'key' => $this->meta_key( 'start_ts' ),
-                'value' => [ $start, $end ],
-                'compare' => 'BETWEEN',
-                'type' => 'NUMERIC',
-            ],
-            $this->build_hide_clause(),
-        ];
+        $args = $this->range_query_args( $start, $end );
         if ( $show_past === 'no' ) {
-            $meta_query[] = $this->build_visibility_clause();
+            $args['meta_query'][] = $this->build_visibility_clause();
         }
-
-        $args = [
-            'post_type' => self::CPT,
-            'posts_per_page' => -1,
-            'post_status' => 'publish',
-            'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
-            'order' => 'ASC',
-        ];
 
         $args = \apply_filters( 'anchor_events_query_args', $args, $atts );
         $events = $this->get_cached_ids( $args );

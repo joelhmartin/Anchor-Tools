@@ -89,6 +89,18 @@ class Feed {
         return is_array( $terms ) ? array_values( $terms ) : [];
     }
 
+    /**
+     * The App categories setting, minus terms deleted since it was saved.
+     *
+     * @return int[]
+     */
+    public function app_term_ids() {
+        $ids = array_map( 'intval', (array) ( $this->module->get_settings()['app_categories'] ?? [] ) );
+        return array_values( array_filter( $ids, static function ( $id ) {
+            return $id > 0 && \get_term( $id, 'event_category' ) instanceof \WP_Term;
+        } ) );
+    }
+
     public function is_restricted( $event_id ) {
         $meta = $this->module->get_meta( (int) $event_id );
         return ! empty( $meta['required_roles'] ) && is_array( $meta['required_roles'] );

@@ -11794,6 +11794,26 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php
         }, 'anchor_events_settings', 'anchor_events_main' );
 
+        \add_settings_field( 'app_categories', __( 'App categories', 'anchor-schema' ), function() {
+            $selected = array_map( 'intval', (array) $this->get_settings()['app_categories'] );
+            $terms    = \get_terms( [ 'taxonomy' => 'event_category', 'hide_empty' => false ] );
+            if ( empty( $terms ) || \is_wp_error( $terms ) ) {
+                echo '<p class="description">' . esc_html__( 'No event categories yet.', 'anchor-schema' ) . '</p>';
+                return;
+            }
+            echo '<fieldset>';
+            foreach ( $terms as $term ) {
+                printf(
+                    '<label style="display:block"><input type="checkbox" name="%1$s[app_categories][]" value="%2$d" %3$s /> %4$s</label>',
+                    esc_attr( self::OPTION_KEY ),
+                    (int) $term->term_id,
+                    checked( in_array( (int) $term->term_id, $selected, true ), true, false ),
+                    esc_html( $term->name )
+                );
+            }
+            echo '</fieldset><p class="description">' . esc_html__( 'Categories the member app shows. Leave empty to show all.', 'anchor-schema' ) . '</p>';
+        }, 'anchor_events_settings', 'anchor_events_main' );
+
         \add_settings_section( 'anchor_events_email_sender', __( 'Email Sender', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'From / Reply-To / BCC identity applied to all event emails. Leave blank to use WordPress defaults.', 'anchor-schema' ) . '</p>';
             echo '<p class="description">' . esc_html__( 'This only sets the email headers — actual delivery still relies on your site\'s mail service (e.g. Mailgun, WP Mail SMTP). The From address should be on a domain that service is authorized to send for (SPF/DKIM), or mail may be marked as spam. Some SMTP/Mailgun plugins force their own From address and will override this; Reply-To is usually respected.', 'anchor-schema' ) . '</p>';
@@ -12204,6 +12224,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'timezone_mode' => in_array( $timezone_mode, [ 'site', 'event' ], true ) ? $timezone_mode : 'site',
             'archive_hide_past' => ! empty( $input['archive_hide_past'] ),
             'template_source' => in_array( $template_source, [ 'theme', 'plugin' ], true ) ? $template_source : 'theme',
+            // Member-app feed default filter (feed spec "App categories setting").
+            // Term IDs, not slugs, so renaming a category doesn't silently drop it.
+            'app_categories' => array_values( array_filter(
+                array_map( 'absint', (array) ( $input['app_categories'] ?? [] ) ),
+                static function ( $id ) {
+                    $term = $id ? \get_term( $id, 'event_category' ) : null;
+                    return $term instanceof \WP_Term;
+                }
+            ) ),
             'registration_internal' => ! empty( $input['registration_internal'] ),
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),
@@ -16741,6 +16770,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'timezone_mode' => 'site',
             'archive_hide_past' => true,
             'template_source' => 'theme',
+            'app_categories' => [],
             'registration_internal' => true,
             'admin_email' => '',
             'notify_admin' => true,

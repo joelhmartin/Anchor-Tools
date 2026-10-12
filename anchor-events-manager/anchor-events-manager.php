@@ -7967,6 +7967,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             },
             'callback' => [ $this, 'rest_room' ],
         ] );
+
+        // The member-app feed (spec 2026-10-12-events-feed-api).
+        $this->feed->register_routes();
     }
 
     /**

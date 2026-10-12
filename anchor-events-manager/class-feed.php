@@ -227,4 +227,175 @@ class Feed {
         }
         return rtrim( mb_substr( $text, 0, self::SUMMARY_MAX - 1 ) ) . '…';
     }
+
+    /* ── REST ──────────────────────────────────────────────────── */
+
+    const DEFAULT_MONTHS = 12;
+    const MAX_MONTHS     = 24;
+
+    public function register_routes() {
+        $public = '__return_true';
+        register_rest_route( Module::REST_NS, '/events', [
+            'methods'             => 'GET',
+            'permission_callback' => $public,
+            'callback'            => [ $this, 'rest_events' ],
+            'args'                => [
+                'from'     => [ 'type' => 'string' ],
+                'to'       => [ 'type' => 'string' ],
+                'category' => [ 'type' => 'string' ],
+                'page'     => [ 'type' => 'integer', 'default' => 1, 'minimum' => 1 ],
+                'per_page' => [ 'type' => 'integer', 'default' => 50, 'minimum' => 1, 'maximum' => 100 ],
+            ],
+        ] );
+        register_rest_route( Module::REST_NS, '/categories', [
+            'methods'             => 'GET',
+            'permission_callback' => $public,
+            'callback'            => [ $this, 'rest_categories' ],
+        ] );
+        register_rest_route( Module::REST_NS, '/me', [
+            'methods'             => 'GET',
+            // Refused inside the callback so the 401 carries our own code.
+            'permission_callback' => $public,
+            'callback'            => [ $this, 'rest_me' ],
+        ] );
+    }
+
+    public function rest_events( \WP_REST_Request $request ) {
+        $range = $this->parse_range( $request['from'], $request['to'] );
+        if ( is_wp_error( $range ) ) {
+            return $range;
+        }
+        $terms = $this->parse_categories( $request['category'] );
+        if ( is_wp_error( $terms ) ) {
+            return $terms;
+        }
+
+        $rows     = $this->rows( $this->visible_ids( $range[0], $range[1], $terms ) );
+        $per_page = (int) $request['per_page'];
+        $page     = (int) $request['page'];
+        $total    = count( $rows );
+        $pages    = (int) ceil( $total / $per_page );
+
+        $response = $this->respond( $request, [
+            'events'      => array_slice( $rows, ( $page - 1 ) * $per_page, $per_page ),
+            'page'        => $page,
+            'per_page'    => $per_page,
+            'total'       => $total,
+            'total_pages' => $pages,
+        ] );
+        $response->header( 'X-WP-Total', (string) $total );
+        $response->header( 'X-WP-TotalPages', (string) $pages );
+        return $response;
+    }
+
+    public function rest_categories( \WP_REST_Request $request ) {
+        $range  = $this->parse_range( null, null );
+        $counts = [];
+        $terms  = [];
+        foreach ( $this->visible_ids( $range[0], $range[1], $this->app_term_ids() ) as $id ) {
+            foreach ( $this->category_terms( $id ) as $term ) {
+                $counts[ $term->term_id ] = ( $counts[ $term->term_id ] ?? 0 ) + 1;
+                $terms[ $term->term_id ]  = $term;
+            }
+        }
+        $allowed = $this->app_term_ids();
+        $out     = [];
+        foreach ( $terms as $term_id => $term ) {
+            if ( $allowed && ! in_array( (int) $term_id, $allowed, true ) ) {
+                continue;
+            }
+            $out[] = [ 'slug' => (string) $term->slug, 'name' => html_entity_decode( (string) $term->name, ENT_QUOTES, 'UTF-8' ), 'count' => (int) $counts[ $term_id ] ];
+        }
+        usort( $out, static function ( $a, $b ) {
+            return strcasecmp( $a['name'], $b['name'] );
+        } );
+        return $this->respond( $request, [ 'categories' => $out ] );
+    }
+
+    public function rest_me( \WP_REST_Request $request ) {
+        $user = wp_get_current_user();
+        if ( ! $user || ! $user->exists() ) {
+            return new \WP_Error( 'anchor_events_not_signed_in', __( 'Sign in to see your events.', 'anchor-schema' ), [ 'status' => 401 ] );
+        }
+        $from = $this->day_start( wp_date( 'Y-m-d' ) );
+        $to   = $this->day_start( wp_date( 'Y-m-d', strtotime( '+' . self::MAX_MONTHS . ' months' ) ) ) - 1;
+        $sees = false;
+        foreach ( $this->visible_ids( $from, $to, [] ) as $id ) {
+            if ( $this->is_restricted( $id ) ) {
+                $sees = true;
+                break;
+            }
+        }
+        return $this->respond( $request, [ 'name' => (string) $user->display_name, 'sees_restricted' => $sees ] );
+    }
+
+    /** Rows for IDs, skipping any event whose schema node is unusable. */
+    private function rows( array $ids ) {
+        $rows = [];
+        foreach ( $ids as $id ) {
+            $row = $this->row( $id );
+            if ( $row !== null ) {
+                $rows[] = $row;
+            }
+        }
+        return $rows;
+    }
+
+    /**
+     * @return int[]|\WP_Error [from_ts, to_ts] in the site zone, inclusive.
+     */
+    private function parse_range( $from, $to ) {
+        $bad  = new \WP_Error( 'anchor_events_bad_range', __( 'Use from/to as YYYY-MM-DD, with to on or after from and no more than 24 months apart.', 'anchor-schema' ), [ 'status' => 400 ] );
+        $from = ( $from === null || $from === '' ) ? wp_date( 'Y-m-d' ) : (string) $from;
+        if ( ! $this->is_date( $from ) ) {
+            return $bad;
+        }
+        $to = ( $to === null || $to === '' ) ? gmdate( 'Y-m-d', strtotime( $from . ' +' . self::DEFAULT_MONTHS . ' months' ) ) : (string) $to;
+        if ( ! $this->is_date( $to ) || $to < $from || $to > gmdate( 'Y-m-d', strtotime( $from . ' +' . self::MAX_MONTHS . ' months' ) ) ) {
+            return $bad;
+        }
+        return [ $this->day_start( $from ), $this->day_start( gmdate( 'Y-m-d', strtotime( $to . ' +1 day' ) ) ) - 1 ];
+    }
+
+    private function is_date( $s ) {
+        return (bool) preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m ) && checkdate( (int) $m[2], (int) $m[3], (int) $m[1] );
+    }
+
+    /** Midnight of a YYYY-MM-DD in the site zone, through the module's own converter. */
+    private function day_start( $date ) {
+        return (int) $this->module->to_timestamp( $date, '00:00', '' );
+    }
+
+    /** @return int[]|\WP_Error */
+    private function parse_categories( $param ) {
+        $param = trim( (string) $param );
+        if ( $param === '' ) {
+            return $this->app_term_ids();
+        }
+        $ids = [];
+        foreach ( array_filter( array_map( 'trim', explode( ',', $param ) ) ) as $slug ) {
+            $term = get_term_by( 'slug', sanitize_title( $slug ), 'event_category' );
+            if ( ! $term instanceof \WP_Term ) {
+                return new \WP_Error( 'anchor_events_bad_category', sprintf( __( 'Unknown event category: %s', 'anchor-schema' ), $slug ), [ 'status' => 400 ] );
+            }
+            $ids[] = (int) $term->term_id;
+        }
+        return $ids;
+    }
+
+    /**
+     * 200 with private caching + a body-hash ETag, or 304 when the client
+     * already has it. Body hash, not the cache generation: a seat sale moves
+     * registration.status without bumping the generation.
+     */
+    private function respond( \WP_REST_Request $request, array $data ) {
+        $etag     = 'W/"' . md5( (string) wp_json_encode( $data ) ) . '"';
+        $match    = trim( (string) $request->get_header( 'if_none_match' ) );
+        $response = ( $match !== '' && $match === $etag )
+            ? new \WP_REST_Response( null, 304 )
+            : new \WP_REST_Response( $data, 200 );
+        $response->header( 'ETag', $etag );
+        $response->header( 'Cache-Control', 'private, max-age=300' );
+        return $response;
+    }
 }

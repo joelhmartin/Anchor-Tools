@@ -322,6 +322,9 @@ class Module {
     /** @var Entitlements|null Event roles + access (spec §4; always loaded). */
     public $entitlements = null;
 
+    /** @var Feed|null Read-only REST feed for the member app (spec 2026-10-12-events-feed-api; always loaded). */
+    public $feed = null;
+
     /**
      * Request-scoped: set by room_headers() when a sign-in token in the URL
      * was rejected (invalid or expired), read by render_room()'s logged-out
@@ -426,6 +429,7 @@ class Module {
         // Event roles / access (virtual-events spec §4) — free + paid, no
         // WooCommerce dependency.
         require_once $dir . 'class-entitlements.php';
+        require_once $dir . 'class-feed.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -447,6 +451,9 @@ class Module {
         // WooCommerce dependency. Constructed like Registrations/Roster so
         // $module->entitlements is the one handle every surface uses.
         $this->entitlements = new Entitlements( $this );
+
+        // Member-app feed: selection + row mapping over the above (no hooks yet).
+        $this->feed = new Feed( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.

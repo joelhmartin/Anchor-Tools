@@ -9,6 +9,7 @@ use Anchor\Shipping\Domain\CarrierError;
 use Anchor\Shipping\Domain\LabelResult;
 use Anchor\Shipping\Domain\PackageLabel;
 use Anchor\Shipping\Domain\ShipmentRequest;
+use Anchor\Shipping\Domain\TrackingResult;
 use Anchor\Shipping\Support\Settings;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -27,7 +28,7 @@ final class UpsCarrier implements CarrierInterface {
 	}
 
 	public function supports( string $feature ): bool {
-		return in_array( $feature, [ 'labels', 'void' ], true );
+		return in_array( $feature, [ 'labels', 'void', 'track' ], true );
 	}
 
 	public function services(): array {
@@ -114,8 +115,89 @@ final class UpsCarrier implements CarrierInterface {
 		$this->client()->request( 'DELETE', '/api/shipments/v2409/void/cancel/' . rawurlencode( $shipment_id ) );
 	}
 
+	/** UPS error codes meaning "no such shipment (yet)": reported as 'unknown', not as a failure. */
+	private const NOT_FOUND_CODES = [ 'TV1002', '151018', '151044', 'http_404' ];
+
 	public function track( array $tracking_numbers ): array {
-		throw new CarrierError( 'unsupported', \__( 'Tracking arrives in phase 3.', 'anchor-schema' ) );
+		$out = [];
+		foreach ( $tracking_numbers as $number ) {
+			$number = trim( (string) $number );
+			if ( '' === $number ) {
+				continue;
+			}
+			try {
+				$json = $this->client()->request( 'GET', '/api/track/v1/details/' . rawurlencode( $number ) . '?locale=en_US' );
+			} catch ( CarrierError $e ) {
+				if ( ! in_array( $e->carrier_code, self::NOT_FOUND_CODES, true ) ) {
+					throw $e;
+				}
+				$out[ $number ] = new TrackingResult( $number, 'unknown', $e->getMessage(), null );
+				continue;
+			}
+			$out[ $number ] = $this->parse_tracking( $number, $json );
+		}
+		return $out;
+	}
+
+	private function parse_tracking( string $number, array $json ): TrackingResult {
+		$errors = $json['response']['errors'][0] ?? null;
+		if ( is_array( $errors ) ) {
+			return new TrackingResult( $number, 'unknown', (string) ( $errors['message'] ?? '' ), null );
+		}
+		$pkg        = $json['trackResponse']['shipment'][0]['package'][0] ?? null;
+		$activities = is_array( $pkg ) && is_array( $pkg['activity'] ?? null ) ? $pkg['activity'] : [];
+
+		$latest    = null;
+		$latest_at = null;
+		foreach ( $activities as $a ) {
+			if ( ! is_array( $a ) ) {
+				continue;
+			}
+			$at = $this->activity_time( $a );
+			if ( null === $latest || ( null !== $at && ( null === $latest_at || $at > $latest_at ) ) ) {
+				$latest    = $a;
+				$latest_at = $at ?? $latest_at;
+			}
+		}
+
+		$current = is_array( $pkg ) && is_array( $pkg['currentStatus'] ?? null ) ? $pkg['currentStatus'] : ( is_array( $latest ) && is_array( $latest['status'] ?? null ) ? $latest['status'] : [] );
+		$type    = strtoupper( (string) ( $current['type'] ?? '' ) );
+		$code    = strtoupper( (string) ( $current['code'] ?? '' ) );
+		$desc    = trim( (string) ( $current['description'] ?? '' ) );
+
+		return new TrackingResult( $number, $this->map_status( $type, $code, $desc ), $desc, $latest_at );
+	}
+
+	/** UPS activity date (YYYYMMDD) + time (HHMMSS) as a UTC timestamp. */
+	private function activity_time( array $a ): ?int {
+		$date = (string) ( $a['date'] ?? '' );
+		$time = str_pad( (string) ( $a['time'] ?? '' ), 6, '0', STR_PAD_LEFT );
+		if ( ! preg_match( '/^\d{8}$/', $date ) || ! preg_match( '/^\d{6}$/', $time ) ) {
+			return null;
+		}
+		$ts = gmmktime( (int) substr( $time, 0, 2 ), (int) substr( $time, 2, 2 ), (int) substr( $time, 4, 2 ), (int) substr( $date, 4, 2 ), (int) substr( $date, 6, 2 ), (int) substr( $date, 0, 4 ) );
+		return false === $ts ? null : $ts;
+	}
+
+	private function map_status( string $type, string $code, string $desc ): string {
+		if ( 'O' === $type || 'OT' === $code || false !== stripos( $desc, 'out for delivery' ) ) {
+			return 'out_for_delivery';
+		}
+		switch ( $type ) {
+			case 'M':
+			case 'MV':
+				return 'label_created';
+			case 'I':
+			case 'P':
+				return 'in_transit';
+			case 'D':
+				return 'delivered';
+			case 'X':
+				return 'exception';
+			case 'RS':
+				return 'returned';
+		}
+		return 'unknown';
 	}
 
 	public function rate( ShipmentRequest $request ): array {

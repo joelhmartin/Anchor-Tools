@@ -1,0 +1,53 @@
+{
+	"trackResponse": {
+		"shipment": [
+			{
+				"inquiryNumber": "1ZK877V90300000001",
+				"package": [
+					{
+						"trackingNumber": "1ZK877V90300000001",
+						"currentStatus": {
+							"description": "Out For Delivery Today",
+							"type": "I",
+							"code": "OT"
+						},
+						"activity": [
+							{
+								"location": {
+									"address": {
+										"city": "TAMPA",
+										"stateProvince": "FL",
+										"countryCode": "US"
+									}
+								},
+								"status": {
+									"type": "I",
+									"description": "Out For Delivery Today",
+									"code": "OT"
+								},
+								"date": "20261013",
+								"time": "080500"
+							},
+							{
+								"location": {
+									"address": {
+										"city": "TAMPA",
+										"stateProvince": "FL",
+										"countryCode": "US"
+									}
+								},
+								"status": {
+									"type": "M",
+									"description": "Shipper created a label, UPS has not received the package yet. ",
+									"code": "MP"
+								},
+								"date": "20261010",
+								"time": "091500"
+							}
+						]
+					}
+				]
+			}
+		]
+	}
+}

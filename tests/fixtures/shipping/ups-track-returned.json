@@ -1,0 +1,53 @@
+{
+	"trackResponse": {
+		"shipment": [
+			{
+				"inquiryNumber": "1ZK877V90300000001",
+				"package": [
+					{
+						"trackingNumber": "1ZK877V90300000001",
+						"currentStatus": {
+							"description": "Returned to sender",
+							"type": "RS",
+							"code": "RS"
+						},
+						"activity": [
+							{
+								"location": {
+									"address": {
+										"city": "TAMPA",
+										"stateProvince": "FL",
+										"countryCode": "US"
+									}
+								},
+								"status": {
+									"type": "RS",
+									"description": "Returned to sender",
+									"code": "RS"
+								},
+								"date": "20261013",
+								"time": "101000"
+							},
+							{
+								"location": {
+									"address": {
+										"city": "TAMPA",
+										"stateProvince": "FL",
+										"countryCode": "US"
+									}
+								},
+								"status": {
+									"type": "M",
+									"description": "Shipper created a label, UPS has not received the package yet. ",
+									"code": "MP"
+								},
+								"date": "20261010",
+								"time": "091500"
+							}
+						]
+					}
+				]
+			}
+		]
+	}
+}

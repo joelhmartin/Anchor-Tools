@@ -1,0 +1,53 @@
+{
+	"trackResponse": {
+		"shipment": [
+			{
+				"inquiryNumber": "1ZK877V90300000001",
+				"package": [
+					{
+						"trackingNumber": "1ZK877V90300000001",
+						"currentStatus": {
+							"description": "Delivery attempted; recipient not available",
+							"type": "X",
+							"code": "MX"
+						},
+						"activity": [
+							{
+								"location": {
+									"address": {
+										"city": "TAMPA",
+										"stateProvince": "FL",
+										"countryCode": "US"
+									}
+								},
+								"status": {
+									"type": "X",
+									"description": "Delivery attempted; recipient not available",
+									"code": "MX"
+								},
+								"date": "20261012",
+								"time": "160100"
+							},
+							{
+								"location": {
+									"address": {
+										"city": "TAMPA",
+										"stateProvince": "FL",
+										"countryCode": "US"
+									}
+								},
+								"status": {
+									"type": "M",
+									"description": "Shipper created a label, UPS has not received the package yet. ",
+									"code": "MP"
+								},
+								"date": "20261010",
+								"time": "091500"
+							}
+						]
+					}
+				]
+			}
+		]
+	}
+}

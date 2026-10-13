@@ -49,6 +49,8 @@ class Test_Shipping_Rates extends Anchor_Shipping_TestCase {
 		$this->queue_token();
 		$this->queue_response( 200, $this->fixture( 'ups-rate-shop' ) );
 		( new UpsCarrier() )->rate( $this->rate_request() );
+		$this->assertSame( 6, (int) $this->requests[0]['args']['timeout'], 'token fetch bounded' );
+		$this->assertSame( 6, (int) $this->requests[1]['args']['timeout'], 'rating call bounded' );
 		$this->assertStringEndsWith( '/api/rating/v2409/Shop', $this->requests[1]['url'] );
 		$body = json_decode( $this->requests[1]['args']['body'], true )['RateRequest'];
 		$this->assertSame( 'Shop', $body['Request']['RequestOption'] );
@@ -129,12 +131,19 @@ class Test_Shipping_Rates extends Anchor_Shipping_TestCase {
 		$this->assertSame( [], $this->requests );
 	}
 
-	public function test_carrier_error_offers_nothing() {
+	public function test_carrier_error_offers_nothing_and_is_negatively_cached() {
+		$pkg = $this->package( [ $this->make_product( [ 'weight' => 0.5, 'box' => 'small' ] ) ] );
 		$this->queue_token();
 		$this->queue_response( 500, '{"response":{"errors":[{"code":"250002","message":"Invalid Authentication Information"}]}}' );
 		$m = $this->method();
-		$m->calculate_shipping( $this->package( [ $this->make_product( [ 'weight' => 0.5, 'box' => 'small' ] ) ] ) );
+		$m->calculate_shipping( $pkg );
 		$this->assertSame( [], $m->rates );
+
+		$n = count( $this->requests );
+		$m = $this->method();
+		$m->calculate_shipping( $pkg );
+		$this->assertSame( [], $m->rates );
+		$this->assertSame( $n, count( $this->requests ), 'failure is negatively cached' );
 	}
 
 	public function test_incomplete_destination_offers_nothing() {

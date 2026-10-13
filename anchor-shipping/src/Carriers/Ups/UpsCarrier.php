@@ -246,6 +246,9 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 		return [ 'valid' => $valid, 'ambiguous' => $ambiguous, 'candidates' => $candidates ];
 	}
 
+	/** Seconds: rating runs while a customer waits at checkout. */
+	private const RATE_TIMEOUT = 6;
+
 	/**
 	 * Every UPS service available for this shipment, priced at the account's negotiated
 	 * rate when UPS returns one. $request->service is ignored (Shop mode).
@@ -257,10 +260,10 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 		$body  = [
 			'RateRequest' => [
 				'Request'  => [ 'RequestOption' => 'Shop' ],
-				'Shipment' => $this->shipment_core( $request, $creds['account'], 'PackagingType' ),
+				'Shipment' => $this->shipment_core( $request, $creds['account'], 'PackagingType', false ),
 			],
 		];
-		$json  = $this->client()->request( 'POST', '/api/rating/v2409/Shop', $body );
+		$json  = $this->client()->request( 'POST', '/api/rating/v2409/Shop', $body, true, [ 'timeout' => self::RATE_TIMEOUT ] );
 		$rated = $json['RateResponse']['RatedShipment'] ?? null;
 		if ( ! is_array( $rated ) ) {
 			throw new CarrierError( 'parse', \__( 'UPS returned no rates.', 'anchor-schema' ) );
@@ -298,7 +301,7 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 					'Description'        => substr( $r->reference, 0, 50 ),
 					'PaymentInformation' => [ 'ShipmentCharge' => [ 'Type' => '01', 'BillShipper' => [ 'AccountNumber' => $account ] ] ],
 					'Service'            => [ 'Code' => $r->service ],
-				] + $this->shipment_core( $r, $account, 'Packaging' ),
+				] + $this->shipment_core( $r, $account, 'Packaging', true ),
 				'LabelSpecification' => $label,
 			],
 		];
@@ -307,9 +310,10 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 	/**
 	 * The parts of a UPS shipment that labels and rate quotes must describe identically:
 	 * parties, negotiated-rates flag and packages. $packaging_key is the one field the
-	 * two APIs spell differently ('Packaging' for Shipping, 'PackagingType' for Rating).
+	 * two APIs spell differently ('Packaging' for Shipping, 'PackagingType' for Rating);
+	 * $reference adds the package ReferenceNumber (labels only).
 	 */
-	private function shipment_core( ShipmentRequest $r, string $account, string $packaging_key ): array {
+	private function shipment_core( ShipmentRequest $r, string $account, string $packaging_key, bool $reference ): array {
 		$per_pkg_value = $r->declared_value > 0 ? round( $r->declared_value / count( $r->parcels ), 2 ) : 0.0;
 		$packages      = [];
 		foreach ( $r->parcels as $parcel ) {
@@ -319,7 +323,7 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 				'Dimensions'    => [ 'UnitOfMeasurement' => [ 'Code' => 'IN' ], 'Length' => (string) $l, 'Width' => (string) $w, 'Height' => (string) $h ],
 				'PackageWeight' => [ 'UnitOfMeasurement' => [ 'Code' => 'LBS' ], 'Weight' => (string) $parcel->weight_lb() ],
 			];
-			if ( '' !== $r->reference ) {
+			if ( $reference ) { // labels only; the Rating API has no package reference
 				$pkg['ReferenceNumber'] = [ 'Value' => substr( $r->reference, 0, 35 ) ];
 			}
 			$options = [];

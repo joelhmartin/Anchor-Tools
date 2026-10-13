@@ -21,6 +21,7 @@ class RateMethod extends \WC_Shipping_Method {
 
 	public const ID        = 'anchor_shipping_rates';
 	public const CACHE_TTL = 600;
+	public const FAILURE_TTL = 60;
 
 	public function __construct( $instance_id = 0 ) {
 		$this->id                 = self::ID;
@@ -109,10 +110,15 @@ class RateMethod extends \WC_Shipping_Method {
 					$out[] = [ 'service' => $q->service, 'label' => $q->label, 'amount' => $q->amount ];
 				}
 			}
+			if ( ! $out ) {
+				\set_transient( $key, [], self::FAILURE_TTL );
+				return [];
+			}
 		} catch ( \Throwable $e ) {
 			if ( \function_exists( 'wc_get_logger' ) ) {
 				\wc_get_logger()->warning( 'Live rates unavailable: ' . $e->getMessage(), [ 'source' => 'anchor-shipping' ] );
 			}
+			\set_transient( $key, [], self::FAILURE_TTL ); // an outage costs one UPS attempt a minute per cart, not one per refresh
 			return [];
 		}
 		\set_transient( $key, $out, self::CACHE_TTL );

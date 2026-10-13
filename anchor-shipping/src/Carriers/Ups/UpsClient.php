@@ -29,12 +29,14 @@ final class UpsClient {
 	 * @param bool $idempotent false for calls that spend money (ship): a transport timeout or a
 	 *                         5xx other than 503 then means "UPS may have acted", so it is
 	 *                         'uncertain' and not retryable. Idempotent calls retry any 5xx.
+	 * @param array $opts ['timeout' => seconds] caps the token fetch and the call (checkout uses a short one); default unchanged
 	 */
-	public function request( string $method, string $path, ?array $body = null, bool $idempotent = true ): array {
-		$res = $this->send( $method, $path, $body, $this->token(), $idempotent );
+	public function request( string $method, string $path, ?array $body = null, bool $idempotent = true, array $opts = [] ): array {
+		$timeout = isset( $opts['timeout'] ) ? max( 1, (int) $opts['timeout'] ) : null;
+		$res     = $this->send( $method, $path, $body, $this->token( $timeout ?? 20 ), $idempotent, $timeout ?? 30 );
 		if ( 401 === $res['code'] ) {
 			$this->forget_token();
-			$res = $this->send( $method, $path, $body, $this->token(), $idempotent );
+			$res = $this->send( $method, $path, $body, $this->token( $timeout ?? 20 ), $idempotent, $timeout ?? 30 );
 			if ( 401 === $res['code'] ) {
 				throw new CarrierError( 'auth', \__( 'UPS rejected the API credentials. Check the Client ID and Secret.', 'anchor-schema' ) );
 			}
@@ -58,7 +60,7 @@ final class UpsClient {
 		return 'anchor_shipping_ups_token_' . md5( $this->environment . '|' . $this->client_id );
 	}
 
-	private function token(): string {
+	private function token( int $timeout = 20 ): string {
 		$cached = \get_transient( $this->token_key() );
 		if ( is_string( $cached ) && '' !== $cached ) {
 			return $cached;
@@ -66,7 +68,7 @@ final class UpsClient {
 		$raw = \wp_remote_post(
 			$this->host() . '/security/v1/oauth/token',
 			[
-				'timeout' => 20,
+				'timeout' => $timeout,
 				'headers' => [
 					'Authorization' => 'Basic ' . base64_encode( $this->client_id . ':' . $this->client_secret ),
 					'Content-Type'  => 'application/x-www-form-urlencoded',
@@ -84,10 +86,10 @@ final class UpsClient {
 		return (string) $res['json']['access_token'];
 	}
 
-	private function send( string $method, string $path, ?array $body, string $token, bool $idempotent = true ): array {
+	private function send( string $method, string $path, ?array $body, string $token, bool $idempotent = true, int $timeout = 30 ): array {
 		$args = [
 			'method'  => $method,
-			'timeout' => 30,
+			'timeout' => $timeout,
 			'headers' => [
 				'Authorization'  => 'Bearer ' . $token,
 				'Content-Type'   => 'application/json',

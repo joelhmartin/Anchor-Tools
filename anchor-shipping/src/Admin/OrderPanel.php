@@ -32,6 +32,11 @@ final class OrderPanel {
 		if ( ! $screen || \wc_get_page_screen_id( 'shop-order' ) !== $screen->id ) {
 			return;
 		}
+		self::enqueue();
+	}
+
+	/** Styles + script + the `anchorShipping` object the panel's JS needs; callable from wp-admin and the front-end console. */
+	public static function enqueue(): void {
 		\wp_enqueue_style( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.css', [], '1.0.0' );
 		\wp_enqueue_script( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.js', [ 'jquery' ], '1.0.1', true );
 		\wp_localize_script( 'anchor-shipping-admin', 'anchorShipping', [ 'ajax' => \admin_url( 'admin-ajax.php' ), 'nonce' => \wp_create_nonce( Ajax::NONCE ), 'confirmVoid' => \__( 'Void this label? It cannot be used afterwards.', 'anchor-schema' ) ] );

@@ -79,8 +79,11 @@ class Module {
 		if ( \is_admin() ) {
 			new Admin\SettingsPage( $this->carriers );
 			new Admin\ProductFields();
-			new Admin\OrderPanel( $this->shipments, $this->packer, $this->carriers );
-			new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers );
 		}
+		// The panel and its AJAX endpoints also serve the front-end console; the metabox hooks only ever fire in wp-admin.
+		new Admin\OrderPanel( $this->shipments, $this->packer, $this->carriers );
+		new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers );
+		new Frontend\ShopManager( $this->labels, $this->shipments, $this->carriers, $this->packer );
+		new Frontend\ConsoleAjax();
 	}
 }

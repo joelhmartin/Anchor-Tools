@@ -10,6 +10,7 @@ use Anchor\Shipping\Database\ShipmentRepository;
 use Anchor\Shipping\Module;
 use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Services\LabelService;
+use Anchor\Shipping\Support\Settings;
 use Anchor\Shipping\Support\TrackingLinks;
 use Anchor\Shipping\Support\Urls;
 
@@ -39,8 +40,12 @@ final class ShopManager {
 		\add_action( 'wp_enqueue_scripts', [ $this, 'maybe_enqueue' ] );
 	}
 
+	public static function capability(): string {
+		return (string) \apply_filters( 'anchor_shipping_console_capability', 'edit_shop_orders' );
+	}
+
 	public static function can_use(): bool {
-		return \is_user_logged_in() && \current_user_can( (string) \apply_filters( 'anchor_shipping_console_capability', 'edit_shop_orders' ) );
+		return \is_user_logged_in() && \current_user_can( self::capability() );
 	}
 
 	/** @return array<string,string> tab slug => label */
@@ -60,6 +65,8 @@ final class ShopManager {
 			's'     => isset( $_GET['s'] ) ? \sanitize_text_field( \wp_unslash( $_GET['s'] ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification
 			'paged' => isset( $_GET['paged'] ) ? (int) $_GET['paged'] : 1, // phpcs:ignore WordPress.Security.NonceVerification
 			'order' => isset( $_GET['order'] ) ? (int) $_GET['order'] : 0, // phpcs:ignore WordPress.Security.NonceVerification
+			'bulk'  => ! empty( $_GET['bulk'] ),  // phpcs:ignore WordPress.Security.NonceVerification
+			'ids'   => isset( $_GET['ids'] ) ? self::parse_ids( \wp_unslash( $_GET['ids'] ) ) : [], // phpcs:ignore WordPress.Security.NonceVerification, WordPress.Security.ValidatedSanitizedInput
 		] );
 	}
 
@@ -88,17 +95,26 @@ final class ShopManager {
 		return $post && \has_shortcode( (string) $post->post_content, 'shop_manager' );
 	}
 
-	private function enqueue(): void {
+	public static function enqueue(): void {
 		OrderPanel::enqueue();
 		\wp_enqueue_style( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.css', [ 'anchor-shipping-admin' ], '1.0.0' );
 		\wp_enqueue_script( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.js', [ 'jquery', 'anchor-shipping-admin' ], '1.0.0', true );
 		\wp_localize_script( 'anchor-shipping-console', 'anchorShippingConsole', [
 			'confirmCancel' => \__( 'Cancel this order? Any labels will be voided.', 'anchor-schema' ),
 			'confirmDone'   => \__( 'Mark this order completed?', 'anchor-schema' ),
+			'confirmBulk'   => \__( 'Create %d labels? Each one is billed by the carrier.', 'anchor-schema' ),
+			'working'       => \__( 'Creating labels, this can take a minute…', 'anchor-schema' ),
 		] );
 	}
 
-	/** @param array{tab?:string,s?:string,paged?:int,order?:int} $args */
+	/** Order ids from `ids[]=1&ids[]=2` or `ids=1,2`; positive, unique, capped at the bulk limit. @return int[] */
+	public static function parse_ids( $raw ): array {
+		$raw = is_array( $raw ) ? $raw : explode( ',', (string) $raw );
+		$ids = array_values( array_unique( array_filter( array_map( 'intval', $raw ), static fn( int $i ): bool => $i > 0 ) ) );
+		return array_slice( $ids, 0, ConsoleAjax::BULK_MAX );
+	}
+
+	/** @param array{tab?:string,s?:string,paged?:int,order?:int,bulk?:bool,ids?:int[]} $args */
 	public function render( array $args = [] ): string {
 		$this->mark_private();
 		if ( ! \is_user_logged_in() ) {
@@ -110,6 +126,9 @@ final class ShopManager {
 		}
 		$this->enqueue();
 
+		if ( ! empty( $args['bulk'] ) ) {
+			return '<div class="asm-console">' . $this->bulk_view( (array) ( $args['ids'] ?? [] ), $this->url() ) . '</div>';
+		}
 		$out = (int) ( $args['order'] ?? 0 ) > 0 ? $this->render_order( (int) $args['order'] ) : $this->render_list( $args );
 		return '<div class="asm-console">' . $out . '</div>';
 	}
@@ -157,6 +176,41 @@ final class ShopManager {
 			'tab_url' => fn( string $t ): string => $this->url( [ 'tab' => $t, 's' => '' !== $s ? $s : null ] ),
 			'page_url' => fn( int $p ): string => $this->url( [ 'tab' => $tab, 's' => '' !== $s ? $s : null, 'paged' => $p > 1 ? $p : null ] ),
 			'action'  => $this->url(),
+			'bulk'    => 'needs-label' === $tab,
+		] );
+	}
+
+	/**
+	 * Confirm screen for labelling several orders: one editable row per order, prefilled from the packer.
+	 * Used by the console (?bulk=1&ids=…) and by the wp-admin fallback screen.
+	 *
+	 * @param int[] $ids
+	 */
+	public function bulk_view( array $ids, string $back ): string {
+		$entries = [];
+		foreach ( self::parse_ids( $ids ) as $id ) {
+			$order = \wc_get_order( $id );
+			if ( ! $order instanceof \WC_Order ) {
+				continue;
+			}
+			$entry = [ 'order' => $order, 'url' => Urls::order( $order ), 'blocked' => '', 'box' => '', 'weight' => '', 'note' => '' ];
+			if ( $this->labels->is_labelled( $order ) ) {
+				$entry['blocked'] = \__( 'Already has a label.', 'anchor-schema' );
+			} elseif ( ! $this->labels->is_shippable( $order ) ) {
+				$entry['blocked'] = \__( 'Nothing to ship on this order.', 'anchor-schema' );
+			} else {
+				$pack = $this->packer->pack_order( $order );
+				$entry['box']    = (string) ( $pack->suggestion['box'] ?? '' );
+				$entry['weight'] = isset( $pack->suggestion['weight'] ) ? (string) $pack->suggestion['weight'] : '';
+				$entry['note']   = $pack->reason;
+			}
+			$entries[] = $entry;
+		}
+		return self::render_template( 'bulk', [
+			'entries' => $entries,
+			'boxes'   => Settings::boxes(),
+			'unit'    => (string) \get_option( 'woocommerce_weight_unit' ),
+			'back'    => $back,
 		] );
 	}
 

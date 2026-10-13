@@ -4,6 +4,9 @@ declare(strict_types=1);
 namespace Anchor\Shipping\Frontend;
 
 use Anchor\Shipping\Admin\Ajax;
+use Anchor\Shipping\Module;
+use Anchor\Shipping\Services\BulkLabels;
+use Anchor\Shipping\Support\Urls;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -16,7 +19,10 @@ final class ConsoleAjax {
 		'cancelled' => [ 'pending', 'processing', 'on-hold' ],
 	];
 
-	public function __construct() {
+	public const BULK_MAX = 50;
+
+	public function __construct( private ?BulkLabels $bulk = null ) {
+		\add_action( 'wp_ajax_anchor_shipping_bulk_create', [ $this, 'ajax_bulk_create' ] );
 		\add_action( 'wp_ajax_anchor_shipping_console_status', [ $this, 'ajax_status' ] );
 		\add_action( 'wp_ajax_anchor_shipping_console_product_save', [ $this, 'ajax_product_save' ] );
 	}
@@ -30,6 +36,36 @@ final class ConsoleAjax {
 		} catch ( \RuntimeException $e ) {
 			\wp_send_json_error( [ 'message' => $e->getMessage() ], 400 );
 		}
+	}
+
+	public function ajax_bulk_create(): void {
+		if ( ! \check_ajax_referer( Ajax::NONCE, 'nonce', false ) || ! ShopManager::can_use() ) {
+			\wp_send_json_error( [ 'message' => \__( 'Your session expired or you lack permission. Reload the page.', 'anchor-schema' ) ], 403 );
+		}
+		try {
+			\wp_send_json_success( $this->handle_bulk_create( \wp_unslash( $_POST ) ) ); // phpcs:ignore WordPress.Security.NonceVerification -- checked above
+		} catch ( \RuntimeException $e ) {
+			\wp_send_json_error( [ 'message' => $e->getMessage() ], 400 );
+		}
+	}
+
+	/**
+	 * @return array{created:array,skipped:array,failed:array,pdf:?string,download:string,html:string}
+	 */
+	public function handle_bulk_create( array $post ): array {
+		$rows = array_values( array_filter( (array) ( $post['rows'] ?? [] ), 'is_array' ) );
+		if ( ! $rows ) {
+			throw new \RuntimeException( \__( 'Select at least one order.', 'anchor-schema' ) );
+		}
+		if ( count( $rows ) > self::BULK_MAX ) {
+			/* translators: %d: maximum orders per batch */
+			throw new \RuntimeException( sprintf( \__( 'Label at most %d orders at a time.', 'anchor-schema' ), self::BULK_MAX ) );
+		}
+		$bulk = $this->bulk ?? Module::instance()->bulk;
+		$res  = $bulk->create( $rows );
+		$res['download'] = $res['pdf'] ? Ajax::bulk_download_url( $res['pdf'] ) : '';
+		$res['html']     = ShopManager::render_template( 'bulk', [ 'result' => $res, 'back' => Urls::console() ] );
+		return $res;
 	}
 
 	public function ajax_product_save(): void {

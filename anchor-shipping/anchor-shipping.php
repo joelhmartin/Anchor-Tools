@@ -34,6 +34,10 @@ class Module {
 
 	public Services\TrackingPoller $tracking;
 
+	public Services\BulkLabels $bulk;
+
+	public Frontend\ShopManager $console;
+
 	private static ?Module $instance = null;
 
 	public static function instance(): ?Module {
@@ -83,7 +87,12 @@ class Module {
 		// The panel and its AJAX endpoints also serve the front-end console; the metabox hooks only ever fire in wp-admin.
 		new Admin\OrderPanel( $this->shipments, $this->packer, $this->carriers );
 		new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers );
-		new Frontend\ShopManager( $this->labels, $this->shipments, $this->carriers, $this->packer );
-		new Frontend\ConsoleAjax();
+		$this->bulk    = new Services\BulkLabels( $this->labels, $this->shipments, $this->store );
+		$this->console = new Frontend\ShopManager( $this->labels, $this->shipments, $this->carriers, $this->packer );
+		new Frontend\ConsoleAjax( $this->bulk );
+		if ( \is_admin() ) {
+			new Admin\OrdersColumn( new Support\TrackingLinks( $this->shipments, $this->carriers ), $this->labels );
+			new Admin\BulkActions( $this->console );
+		}
 	}
 }

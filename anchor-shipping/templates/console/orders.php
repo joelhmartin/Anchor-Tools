@@ -1,6 +1,6 @@
 <?php
 /**
- * Console orders list. Vars: $tabs, $tab, $s, $rows, $page, $pages, $tab_url, $page_url, $action.
+ * Console orders list. Vars: $tabs, $tab, $s, $rows, $page, $pages, $tab_url, $page_url, $action, $bulk (show order checkboxes).
  *
  * @package Anchor\Shipping
  */
@@ -19,9 +19,12 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 <?php if ( ! $rows ) : ?>
 	<p class="asm-empty"><?php \esc_html_e( 'No orders here.', 'anchor-schema' ); ?><?php if ( $page > 1 ) : ?> <a href="<?php echo \esc_url( $page_url( 1 ) ); ?>"><?php \esc_html_e( 'Back to page 1', 'anchor-schema' ); ?></a><?php endif; ?></p>
 <?php else : ?>
+	<form class="asm-bulk-select" method="get" action="<?php echo \esc_url( $action ); ?>">
+	<?php if ( ! empty( $bulk ) ) : ?><input type="hidden" name="bulk" value="1"><?php endif; ?>
 	<table class="asm-orders">
 		<thead>
 			<tr>
+				<?php if ( ! empty( $bulk ) ) : ?><th scope="col"><input type="checkbox" class="asm-bulk-all" aria-label="<?php \esc_attr_e( 'Select all orders on this page', 'anchor-schema' ); ?>"></th><?php endif; ?>
 				<th scope="col"><?php \esc_html_e( 'Order', 'anchor-schema' ); ?></th>
 				<th scope="col"><?php \esc_html_e( 'Date', 'anchor-schema' ); ?></th>
 				<th scope="col"><?php \esc_html_e( 'Ship to', 'anchor-schema' ); ?></th>
@@ -35,6 +38,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 				$o = $r['order'];
 				?>
 				<tr class="asm-order" data-order-id="<?php echo (int) $o->get_id(); ?>">
+					<?php if ( ! empty( $bulk ) ) : ?><td><input type="checkbox" class="asm-bulk-pick" name="ids[]" value="<?php echo (int) $o->get_id(); ?>" aria-label="<?php echo \esc_attr( sprintf( /* translators: %s: order number */ \__( 'Select order %s', 'anchor-schema' ), $o->get_order_number() ) ); ?>"></td><?php endif; ?>
 					<th scope="row"><a href="<?php echo \esc_url( $r['url'] ); ?>">#<?php echo \esc_html( $o->get_order_number() ); ?></a></th>
 					<td><?php echo \esc_html( $o->get_date_created() ? \wc_format_datetime( $o->get_date_created() ) : '' ); ?></td>
 					<td>
@@ -55,6 +59,8 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 			<?php endforeach; ?>
 		</tbody>
 	</table>
+	<?php if ( ! empty( $bulk ) ) : ?><p class="asm-bulk-bar"><button type="submit" class="asm-bulk-go"><?php \esc_html_e( 'Create labels for selected', 'anchor-schema' ); ?></button></p><?php endif; ?>
+	</form>
 
 	<?php if ( $pages > 1 ) : ?>
 		<nav class="asm-pager" aria-label="<?php \esc_attr_e( 'Pages', 'anchor-schema' ); ?>">

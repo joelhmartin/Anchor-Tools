@@ -63,4 +63,37 @@
 				$msg.addClass('is-error').text(m || 'Request failed.');
 			});
 	});
+	// Bulk labels: select-all on the Needs label tab, and the confirm form's AJAX submit.
+	$(document).on('change', '.asm-bulk-all', function () {
+		$(this).closest('table').find('.asm-bulk-pick').prop('checked', this.checked);
+	});
+	$(document).on('submit', '.asm-bulk-select', function (e) {
+		if (!$(this).find('.asm-bulk-pick:checked').length) { e.preventDefault(); }
+	});
+	function syncCustom($row) { $row.find('.asm-bulk-custom').toggle($row.find('[data-field="box"]').val() === 'custom'); }
+	$('.asm-bulk-row').each(function () { syncCustom($(this)); });
+	$(document).on('change', '.asm-bulk-row [data-field="box"]', function () { syncCustom($(this).closest('.asm-bulk-row')); });
+	$(document).on('submit', '.asm-bulk-form', function (e) {
+		e.preventDefault();
+		var $form = $(this), $msg = $form.find('.asm-bulk-msg'), rows = [];
+		if ($form.hasClass('is-busy')) { return; }
+		$form.find('.asm-bulk-row:not(.is-blocked)').each(function () {
+			var $r = $(this), row = { order_id: $r.data('order-id') };
+			$r.find('[data-field]').each(function () { row[$(this).data('field')] = $(this).val(); });
+			rows.push(row);
+		});
+		if (!window.confirm((txt.confirmBulk || 'Create %d labels? Each one is billed by the carrier.').replace('%d', rows.length))) { return; }
+		$form.addClass('is-busy');
+		$msg.text(txt.working || 'Creating labels, this can take a minute...');
+		$.post(cfg.ajax, { action: 'anchor_shipping_bulk_create', nonce: cfg.nonce, rows: rows })
+			.done(function (res) {
+				if (res && res.success) { $form.closest('.asm-bulk').replaceWith(res.data.html); return; }
+				$form.removeClass('is-busy'); $msg.text((res && res.data && res.data.message) || 'Something went wrong.');
+			})
+			.fail(function (xhr) {
+				var m = xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message;
+				$form.removeClass('is-busy'); $msg.text(m || 'Request failed. Check the order list before retrying: some labels may have been created.');
+			});
+	});
+
 })(jQuery);

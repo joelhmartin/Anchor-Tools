@@ -197,4 +197,15 @@ class Test_Shipping_Rates extends Anchor_Shipping_TestCase {
 		$m->calculate_shipping( $this->package( [ $this->make_product( [ 'weight' => 0.5, 'box' => 'small' ] ) ] ) );
 		$this->assertEqualsWithDelta( 9.87, $this->amounts( $m )['03'], 0.001 );
 	}
+
+	public function test_a_cart_that_makes_parcel_throw_offers_no_rates_without_throwing() {
+		$this->configure_ups( [ 'boxes' => [ [ 'id' => 'tiny', 'name' => 'Tiny', 'length' => 10, 'width' => 10, 'height' => 10, 'empty_weight' => 0, 'max_weight' => 5 ] ] ] );
+		$pid = $this->make_product( [ 'weight' => 0.0004, 'box' => 'tiny' ] ); // box+item round to 0 kg: Parcel throws
+		$pkg = $this->package( [ $pid ] );
+		$m   = $this->method();
+		$m->calculate_shipping( $pkg );
+		$this->assertSame( [], $m->rates );
+		$this->assertSame( [], $this->requests );
+		$this->assertIsString( $m->cache_key( $pkg ) );
+	}
 }

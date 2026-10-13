@@ -88,7 +88,11 @@ class RateMethod extends \WC_Shipping_Method {
 	 * parcels already carry product weights, default boxes and the configured box dimensions.
 	 */
 	public function cache_key( array $package ): string {
-		$pack = ( Module::instance()?->packer ?? new Packer() )->pack_cart( (array) ( $package['contents'] ?? [] ) );
+		try {
+			$pack = ( Module::instance()?->packer ?? new Packer() )->pack_cart( (array) ( $package['contents'] ?? [] ) );
+		} catch ( \Throwable $e ) {
+			return 'anchor_shipping_rates_unpackable';
+		}
 		return $this->key_for( $package, $pack );
 	}
 
@@ -114,11 +118,18 @@ class RateMethod extends \WC_Shipping_Method {
 		if ( ! $to ) {
 			return [];
 		}
-		$pack = ( Module::instance()?->packer ?? new Packer() )->pack_cart( (array) ( $package['contents'] ?? [] ) );
-		if ( ! $pack->ok() ) {
+		try {
+			$pack = ( Module::instance()?->packer ?? new Packer() )->pack_cart( (array) ( $package['contents'] ?? [] ) );
+			if ( ! $pack->ok() ) {
+				return [];
+			}
+			$key = $this->key_for( $package, $pack );
+		} catch ( \Throwable $e ) { // e.g. a weight that rounds to 0 makes Parcel throw: offer no rate, never break the cart
+			if ( \function_exists( 'wc_get_logger' ) ) {
+				\wc_get_logger()->warning( 'Live rates could not size the cart: ' . $e->getMessage(), [ 'source' => 'anchor-shipping' ] );
+			}
 			return [];
 		}
-		$key    = $this->key_for( $package, $pack );
 		$cached = \get_transient( $key );
 		if ( is_array( $cached ) ) {
 			return $cached;

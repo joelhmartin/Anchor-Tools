@@ -1,0 +1,5 @@
+{"RateResponse":{"Response":{"ResponseStatus":{"Code":"1","Description":"Success"}},"RatedShipment":[
+{"Service":{"Code":"03","Description":""},"TotalCharges":{"CurrencyCode":"USD","MonetaryValue":"18.40"},"NegotiatedRateCharges":{"TotalCharge":{"CurrencyCode":"USD","MonetaryValue":"9.87"}}},
+{"Service":{"Code":"02","Description":""},"TotalCharges":{"CurrencyCode":"USD","MonetaryValue":"31.10"},"NegotiatedRateCharges":{"TotalCharge":{"CurrencyCode":"USD","MonetaryValue":"17.25"}}},
+{"Service":{"Code":"01","Description":""},"TotalCharges":{"CurrencyCode":"USD","MonetaryValue":"64.00"}}
+]}}

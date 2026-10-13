@@ -76,6 +76,7 @@ class Module {
 		$this->tracking = new Services\TrackingPoller( $this->carriers, $this->shipments );
 		new Services\VoidOnCancel( $this->labels, $this->shipments );
 		new Checkout\ProtectionFields();
+		\add_filter( 'woocommerce_shipping_methods', [ Checkout\RateMethod::class, 'register' ] ); // dormant until an admin adds it to a zone
 		new Frontend\AccountTracking( new Support\TrackingLinks( $this->shipments, $this->carriers ) );
 		new Emails\CreateLabelBlock( $this->labels );
 		\add_filter( 'woocommerce_email_classes', [ Emails\Registry::class, 'register' ] );

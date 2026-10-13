@@ -9,6 +9,7 @@ use Anchor\Shipping\Domain\Address;
 use Anchor\Shipping\Domain\CarrierError;
 use Anchor\Shipping\Domain\LabelResult;
 use Anchor\Shipping\Domain\PackageLabel;
+use Anchor\Shipping\Domain\RateQuote;
 use Anchor\Shipping\Domain\ShipmentRequest;
 use Anchor\Shipping\Domain\TrackingResult;
 use Anchor\Shipping\Support\Settings;
@@ -29,7 +30,7 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 	}
 
 	public function supports( string $feature ): bool {
-		return in_array( $feature, [ 'labels', 'void', 'track', 'address_validation' ], true );
+		return in_array( $feature, [ 'labels', 'void', 'track', 'rates', 'address_validation' ], true );
 	}
 
 	public function services(): array {
@@ -245,21 +246,82 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 		return [ 'valid' => $valid, 'ambiguous' => $ambiguous, 'candidates' => $candidates ];
 	}
 
+	/**
+	 * Every UPS service available for this shipment, priced at the account's negotiated
+	 * rate when UPS returns one. $request->service is ignored (Shop mode).
+	 *
+	 * @return RateQuote[]
+	 */
 	public function rate( ShipmentRequest $request ): array {
-		throw new CarrierError( 'unsupported', \__( 'Rates arrive in phase 4.', 'anchor-schema' ) );
+		$creds = Settings::carrier( 'ups' );
+		$body  = [
+			'RateRequest' => [
+				'Request'  => [ 'RequestOption' => 'Shop' ],
+				'Shipment' => $this->shipment_core( $request, $creds['account'], 'PackagingType' ),
+			],
+		];
+		$json  = $this->client()->request( 'POST', '/api/rating/v2409/Shop', $body );
+		$rated = $json['RateResponse']['RatedShipment'] ?? null;
+		if ( ! is_array( $rated ) ) {
+			throw new CarrierError( 'parse', \__( 'UPS returned no rates.', 'anchor-schema' ) );
+		}
+		$rated    = isset( $rated['Service'] ) ? [ $rated ] : array_values( $rated );
+		$services = $this->services();
+		$quotes   = [];
+		foreach ( $rated as $r ) {
+			$code       = is_array( $r ) && is_scalar( $r['Service']['Code'] ?? null ) ? (string) $r['Service']['Code'] : '';
+			$negotiated = is_array( $r ) ? ( $r['NegotiatedRateCharges']['TotalCharge'] ?? null ) : null;
+			$charge     = is_array( $negotiated ) && isset( $negotiated['MonetaryValue'] ) ? $negotiated : ( is_array( $r ) ? ( $r['TotalCharges'] ?? null ) : null );
+			if ( '' === $code || ! is_array( $charge ) || ! isset( $charge['MonetaryValue'] ) || ! is_numeric( $charge['MonetaryValue'] ) ) {
+				continue;
+			}
+			$quotes[] = new RateQuote(
+				$code,
+				$services[ $code ] ?? 'UPS ' . $code,
+				(float) $charge['MonetaryValue'],
+				(string) ( $charge['CurrencyCode'] ?? 'USD' ),
+				$charge === $negotiated
+			);
+		}
+		return $quotes;
 	}
 
 	public function build_ship_body( ShipmentRequest $r, string $account, string $format ): array {
+		$label = 'ZPL' === $format
+			? [ 'LabelImageFormat' => [ 'Code' => 'ZPL' ], 'LabelStockSize' => [ 'Height' => '6', 'Width' => '4' ] ]
+			: [ 'LabelImageFormat' => [ 'Code' => 'GIF' ], 'HTTPUserAgent' => 'Mozilla/4.5' ];
+
+		return [
+			'ShipmentRequest' => [
+				'Request'            => [ 'RequestOption' => 'nonvalidate' ],
+				'Shipment'           => [
+					'Description'        => substr( $r->reference, 0, 50 ),
+					'PaymentInformation' => [ 'ShipmentCharge' => [ 'Type' => '01', 'BillShipper' => [ 'AccountNumber' => $account ] ] ],
+					'Service'            => [ 'Code' => $r->service ],
+				] + $this->shipment_core( $r, $account, 'Packaging' ),
+				'LabelSpecification' => $label,
+			],
+		];
+	}
+
+	/**
+	 * The parts of a UPS shipment that labels and rate quotes must describe identically:
+	 * parties, negotiated-rates flag and packages. $packaging_key is the one field the
+	 * two APIs spell differently ('Packaging' for Shipping, 'PackagingType' for Rating).
+	 */
+	private function shipment_core( ShipmentRequest $r, string $account, string $packaging_key ): array {
 		$per_pkg_value = $r->declared_value > 0 ? round( $r->declared_value / count( $r->parcels ), 2 ) : 0.0;
 		$packages      = [];
 		foreach ( $r->parcels as $parcel ) {
 			[ $l, $w, $h ] = $parcel->dims_in();
 			$pkg           = [
-				'Packaging'       => [ 'Code' => '02' ],
-				'Dimensions'      => [ 'UnitOfMeasurement' => [ 'Code' => 'IN' ], 'Length' => (string) $l, 'Width' => (string) $w, 'Height' => (string) $h ],
-				'PackageWeight'   => [ 'UnitOfMeasurement' => [ 'Code' => 'LBS' ], 'Weight' => (string) $parcel->weight_lb() ],
-				'ReferenceNumber' => [ 'Value' => substr( $r->reference, 0, 35 ) ],
+				$packaging_key  => [ 'Code' => '02' ],
+				'Dimensions'    => [ 'UnitOfMeasurement' => [ 'Code' => 'IN' ], 'Length' => (string) $l, 'Width' => (string) $w, 'Height' => (string) $h ],
+				'PackageWeight' => [ 'UnitOfMeasurement' => [ 'Code' => 'LBS' ], 'Weight' => (string) $parcel->weight_lb() ],
 			];
+			if ( '' !== $r->reference ) {
+				$pkg['ReferenceNumber'] = [ 'Value' => substr( $r->reference, 0, 35 ) ];
+			}
 			$options = [];
 			if ( $per_pkg_value > 0 ) {
 				$options['DeclaredValue'] = [ 'CurrencyCode' => $r->currency, 'MonetaryValue' => number_format( $per_pkg_value, 2, '.', '' ) ];
@@ -273,25 +335,12 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 			$packages[] = $pkg;
 		}
 
-		$label = 'ZPL' === $format
-			? [ 'LabelImageFormat' => [ 'Code' => 'ZPL' ], 'LabelStockSize' => [ 'Height' => '6', 'Width' => '4' ] ]
-			: [ 'LabelImageFormat' => [ 'Code' => 'GIF' ], 'HTTPUserAgent' => 'Mozilla/4.5' ];
-
 		return [
-			'ShipmentRequest' => [
-				'Request'            => [ 'RequestOption' => 'nonvalidate' ],
-				'Shipment'           => [
-					'Description'           => substr( $r->reference, 0, 50 ),
-					'Shipper'               => $this->party( $r->from ) + [ 'ShipperNumber' => $account ],
-					'ShipFrom'              => $this->party( $r->from ),
-					'ShipTo'                => $this->party( $r->to ),
-					'PaymentInformation'    => [ 'ShipmentCharge' => [ 'Type' => '01', 'BillShipper' => [ 'AccountNumber' => $account ] ] ],
-					'Service'               => [ 'Code' => $r->service ],
-					'ShipmentRatingOptions' => [ 'NegotiatedRatesIndicator' => '' ],
-					'Package'               => $packages,
-				],
-				'LabelSpecification' => $label,
-			],
+			'Shipper'               => $this->party( $r->from ) + [ 'ShipperNumber' => $account ],
+			'ShipFrom'              => $this->party( $r->from ),
+			'ShipTo'                => $this->party( $r->to ),
+			'ShipmentRatingOptions' => [ 'NegotiatedRatesIndicator' => '' ],
+			'Package'               => $packages,
 		];
 	}
 

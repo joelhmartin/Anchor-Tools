@@ -40,8 +40,28 @@ final class Packer {
 	}
 
 	public function pack_order( \WC_Order $order ): PackResult {
+		return $this->pack_items( $this->shippable_items( $order ) );
+	}
+
+	/** Same one-box rule for a WC cart / shipping-package `contents` array (live checkout rates). */
+	public function pack_cart( array $cart_contents ): PackResult {
+		$items = [];
+		foreach ( $cart_contents as $line ) {
+			$product = is_array( $line ) ? ( $line['data'] ?? null ) : null;
+			if ( $product instanceof \WC_Product && $product->needs_shipping() ) {
+				$items[] = [ 'product' => $product, 'qty' => (int) ( $line['quantity'] ?? 0 ), 'value' => (float) ( $line['line_subtotal'] ?? 0 ) ];
+			}
+		}
+		return $this->pack_items( $items );
+	}
+
+	/**
+	 * The sizing rule itself: summed weights + the largest default box among the items.
+	 *
+	 * @param array<int, array{product:\WC_Product, qty:int, value:float}> $items shippable lines only
+	 */
+	private function pack_items( array $items ): PackResult {
 		$boxes    = $this->boxes ?? Settings::boxes();
-		$items    = $this->shippable_items( $order );
 		$problems = [];
 		$weight   = 0.0; // store units
 		$box      = null;

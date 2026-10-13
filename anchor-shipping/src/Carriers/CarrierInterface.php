@@ -40,7 +40,7 @@ interface CarrierInterface {
 	/** Phase 3. @return array */
 	public function track( array $tracking_numbers ): array;
 
-	/** Phase 4. @return array */
+	/** Every service the carrier can offer for this shipment, priced. @return \Anchor\Shipping\Domain\RateQuote[] */
 	public function rate( ShipmentRequest $request ): array;
 
 	/** Public tracking page for a number. */

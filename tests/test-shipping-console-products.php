@@ -291,4 +291,78 @@ class Test_Shipping_Console_Products extends Anchor_Shipping_TestCase {
 		$this->assertArrayHasKey( 'html', $res['data'] );
 		$_POST = $_REQUEST = [];
 	}
+
+	public function test_blank_or_unchanged_regular_price_is_handled_safely() {
+		$this->as_role( 'shop_manager' );
+		$id  = $this->make_product( [ 'price' => '100', 'weight' => '2' ] );
+		$msg = $this->expect_error( [ 'product_id' => $id, 'regular_price' => '' ] );
+		$this->assertStringContainsString( 'Price is required', $msg );
+		$this->assertSame( '100', wc_get_product( $id )->get_regular_price() );
+		// Omitted price leaves it alone.
+		$this->save( [ 'product_id' => $id, 'weight' => '3' ] );
+		$this->assertSame( '100', wc_get_product( $id )->get_regular_price() );
+		// A product that has no price cannot be saved without one.
+		$free = new WC_Product_Simple();
+		$free->set_name( 'No price' );
+		$free->save();
+		$this->expect_error( [ 'product_id' => $free->get_id(), 'weight' => '1' ] );
+	}
+
+	public function test_absent_keys_leave_fields_unchanged() {
+		$this->boxes();
+		$this->as_role( 'shop_manager' );
+		$id = $this->make_product( [ 'price' => '100', 'weight' => '2', 'box' => 'small' ] );
+		$this->save( [ 'product_id' => $id, 'regular_price' => '100', 'sale_price' => '80', 'manage_stock' => '1', 'stock_quantity' => '4' ] );
+		$this->save( [ 'product_id' => $id, 'regular_price' => '90' ] );
+		$p = wc_get_product( $id );
+		$this->assertSame( '90', $p->get_regular_price() );
+		$this->assertSame( '80', $p->get_sale_price() );
+		$this->assertSame( '2', $p->get_weight() );
+		$this->assertSame( 'small', $p->get_meta( ProductFields::META ) );
+		$this->assertTrue( $p->get_manage_stock() );
+		$this->assertSame( 4, $p->get_stock_quantity() );
+		// A lowered regular price that no longer exceeds the kept sale price is rejected.
+		$this->expect_error( [ 'product_id' => $id, 'regular_price' => '70' ] );
+	}
+
+	public function test_parent_managed_variation_stock_is_read_only() {
+		$this->as_role( 'shop_manager' );
+		[ $parent, $vars ] = $this->variable_product();
+		$pp = wc_get_product( $parent );
+		$pp->set_manage_stock( true );
+		$pp->set_stock_quantity( 9 );
+		$pp->save();
+		$v = wc_get_product( $vars[0] );
+		$this->assertSame( 'parent', $v->get_manage_stock( 'view' ) );
+		$html = $this->listed();
+		preg_match( '/<tr[^>]*data-product-id="' . $vars[0] . '".*?<\/tr>/s', $html, $m );
+		$this->assertStringContainsString( 'Managed at parent', $m[0] );
+		$this->assertStringNotContainsString( 'data-field="manage_stock"', $m[0] );
+		$out = $this->save( [ 'product_id' => $vars[0], 'regular_price' => '65', 'manage_stock' => '0', 'stock_status' => 'outofstock' ] );
+		$this->assertStringContainsString( 'Managed at parent', $out['html'] );
+		$v = wc_get_product( $vars[0] );
+		$this->assertSame( '65', $v->get_regular_price() );
+		$this->assertSame( 'parent', $v->get_manage_stock( 'view' ) );
+		$this->assertTrue( wc_get_product( $parent )->get_manage_stock() );
+		$this->assertSame( 9, wc_get_product( $parent )->get_stock_quantity() );
+	}
+
+	public function test_variation_price_change_updates_the_parent_price_range() {
+		$this->as_role( 'shop_manager' );
+		[ $parent, $vars ] = $this->variable_product();
+		$this->save( [ 'product_id' => $vars[0], 'regular_price' => '75' ] );
+		wc_delete_product_transients( $parent );
+		$prices = wc_get_product( $parent )->get_variation_prices( true );
+		$this->assertEquals( 50, min( $prices['price'] ) );
+		$this->assertEquals( 75, max( $prices['price'] ) );
+	}
+
+	public function test_ambiguous_thousands_comma_is_rejected() {
+		$this->as_role( 'shop_manager' );
+		$id = $this->make_product( [ 'price' => '100' ] );
+		$this->assertStringContainsString( 'ambiguous', $this->expect_error( [ 'product_id' => $id, 'regular_price' => '1,234' ] ) );
+		$this->expect_error( [ 'product_id' => $id, 'regular_price' => '100', 'weight' => '1,500' ] );
+		$this->save( [ 'product_id' => $id, 'regular_price' => '12,5' ] );
+		$this->assertSame( '12.5', wc_get_product( $id )->get_regular_price() );
+	}
 }

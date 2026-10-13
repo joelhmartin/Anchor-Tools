@@ -77,42 +77,60 @@ final class ConsoleProducts {
 			throw new \RuntimeException( \__( 'Product not found, or it cannot be edited here. Variable products are edited through their variations.', 'anchor-schema' ) );
 		}
 
-		$regular = $this->price( $post['regular_price'] ?? '', \__( 'Price', 'anchor-schema' ) );
-		$sale    = $this->price( $post['sale_price'] ?? '', \__( 'Sale price', 'anchor-schema' ) );
-		if ( '' !== $sale && ( '' === $regular || (float) $sale >= (float) $regular ) ) {
+		// A key absent from the request means "leave unchanged"; only an explicitly submitted empty value clears.
+		$has     = static fn( string $k ): bool => \array_key_exists( $k, $post );
+		$regular = $has( 'regular_price' ) ? $this->number( $post['regular_price'], \__( 'Price', 'anchor-schema' ) ) : $product->get_regular_price( 'edit' );
+		if ( '' === $regular ) {
+			throw new \RuntimeException( \__( 'Price is required. Use a sale price to discount.', 'anchor-schema' ) );
+		}
+		$sale = $has( 'sale_price' ) ? $this->number( $post['sale_price'], \__( 'Sale price', 'anchor-schema' ) ) : $product->get_sale_price( 'edit' );
+		if ( '' !== $sale && (float) $sale >= (float) $regular ) {
 			throw new \RuntimeException( \__( 'Sale price must be lower than the regular price. Clear it to end the sale.', 'anchor-schema' ) );
 		}
-		$weight = $this->number( $post['weight'] ?? '', \__( 'Weight', 'anchor-schema' ) );
+		$weight = $has( 'weight' ) ? $this->number( $post['weight'], \__( 'Weight', 'anchor-schema' ) ) : null;
 
-		$box = \sanitize_key( (string) ( $post['box'] ?? '' ) );
-		if ( '' !== $box && ! isset( Settings::boxes()[ $box ] ) ) {
-			throw new \RuntimeException( \__( 'That box does not exist.', 'anchor-schema' ) );
+		$box = null;
+		if ( $has( 'box' ) ) {
+			$box = \sanitize_key( (string) $post['box'] );
+			if ( '' !== $box && ! isset( Settings::boxes()[ $box ] ) ) {
+				throw new \RuntimeException( \__( 'That box does not exist.', 'anchor-schema' ) );
+			}
 		}
 
-		$manage = ! empty( $post['manage_stock'] ) && '0' !== (string) $post['manage_stock'];
-		if ( $manage ) {
-			$qty_raw = \trim( (string) ( $post['stock_quantity'] ?? '' ) );
-			if ( ! \preg_match( '/^\d+$/', $qty_raw ) ) {
-				throw new \RuntimeException( \__( 'Stock quantity must be a whole number, zero or more.', 'anchor-schema' ) );
-			}
-		} else {
-			$status = (string) ( $post['stock_status'] ?? 'instock' );
-			if ( ! isset( \wc_get_product_stock_status_options()[ $status ] ) ) {
-				throw new \RuntimeException( \__( 'Choose a valid stock status.', 'anchor-schema' ) );
+		// Stock is only touched when submitted, and never on a variation whose parent manages it.
+		$stock = null;
+		if ( $has( 'manage_stock' ) && 'parent' !== $product->get_manage_stock( 'view' ) ) {
+			$manage = ! empty( $post['manage_stock'] ) && '0' !== (string) $post['manage_stock'];
+			if ( $manage ) {
+				$qty_raw = \trim( (string) ( $post['stock_quantity'] ?? '' ) );
+				if ( ! \preg_match( '/^\d+$/', $qty_raw ) ) {
+					throw new \RuntimeException( \__( 'Stock quantity must be a whole number, zero or more.', 'anchor-schema' ) );
+				}
+				$stock = [ true, (int) $qty_raw ];
+			} else {
+				$status = (string) ( $post['stock_status'] ?? 'instock' );
+				if ( ! isset( \wc_get_product_stock_status_options()[ $status ] ) ) {
+					throw new \RuntimeException( \__( 'Choose a valid stock status.', 'anchor-schema' ) );
+				}
+				$stock = [ false, $status ];
 			}
 		}
 
 		$product->set_regular_price( $regular );
 		$product->set_sale_price( $sale );
-		$product->set_weight( $weight );
-		$product->update_meta_data( ProductFields::META, $box );
-		if ( $manage ) {
+		if ( null !== $weight ) {
+			$product->set_weight( $weight );
+		}
+		if ( null !== $box ) {
+			$product->update_meta_data( ProductFields::META, $box );
+		}
+		if ( $stock && $stock[0] ) {
 			$product->set_manage_stock( true );
-			$product->set_stock_quantity( (int) $qty_raw );
-		} else {
+			$product->set_stock_quantity( $stock[1] );
+		} elseif ( $stock ) {
 			$product->set_manage_stock( false );
 			$product->set_stock_quantity( null );
-			$product->set_stock_status( $status );
+			$product->set_stock_status( $stock[1] );
 		}
 		$product->save();
 
@@ -145,14 +163,15 @@ final class ConsoleProducts {
 		if ( '' === $raw ) {
 			return '';
 		}
+		if ( \preg_match( '/^\d{1,3},\d{3}$/', $raw ) ) {
+			/* translators: %s: field label */
+			throw new \RuntimeException( \sprintf( \__( '%s is ambiguous: type 1234 or 1.234 without a thousands comma.', 'anchor-schema' ), $label ) );
+		}
 		if ( ! \preg_match( '/^\d*[.,]?\d+$/', $raw ) ) {
 			/* translators: %s: field label */
 			throw new \RuntimeException( \sprintf( \__( '%s must be a number, zero or more.', 'anchor-schema' ), $label ) );
 		}
-		return \wc_format_decimal( $raw );
-	}
-
-	private function price( $raw, string $label ): string {
-		return $this->number( $raw, $label );
+		// wc_format_decimal would read a lone comma as a thousands separator, so normalise it first.
+		return \wc_format_decimal( \str_replace( ',', '.', $raw ) );
 	}
 }

@@ -9,6 +9,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 $pid     = (int) $product->get_id();
 $is_var  = $product instanceof \WC_Product_Variation;
 $managed = true === $product->get_manage_stock( 'edit' );
+$at_parent = 'parent' === $product->get_manage_stock( 'view' );
 $box     = (string) $product->get_meta( \Anchor\Shipping\Admin\ProductFields::META );
 ?>
 <tr class="asm-product<?php echo $is_var ? ' is-variation' : ''; ?>" data-product-id="<?php echo $pid; ?>">
@@ -19,6 +20,9 @@ $box     = (string) $product->get_meta( \Anchor\Shipping\Admin\ProductFields::ME
 <?php else : ?>
 	<td><input type="text" inputmode="decimal" data-field="regular_price" value="<?php echo \esc_attr( $product->get_regular_price( 'edit' ) ); ?>" aria-label="<?php \esc_attr_e( 'Price', 'anchor-schema' ); ?>" size="7"></td>
 	<td><input type="text" inputmode="decimal" data-field="sale_price" value="<?php echo \esc_attr( $product->get_sale_price( 'edit' ) ); ?>" aria-label="<?php \esc_attr_e( 'Sale price', 'anchor-schema' ); ?>" size="7"></td>
+	<?php if ( $at_parent ) : ?>
+	<td class="asm-stock"><?php \esc_html_e( 'Managed at parent', 'anchor-schema' ); ?></td>
+	<?php else : ?>
 	<td class="asm-stock<?php echo $managed ? ' is-managed' : ''; ?>">
 		<label><input type="checkbox" data-field="manage_stock" value="1"<?php \checked( $managed ); ?>> <?php \esc_html_e( 'Track', 'anchor-schema' ); ?></label>
 		<input type="number" min="0" step="1" data-field="stock_quantity" class="asm-stock-qty" value="<?php echo \esc_attr( (string) $product->get_stock_quantity( 'edit' ) ); ?>" aria-label="<?php \esc_attr_e( 'Stock quantity', 'anchor-schema' ); ?>">
@@ -28,6 +32,7 @@ $box     = (string) $product->get_meta( \Anchor\Shipping\Admin\ProductFields::ME
 			<?php endforeach; ?>
 		</select>
 	</td>
+	<?php endif; ?>
 	<td><input type="text" inputmode="decimal" data-field="weight" value="<?php echo \esc_attr( $product->get_weight( 'edit' ) ); ?>" aria-label="<?php echo \esc_attr( sprintf( /* translators: %s: weight unit */ \__( 'Weight (%s)', 'anchor-schema' ), \get_option( 'woocommerce_weight_unit' ) ) ); ?>" size="6"> <span class="asm-sub"><?php echo \esc_html( (string) \get_option( 'woocommerce_weight_unit' ) ); ?></span></td>
 	<td>
 		<select data-field="box" aria-label="<?php \esc_attr_e( 'Default box', 'anchor-schema' ); ?>">

@@ -50,6 +50,16 @@ class Test_Shipping_Shop_Manager extends Anchor_Shipping_TestCase {
 		$this->assertStringNotContainsString( 'order=' . $order->get_id(), $this->console()->render( [ 'order' => $order->get_id() ] ) );
 	}
 
+	public function test_order_view_exposes_status_for_the_complete_confirmation() {
+		$this->as_role( 'shop_manager' );
+		$hold = $this->make_order( [], 'on-hold' );
+		$proc = $this->make_order( [], 'processing' );
+		$this->assertStringContainsString( 'data-status="on-hold"', $this->console()->render( [ 'order' => $hold->get_id() ] ) );
+		$html = $this->console()->render( [ 'order' => $proc->get_id() ] );
+		$this->assertStringContainsString( 'data-status="processing"', $html );
+		$this->assertStringContainsString( 'data-to="completed"', $html );
+	}
+
 	public function test_capability_filter_is_honoured() {
 		$this->as_role( 'customer' );
 		add_filter( 'anchor_shipping_console_capability', static fn() => 'read' );

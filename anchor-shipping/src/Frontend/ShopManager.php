@@ -102,6 +102,7 @@ final class ShopManager {
 		\wp_localize_script( 'anchor-shipping-console', 'anchorShippingConsole', [
 			'confirmCancel' => \__( 'Cancel this order? Any labels will be voided.', 'anchor-schema' ),
 			'confirmDone'   => \__( 'Mark this order completed?', 'anchor-schema' ),
+			'confirmDoneOnHold' => \__( 'This order is on hold (payment may not be confirmed). Mark it completed anyway?', 'anchor-schema' ),
 			'confirmBulk'   => \__( 'Create %d labels? Each one is billed by the carrier.', 'anchor-schema' ),
 			'working'       => \__( 'Creating labels, this can take a minute…', 'anchor-schema' ),
 		] );

@@ -151,6 +151,37 @@ class Test_Shipping_Bulk extends Anchor_Shipping_TestCase {
 		$this->assertSame( 2, substr_count( (string) file_get_contents( Module::instance()->store->absolute( $res['pdf'] ) ), '^XA' ) );
 	}
 
+	private function shipment_row( int $order_id, string $status = 'label_created' ): int {
+		return Module::instance()->shipments->insert( [ 'order_id' => $order_id, 'carrier' => 'ups', 'status' => $status ] );
+	}
+
+	public function test_bulk_finish_ignores_foreign_and_voided_rows_and_keeps_valid_ones() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'shop_manager' ] ) );
+		$a    = $this->make_order( [], 'processing' );
+		$b    = $this->make_order( [], 'processing' );
+		$good = $this->shipment_row( $a->get_id() );
+		$void = $this->shipment_row( $a->get_id(), 'voided' );
+		$belongs_to_b = $this->shipment_row( $b->get_id() );
+		$out = ( new ConsoleAjax( $this->bulk() ) )->handle_bulk_finish( [ 'created' => [
+			$a->get_id() => [ $good, $void, $belongs_to_b, 999999 ],
+		] ] );
+		$this->assertSame( [ $a->get_id() => [ $good ] ], $out['created'] );
+	}
+
+	public function test_bulk_finish_drops_an_order_whose_rows_are_all_invalid() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'shop_manager' ] ) );
+		$a = $this->make_order( [], 'processing' );
+		$b = $this->make_order( [], 'processing' );
+		$out = ( new ConsoleAjax( $this->bulk() ) )->handle_bulk_finish( [ 'created' => [ $a->get_id() => [ $this->shipment_row( $b->get_id() ) ] ], 'failed' => [ $a->get_id() => 'x' ] ] );
+		$this->assertSame( [], $out['created'] );
+	}
+
+	public function test_bulk_finish_rejects_more_than_500_rows() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'shop_manager' ] ) );
+		$this->expectException( RuntimeException::class );
+		( new ConsoleAjax( $this->bulk() ) )->handle_bulk_finish( [ 'created' => [ 1 => range( 1, 501 ) ] ] );
+	}
+
 	public function test_bulk_download_requires_a_real_bulk_file() {
 		$m   = Module::instance();
 		$aj  = new Ajax( $m->labels, $m->shipments, $m->store, $m->packer, $m->carriers );

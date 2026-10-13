@@ -22,6 +22,9 @@ final class ConsoleAjax {
 	/** Orders labelled per request: each is a carrier round-trip, so a longer run is chunked by the JS to stay inside PHP/proxy timeouts. */
 	public const BULK_MAX = 10;
 
+	/** Most shipment rows one finish request may merge. */
+	public const FINISH_MAX_ROWS = 500;
+
 	/** Orders that can be selected for one bulk run (the JS sends them BULK_MAX at a time). */
 	public const BULK_SELECT_MAX = 50;
 
@@ -112,10 +115,14 @@ final class ConsoleAjax {
 			'failed'  => $map( $post['failed'] ?? [], static fn( $m ): string => \sanitize_text_field( (string) $m ) ),
 		];
 		$res['created'] = array_filter( $res['created'] );
+		if ( array_sum( array_map( 'count', $res['created'] ) ) > self::FINISH_MAX_ROWS ) {
+			throw new \RuntimeException( \sprintf( /* translators: %d: row limit */ \__( 'Too many labels to combine in one file (limit %d).', 'anchor-schema' ), self::FINISH_MAX_ROWS ) );
+		}
 		if ( ! $res['created'] && ! $res['skipped'] && ! $res['failed'] ) {
 			throw new \RuntimeException( \__( 'Nothing to report.', 'anchor-schema' ) );
 		}
 		$bulk = $this->bulk ?? Module::instance()->bulk;
+		$res['created'] = $bulk->trusted_rows( $res['created'] );
 		$res  = $bulk->merge( $res );
 		$res['download'] = $res['pdf'] ? Ajax::bulk_download_url( $res['pdf'] ) : '';
 		$res['html']     = ShopManager::render_template( 'bulk', [ 'result' => $res, 'back' => Urls::console() ] );

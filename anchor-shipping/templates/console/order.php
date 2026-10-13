@@ -18,7 +18,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 			<?php echo $order->get_date_created() ? \esc_html( \wc_format_datetime( $order->get_date_created() ) ) : ''; ?>
 		</p>
 		<p class="asm-admin-link"><a href="<?php echo \esc_url( $order->get_edit_order_url() ); ?>"><?php \esc_html_e( 'Open in WordPress admin', 'anchor-schema' ); ?></a></p>
-		<p class="asm-actions" data-order="<?php echo (int) $order->get_id(); ?>">
+		<p class="asm-actions" data-order="<?php echo (int) $order->get_id(); ?>" data-status="<?php echo \esc_attr( $order->get_status() ); ?>">
 			<?php if ( $can_complete ) : ?><button type="button" class="asm-status-btn" data-to="completed"><?php \esc_html_e( 'Mark completed', 'anchor-schema' ); ?></button><?php endif; ?>
 			<?php if ( $can_cancel ) : ?><button type="button" class="asm-status-btn asm-danger" data-to="cancelled"><?php \esc_html_e( 'Cancel order', 'anchor-schema' ); ?></button><?php endif; ?>
 			<span class="asm-status-error" role="alert"></span>

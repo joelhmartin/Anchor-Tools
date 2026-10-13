@@ -75,6 +75,26 @@ final class BulkLabels {
 	}
 
 	/**
+	 * Keeps only shipment rows that exist, belong to the order they are listed under and are not voided
+	 * (the finish request comes from the browser, so its ids are untrusted).
+	 *
+	 * @param array<int,int[]> $created order id => shipment row ids
+	 * @return array<int,int[]>
+	 */
+	public function trusted_rows( array $created ): array {
+		$out = [];
+		foreach ( $created as $order_id => $row_ids ) {
+			foreach ( $row_ids as $row_id ) {
+				$row = $this->shipments->find( (int) $row_id );
+				if ( $row && (int) $row['order_id'] === (int) $order_id && 'voided' !== $row['status'] ) {
+					$out[ (int) $order_id ][] = (int) $row_id;
+				}
+			}
+		}
+		return $out;
+	}
+
+	/**
 	 * @param array<int,int[]> $created order id => shipment row ids
 	 * @return array{0:?string, 1:array<int,string>} merged file name, and orders whose label is not in it (print from the order)
 	 */

@@ -12,7 +12,8 @@
 	$(document).on('click', '.asm-status-btn', function () {
 		var $btn = $(this), $box = $btn.closest('.asm-actions'), to = $btn.data('to');
 		if ($box.hasClass('is-busy')) { return; }
-		if (!window.confirm(to === 'cancelled' ? txt.confirmCancel : txt.confirmDone)) { return; }
+		var msg = to === 'cancelled' ? txt.confirmCancel : ($box.data('status') === 'on-hold' ? txt.confirmDoneOnHold : txt.confirmDone);
+		if (!window.confirm(msg)) { return; }
 		$box.addClass('is-busy').find('.asm-status-error').text('');
 		$.post(cfg.ajax, { action: 'anchor_shipping_console_status', nonce: cfg.nonce, order_id: $box.data('order'), to: to })
 			.done(function (res) {

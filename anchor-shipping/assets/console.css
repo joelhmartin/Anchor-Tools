@@ -15,3 +15,11 @@
 .asm-label-frame { width: 100%; height: 40rem; border: 1px solid currentColor; }
 .asm-notes ul { list-style: none; padding: 0; }
 .asm-note { padding: .35rem 0; }
+
+.asm-products { width: 100%; border-collapse: collapse; }
+.asm-products th, .asm-products td { text-align: left; padding: .5rem; vertical-align: top; }
+.asm-product.is-variation > th { padding-left: 1.5rem; font-weight: 400; }
+.asm-product.is-busy { opacity: .5; pointer-events: none; }
+.asm-product-msg.is-error { color: #b32d2e; }
+.asm-stock { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+.asm-stock-qty { width: 5rem; }

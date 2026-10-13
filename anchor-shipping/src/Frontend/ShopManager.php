@@ -124,10 +124,16 @@ final class ShopManager {
 
 	private function render_list( array $args ): string {
 		$tabs = self::tabs();
+		if ( ConsoleProducts::can_use() ) {
+			$tabs['products'] = \__( 'Products', 'anchor-schema' );
+		}
 		$tab  = isset( $tabs[ $args['tab'] ?? '' ] ) ? (string) $args['tab'] : 'needs-label';
 		$s    = trim( (string) ( $args['s'] ?? '' ) );
 		$page = max( 1, (int) ( $args['paged'] ?? 1 ) );
 
+		if ( 'products' === $tab ) {
+			return $this->render_products( $tabs, $s, $page );
+		}
 		[ $ids, $pages ] = $this->query( $tab, $s, $page );
 		$rows = [];
 		foreach ( $ids as $id ) {
@@ -151,6 +157,23 @@ final class ShopManager {
 			'tab_url' => fn( string $t ): string => $this->url( [ 'tab' => $t, 's' => '' !== $s ? $s : null ] ),
 			'page_url' => fn( int $p ): string => $this->url( [ 'tab' => $tab, 's' => '' !== $s ? $s : null, 'paged' => $p > 1 ? $p : null ] ),
 			'action'  => $this->url(),
+		] );
+	}
+
+	private function render_products( array $tabs, string $s, int $page ): string {
+		$products = new ConsoleProducts();
+		[ $rows, $pages ] = $products->listing( $s, $page );
+		return $this->template( 'products', [
+			'tabs'     => $tabs,
+			'tab'      => 'products',
+			's'        => $s,
+			'rows'     => $rows,
+			'products' => $products,
+			'page'     => $page,
+			'pages'    => $pages,
+			'tab_url'  => fn( string $t ): string => $this->url( [ 'tab' => $t ] ),
+			'page_url' => fn( int $p ): string => $this->url( [ 'tab' => 'products', 's' => '' !== $s ? $s : null, 'paged' => $p > 1 ? $p : null ] ),
+			'action'   => $this->url(),
 		] );
 	}
 
@@ -248,6 +271,11 @@ final class ShopManager {
 	}
 
 	private function template( string $name, array $vars ): string {
+		return self::render_template( $name, $vars );
+	}
+
+	/** Renders templates/console/<name>.php; shared by the console views and AJAX-returned fragments. */
+	public static function render_template( string $name, array $vars ): string {
 		\ob_start();
 		( static function ( string $file, array $vars ): void {
 			extract( $vars, EXTR_SKIP ); // phpcs:ignore WordPress.PHP.DontExtract

@@ -7,7 +7,7 @@ use Anchor\Shipping\Admin\Ajax;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
-/** Console-only AJAX. Label create/void/print reuse Admin\Ajax; this adds the order status buttons. */
+/** Console-only AJAX. Label create/void/print reuse Admin\Ajax; this adds the order status buttons and the product editor. */
 final class ConsoleAjax {
 
 	/** target status => statuses it may be reached from */
@@ -18,6 +18,7 @@ final class ConsoleAjax {
 
 	public function __construct() {
 		\add_action( 'wp_ajax_anchor_shipping_console_status', [ $this, 'ajax_status' ] );
+		\add_action( 'wp_ajax_anchor_shipping_console_product_save', [ $this, 'ajax_product_save' ] );
 	}
 
 	public function ajax_status(): void {
@@ -29,6 +30,22 @@ final class ConsoleAjax {
 		} catch ( \RuntimeException $e ) {
 			\wp_send_json_error( [ 'message' => $e->getMessage() ], 400 );
 		}
+	}
+
+	public function ajax_product_save(): void {
+		if ( ! \check_ajax_referer( Ajax::NONCE, 'nonce', false ) || ! ConsoleProducts::can_use() ) {
+			\wp_send_json_error( [ 'message' => \__( 'Your session expired or you lack permission. Reload the page.', 'anchor-schema' ) ], 403 );
+		}
+		try {
+			\wp_send_json_success( $this->handle_product_save( \wp_unslash( $_POST ) ) ); // phpcs:ignore WordPress.Security.NonceVerification -- checked above
+		} catch ( \RuntimeException $e ) {
+			\wp_send_json_error( [ 'message' => $e->getMessage() ], 400 );
+		}
+	}
+
+	/** @return array{html:string} the re-rendered product row */
+	public function handle_product_save( array $post ): array {
+		return [ 'html' => ( new ConsoleProducts() )->save( $post ) ];
 	}
 
 	/** @return array{status:string, label:string} */

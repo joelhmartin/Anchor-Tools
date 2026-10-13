@@ -162,4 +162,39 @@ class Test_Shipping_Rates extends Anchor_Shipping_TestCase {
 			}
 		}
 	}
+
+	public function test_instance_settings_save_hook_is_registered() {
+		$m = new RateMethod( 7 );
+		$this->assertNotFalse( has_action( 'woocommerce_update_options_shipping_' . RateMethod::ID, [ $m, 'process_admin_options' ] ) );
+	}
+
+	public function test_cache_key_changes_with_product_weight_and_ship_from() {
+		$pid = $this->make_product( [ 'weight' => 0.5, 'box' => 'small' ] );
+		$m   = $this->method();
+		$k1  = $m->cache_key( $this->package( [ $pid ] ) );
+		$this->assertSame( $k1, $m->cache_key( $this->package( [ $pid ] ) ), 'stable' );
+
+		$p = wc_get_product( $pid );
+		$p->set_weight( '0.9' );
+		$p->save();
+		$k2 = $m->cache_key( $this->package( [ $pid ] ) );
+		$this->assertNotSame( $k1, $k2, 'weight is part of the key' );
+
+		$s                       = \Anchor\Shipping\Support\Settings::all();
+		$s['ship_from']['line1'] = '1 Different Street';
+		update_option( \Anchor\Shipping\Support\Settings::OPTION, $s );
+		$this->assertNotSame( $k2, $m->cache_key( $this->package( [ $pid ] ) ), 'ship-from is part of the key' );
+	}
+
+	public function test_negative_markup_is_rejected_on_save_and_clamped_at_use() {
+		$m = $this->method();
+		$this->assertSame( '0', $m->validate_markup_amount_field( 'markup_amount', '-5' ) );
+		$this->assertSame( '2.5', $m->validate_markup_amount_field( 'markup_amount', '2.5' ) );
+
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-rate-shop' ) );
+		$m = $this->method( [ 'markup_type' => 'flat', 'markup_amount' => '-3' ] );
+		$m->calculate_shipping( $this->package( [ $this->make_product( [ 'weight' => 0.5, 'box' => 'small' ] ) ] ) );
+		$this->assertEqualsWithDelta( 9.87, $this->amounts( $m )['03'], 0.001 );
+	}
 }

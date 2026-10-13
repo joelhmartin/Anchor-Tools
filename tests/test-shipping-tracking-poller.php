@@ -310,6 +310,20 @@ class Test_Shipping_Tracking_Poller extends Anchor_Shipping_TestCase {
 		$this->assertSame( '', (string) $order->get_meta( '_anchor_shipping_shipped_sent' ) );
 	}
 
+	public function test_sandbox_exception_updates_row_but_adds_no_note_or_alert() {
+		remove_filter( 'anchor_shipping_poll_side_effects_in_sandbox', '__return_true' );
+		$o   = $this->make_order( [], 'processing' );
+		$id  = $this->row( $o->get_id(), [ 'status' => 'in_transit' ] );
+		$got = [];
+		add_action( 'anchor_shipping_problem', static function ( $oid ) use ( &$got ) { $got[] = $oid; } );
+		$this->say( $id, 'exception', 'Address problem' );
+		$this->poller->poll();
+		$this->assertSame( 'exception', $this->r( $id )['status'] );
+		$this->assertSame( [], $got );
+		$notes = implode( ' ', wp_list_pluck( wc_get_order_notes( [ 'order_id' => $o->get_id() ] ), 'content' ) );
+		$this->assertStringNotContainsString( 'Address problem', $notes );
+	}
+
 	public function test_production_environment_still_fires_side_effects() {
 		remove_filter( 'anchor_shipping_poll_side_effects_in_sandbox', '__return_true' );
 		add_filter( 'anchor_shipping_environment_type', static fn() => 'production' );

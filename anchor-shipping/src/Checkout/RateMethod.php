@@ -32,6 +32,7 @@ class RateMethod extends \WC_Shipping_Method {
 		$this->init_form_fields();
 		$this->init_settings();
 		$this->title = \__( 'Shipping', 'anchor-schema' );
+		\add_action( 'woocommerce_update_options_shipping_' . $this->id, [ $this, 'process_admin_options' ] );
 	}
 
 	/** Registered on `woocommerce_shipping_methods`. */
@@ -50,6 +51,16 @@ class RateMethod extends \WC_Shipping_Method {
 			'markup_type'   => [ 'title' => \__( 'Markup', 'anchor-schema' ), 'type' => 'select', 'default' => 'none', 'options' => [ 'none' => \__( 'None', 'anchor-schema' ), 'flat' => \__( 'Flat amount', 'anchor-schema' ), 'percent' => \__( 'Percent', 'anchor-schema' ) ] ],
 			'markup_amount' => [ 'title' => \__( 'Markup amount', 'anchor-schema' ), 'type' => 'text', 'default' => '0', 'description' => \__( 'Currency amount for flat, a number for percent.', 'anchor-schema' ), 'desc_tip' => true ],
 		];
+	}
+
+	/** Settings save hook: a markup can never be negative. */
+	public function validate_markup_amount_field( $key, $value ): string {
+		$amount = (float) \wc_format_decimal( (string) $value );
+		if ( $amount < 0 ) {
+			\WC_Admin_Settings::add_error( \__( 'Markup amount cannot be negative; it was set to 0.', 'anchor-schema' ) );
+			$amount = 0.0;
+		}
+		return (string) $amount;
 	}
 
 	public function calculate_shipping( $package = [] ): void {
@@ -71,16 +82,30 @@ class RateMethod extends \WC_Shipping_Method {
 		}
 	}
 
-	/** Transient key: the cart's lines + the destination. */
+	/**
+	 * Transient key: everything the quote depends on, so a changed weight, box, ship-from address,
+	 * carrier account/environment or currency can never be answered from a stale quote. The packed
+	 * parcels already carry product weights, default boxes and the configured box dimensions.
+	 */
 	public function cache_key( array $package ): string {
-		$lines = [];
-		foreach ( (array) ( $package['contents'] ?? [] ) as $line ) {
-			$lines[] = [ (int) ( $line['product_id'] ?? 0 ), (int) ( $line['variation_id'] ?? 0 ), (int) ( $line['quantity'] ?? 0 ) ];
-		}
-		sort( $lines );
+		$pack = ( Module::instance()?->packer ?? new Packer() )->pack_cart( (array) ( $package['contents'] ?? [] ) );
+		return $this->key_for( $package, $pack );
+	}
+
+	private function key_for( array $package, \Anchor\Shipping\Packing\PackResult $pack ): string {
 		$dest = (array) ( $package['destination'] ?? [] );
 		ksort( $dest );
-		return 'anchor_shipping_rates_' . md5( (string) \wp_json_encode( [ $lines, $dest ] ) );
+		$id   = (string) ( Settings::all()['default_carrier'] ?? 'ups' );
+		$cfg  = Settings::carrier( $id );
+		return 'anchor_shipping_rates_' . md5( (string) \wp_json_encode( [
+			$pack->ok() ? $pack->parcels : $pack->reason,
+			Settings::ship_from(),
+			$id,
+			(string) ( $cfg['account'] ?? '' ),
+			(string) ( $cfg['environment'] ?? '' ),
+			\get_woocommerce_currency(),
+			$dest,
+		] ) );
 	}
 
 	/** @return array<int, array{service:string,label:string,amount:float}> carrier quotes, unfiltered; [] on any problem */
@@ -89,7 +114,11 @@ class RateMethod extends \WC_Shipping_Method {
 		if ( ! $to ) {
 			return [];
 		}
-		$key    = $this->cache_key( $package );
+		$pack = ( Module::instance()?->packer ?? new Packer() )->pack_cart( (array) ( $package['contents'] ?? [] ) );
+		if ( ! $pack->ok() ) {
+			return [];
+		}
+		$key    = $this->key_for( $package, $pack );
 		$cached = \get_transient( $key );
 		if ( is_array( $cached ) ) {
 			return $cached;
@@ -97,10 +126,6 @@ class RateMethod extends \WC_Shipping_Method {
 		try {
 			$carrier = $this->carrier();
 			if ( ! $carrier ) {
-				return [];
-			}
-			$pack = ( Module::instance()?->packer ?? new Packer() )->pack_cart( (array) ( $package['contents'] ?? [] ) );
-			if ( ! $pack->ok() ) {
 				return [];
 			}
 			$currency = \get_woocommerce_currency();
@@ -144,7 +169,7 @@ class RateMethod extends \WC_Shipping_Method {
 	}
 
 	private function with_markup( float $amount ): float {
-		$markup = (float) $this->get_option( 'markup_amount', '0' );
+		$markup = max( 0.0, (float) $this->get_option( 'markup_amount', '0' ) );
 		switch ( $this->get_option( 'markup_type', 'none' ) ) {
 			case 'flat':
 				$amount += $markup;

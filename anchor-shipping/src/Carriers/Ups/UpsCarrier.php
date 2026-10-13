@@ -214,7 +214,7 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 	}
 
 	private function map_status( string $type, string $code, string $desc ): string {
-		if ( 'O' === $type || 'OT' === $code || ( 'I' === $type && 'OF' === $code ) || false !== stripos( $desc, 'out for delivery' ) ) {
+		if ( 'OT' === $code || ( 'I' === $type && 'OF' === $code ) || false !== stripos( $desc, 'out for delivery' ) ) {
 			return 'out_for_delivery';
 		}
 		switch ( $type ) {
@@ -224,6 +224,7 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 				return 'voided'; // "billing information voided": UPS cancelled the label
 			case 'I':
 			case 'P':
+			case 'O': // only OT/OF/"out for delivery" (above) means out for delivery; other O scans are in transit
 				return 'in_transit';
 			case 'D':
 				return 'delivered';

@@ -121,6 +121,12 @@ class Test_Shipping_Ups_Tracking extends Anchor_Shipping_TestCase {
 		$this->assertSame( 'out_for_delivery', $this->track_with_type( 'I', 'OF' )->status );
 	}
 
+	public function test_type_O_is_out_for_delivery_only_with_ot_of_or_description() {
+		$this->configure_ups();
+		$this->assertSame( 'out_for_delivery', $this->track_with_type( 'O', 'OT' )->status );
+		$this->assertSame( 'in_transit', $this->track_with_type( 'O', 'XX' )->status );
+	}
+
 	private function track_with_type( string $type, string $code = 'XX' ): TrackingResult {
 		$fx = $this->fixture( 'ups-track-in-transit' );
 		$fx['trackResponse']['shipment'][0]['package'][0]['currentStatus'] = [ 'description' => 'x', 'type' => $type, 'code' => $code ];

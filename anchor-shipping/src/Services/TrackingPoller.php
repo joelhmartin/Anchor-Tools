@@ -133,7 +133,7 @@ final class TrackingPoller {
 		}
 		$this->shipments->update( $id, $fields );
 
-		if ( $changed && 'exception' === $r->status ) {
+		if ( $changed && 'exception' === $r->status && ! $this->quiet_for( (string) $row['carrier'] ) ) { // sandbox labels are test shipments: no notes or alerts
 			$detail = '' !== $r->detail ? $r->detail : \__( 'Carrier reported a delivery exception.', 'anchor-schema' );
 			$this->note( (int) $row['order_id'], sprintf(
 				/* translators: 1: tracking number, 2: carrier detail */

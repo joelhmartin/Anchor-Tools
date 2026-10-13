@@ -78,6 +78,15 @@
 - [ ] Implement: plain, accessible markup; classes prefixed `asm-`; no theme assumptions (theme styles it); `nocache_headers()` + `wp_robots_no_robots` when the shortcode renders.
 - [ ] Green, commit.
 
+### Task 5b: Shop Manager products (stock, prices, weight, box)
+
+**Files:** create `src/Frontend/ConsoleProducts.php`, `templates/console/products.php`; modify `ShopManager` (add `tab=products` view and nav link), `ConsoleAjax` (`anchor_shipping_console_product_save`), `assets/console.js`; test `tests/test-shipping-console-products.php`.
+
+**Interfaces — consumes:** `ShopManager` views/nav (Task 5), product default-box meta from `Admin\ProductFields` (reuse its meta key constant — do not redefine). **Produces:** products view listing published simple products and variations (parent name + attributes), search by name/SKU, columns: name, SKU, regular price, sale price, stock (manage stock on/off, quantity, status), weight, default box; inline edit per row with one Save → AJAX `anchor_shipping_console_product_save` (`product_id`, `regular_price`, `sale_price`, `manage_stock`, `stock_quantity`, `stock_status`, `weight`, `box`; nonce `anchor_shipping`) saving through `WC_Product` setters + `save()` (never raw meta) and returning the re-rendered row. Capability: `edit_products` (filter `anchor_shipping_console_products_capability`).
+
+- [ ] Failing tests: user without `edit_products` → 403 and no product data; save updates prices/stock/weight/box via WC API (assert `wc_get_product()` values, and `_price` follows sale price); sale ≥ regular rejected with a message; negative stock/weight/price rejected; empty sale price clears the sale; variable parent rows are not editable (only variations); unknown product id → error.
+- [ ] Implement, green, commit.
+
 ### Task 6: Bulk labels + orders-list column
 
 **Files:** `composer require setasign/fpdi:^2.6` (+ `setasign/fpdf` if fpdi requires it); create `src/Services/BulkLabels.php`, `src/Support/PdfMerge.php`, `templates/console/bulk.php`, `src/Admin/OrdersColumn.php`; modify `ShopManager` (Bulk view: checkboxes on *Needs label* tab → confirm screen), `ConsoleAjax` (`anchor_shipping_bulk_create`), wp-admin bulk action `anchor_shipping_bulk` (legacy + HPOS screens) redirecting to the console Bulk view when a console page is set, else an admin confirm screen rendered by the same template; test `tests/test-shipping-bulk.php`.

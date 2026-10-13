@@ -17,7 +17,7 @@ Date: 2026-10-13 · Extends `2026-10-03-anchor-shipping-design.md` · First clie
   - **Orders** — tabs: *Needs label* (state `needs_attention` or eligible-and-unlabelled), *Labelled* (awaiting first scan), *Shipped*, *Delivered*, *All*; search by order number / name / email; each row: number, date, customer, ship-to city/state, items count, total, shipping state, tracking.
   - **Order** — customer + ship-to (with UPS address-validation warning), items, order notes, the existing label panel (`OrderPanel::render_panel`, reused verbatim — same AJAX endpoints), label PDF inline preview + Print, order actions **Mark completed** and **Cancel order** (cancel triggers the existing void-on-cancel), and a link to the wp-admin order for anything else.
   - **Bulk** — select needs-label orders → confirm screen (box + weight per order, prefilled by Packer) → one merged PDF.
-  - Products/inventory/pricing are **out of scope** for this round (follow-up).
+  - **Products** — price, sale price, stock and per-product weight + default box, edited inline (capability `edit_products`). Weights and boxes are what auto-labels need, so DEKA can supply them here.
 - **New-order email integration:** hook `woocommerce_email_after_order_table` for email id `new_order` when the order is eligible (needs shipping + has a shipping line): render the Create-label block (button → console order URL). `PaidOrderHandler` still sets state `needs_attention`; `ReadyToShipEmail` sends only to inbox addresses not in the New-order recipient list (none if all are covered). Setting: *Put the Create label button in the New order email* (default on).
 - **Tracking (UPS Track API)** `GET /api/track/v1/details/{n}` per number; map UPS `currentStatus.type`/`code`: `M`/`MV` → `label_created`, `I`/`P`/`O`-not-delivery → `in_transit`, `OT` (out for delivery) → `out_for_delivery`, `D` → `delivered`, `X` → `exception`, `RS` → `returned`. New domain value `TrackingResult { tracking_number, status, detail, event_at }`.
 - **Poller** as in the original design (Action Scheduler, every 2 h, active rows < 30 days); first scan → customer `ShippedEmail` + state `shipped`; delivered → note + `delivered_at` + Completed if *Complete orders on delivery* (default on); exception → inbox email; `label_created` > 10 days → `voided` (UPS auto-void) note.
@@ -28,4 +28,4 @@ Date: 2026-10-13 · Extends `2026-10-03-anchor-shipping-design.md` · First clie
 
 ## Out of scope
 
-Products/inventory management in the console, return labels, international customs, pickup scheduling.
+Product creation/deletion, images and descriptions in the console, return labels, international customs, pickup scheduling.

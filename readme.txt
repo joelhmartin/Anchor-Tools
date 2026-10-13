@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.36.3
+Stable tag: 3.37.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -24,7 +24,7 @@ Usage:
 
 == Changelog ==
 
-= Unreleased =
+= 3.37.0 =
 
 Shipping (module 1.1.0): UPS tracking with a 2-hourly poller that completes orders on delivery and
 auto-voids unused labels after 10 days. Customers get a "shipped" email on the first carrier scan,

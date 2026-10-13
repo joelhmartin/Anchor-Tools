@@ -72,6 +72,7 @@ class Module {
 		$this->tracking = new Services\TrackingPoller( $this->carriers, $this->shipments );
 		new Services\VoidOnCancel( $this->labels, $this->shipments );
 		new Checkout\ProtectionFields();
+		new Frontend\AccountTracking( new Support\TrackingLinks( $this->shipments, $this->carriers ) );
 		\add_filter( 'woocommerce_email_classes', [ Emails\Registry::class, 'register' ] );
 		\add_filter( 'woocommerce_email_actions', [ Emails\Registry::class, 'actions' ] );
 		if ( \is_admin() ) {

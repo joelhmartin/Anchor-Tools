@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Shipping\Emails;
 
 use Anchor\Shipping\Support\Settings;
+use Anchor\Shipping\Support\Urls;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -29,7 +30,11 @@ abstract class OrderAlertEmail extends \WC_Email {
 	}
 
 	public function create_url(): string {
-		return $this->object ? $this->object->get_edit_order_url() . '#anchor-shipping' : '';
+		if ( ! $this->object ) {
+			return '';
+		}
+		$url = Urls::order( $this->object ); // the console order view when configured, else the edit screen
+		return $url === $this->object->get_edit_order_url() ? $url . '#anchor-shipping' : $url;
 	}
 
 	public function get_content_html() {

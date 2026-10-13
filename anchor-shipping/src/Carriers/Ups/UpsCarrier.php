@@ -187,8 +187,9 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 		}
 		switch ( $type ) {
 			case 'M':
-			case 'MV':
 				return 'label_created';
+			case 'MV':
+				return 'voided'; // "billing information voided": UPS cancelled the label
 			case 'I':
 			case 'P':
 				return 'in_transit';
@@ -199,7 +200,8 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 			case 'RS':
 				return 'returned';
 		}
-		return 'unknown';
+		// No status at all = nothing known yet; a status we do not map must not be mistaken for "never scanned".
+		return '' === $type && '' === $code ? 'unknown' : 'unknown_type';
 	}
 
 	public function validate_address( Address $address ): array {

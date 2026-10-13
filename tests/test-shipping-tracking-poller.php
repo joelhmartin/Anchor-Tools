@@ -46,6 +46,8 @@ class Test_Shipping_Tracking_Poller extends Anchor_Shipping_TestCase {
 		$this->carrier = new Anchor_Shipping_Stub_Tracker();
 		$carrier       = $this->carrier;
 		add_filter( 'anchor_shipping_carriers', static fn() => [ 'ups' => $carrier ], 99 );
+		// Tests run in sandbox: opt in to customer-facing side effects (see the sandbox tests below).
+		add_filter( 'anchor_shipping_poll_side_effects_in_sandbox', '__return_true' );
 		$this->poller = new TrackingPoller( new CarrierRegistry(), Module::instance()->shipments );
 	}
 
@@ -280,12 +282,93 @@ class Test_Shipping_Tracking_Poller extends Anchor_Shipping_TestCase {
 		$this->assertCount( 2, $this->carrier->asked );
 	}
 
-	public function test_scheduled_on_init_every_two_hours() {
-		$this->assertSame( 20, has_action( 'init', [ Module::instance()->tracking, 'schedule' ] ) );
+	public function test_scheduled_on_admin_init_every_two_hours() {
+		$this->assertNotFalse( has_action( 'admin_init', [ Module::instance()->tracking, 'schedule' ] ) );
+		$this->assertFalse( has_action( 'init', [ Module::instance()->tracking, 'schedule' ] ), 'not on every front-end request' );
 		$this->poller->schedule();
 		$this->poller->schedule();
 		$actions = as_get_scheduled_actions( [ 'hook' => TrackingPoller::ACTION, 'group' => 'anchor-shipping', 'status' => ActionScheduler_Store::STATUS_PENDING ] );
 		$this->assertCount( 1, $actions );
 		$this->assertSame( 7200, (int) reset( $actions )->get_schedule()->get_recurrence() );
+	}
+
+	public function test_sandbox_updates_rows_but_sends_no_shipped_email_and_completes_nothing() {
+		remove_filter( 'anchor_shipping_poll_side_effects_in_sandbox', '__return_true' );
+		$o  = $this->make_order( [], 'processing' );
+		$id = $this->row( $o->get_id() );
+		$n  = 0;
+		add_action( 'anchor_shipping_first_scan', static function () use ( &$n ) { ++$n; } );
+		$this->say( $id, 'in_transit' );
+		$this->poller->poll();
+		$this->assertSame( 'in_transit', $this->r( $id )['status'], 'rows still track' );
+		$this->assertSame( 0, $n, 'no first-scan (customer Shipped email) from a sandbox label' );
+		$this->say( $id, 'delivered' );
+		$this->poller->poll();
+		$order = wc_get_order( $o->get_id() );
+		$this->assertSame( 'delivered', $this->r( $id )['status'] );
+		$this->assertSame( 'processing', $order->get_status(), 'a sandbox delivery never completes a real order' );
+		$this->assertSame( '', (string) $order->get_meta( '_anchor_shipping_shipped_sent' ) );
+	}
+
+	public function test_production_environment_still_fires_side_effects() {
+		remove_filter( 'anchor_shipping_poll_side_effects_in_sandbox', '__return_true' );
+		add_filter( 'anchor_shipping_environment_type', static fn() => 'production' );
+		$this->configure_ups( [ 'carriers' => [ 'ups' => [ 'environment' => 'production' ] ] ] );
+		$o  = $this->make_order( [], 'processing' );
+		$id = $this->row( $o->get_id() );
+		$n  = 0;
+		add_action( 'anchor_shipping_first_scan', static function () use ( &$n ) { ++$n; } );
+		$this->say( $id, 'delivered' );
+		$this->poller->poll();
+		$this->assertSame( 1, $n );
+		$this->assertSame( 'completed', wc_get_order( $o->get_id() )->get_status() );
+	}
+
+	public function test_auto_void_of_the_only_label_puts_a_processing_order_back_to_needs_attention() {
+		$o = $this->make_order( [], 'processing' );
+		$o->update_meta_data( \Anchor\Shipping\Services\LabelService::STATE_META, 'labelled' );
+		$o->save();
+		$id = $this->row( $o->get_id(), [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 11 * DAY_IN_SECONDS ) ] );
+		$this->say( $id, 'label_created' );
+		$this->poller->poll();
+		$this->assertSame( 'voided', $this->r( $id )['status'] );
+		$this->assertSame( 'needs_attention', wc_get_order( $o->get_id() )->get_meta( \Anchor\Shipping\Services\LabelService::STATE_META ) );
+	}
+
+	public function test_auto_void_keeps_state_while_another_label_is_active() {
+		$o = $this->make_order( [], 'processing' );
+		$o->update_meta_data( \Anchor\Shipping\Services\LabelService::STATE_META, 'labelled' );
+		$o->save();
+		$old = $this->row( $o->get_id(), [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 11 * DAY_IN_SECONDS ) ] );
+		$this->row( $o->get_id() );
+		$this->say( $old, 'label_created' );
+		$this->poller->poll();
+		$this->assertSame( 'labelled', wc_get_order( $o->get_id() )->get_meta( \Anchor\Shipping\Services\LabelService::STATE_META ) );
+	}
+
+	public function test_an_unmapped_status_type_never_auto_voids() {
+		$o  = $this->make_order( [], 'processing' );
+		$id = $this->row( $o->get_id(), [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 11 * DAY_IN_SECONDS ) ] );
+		$this->say( $id, 'unknown_type', 'Something new' );
+		$this->poller->poll();
+		$this->assertSame( 'label_created', $this->r( $id )['status'] );
+		$this->assertNotNull( $this->r( $id )['last_polled_at'] );
+	}
+
+	public function test_a_carrier_reported_void_voids_the_row_straight_away() {
+		$o  = $this->make_order( [], 'processing' );
+		$id = $this->row( $o->get_id() );
+		$this->say( $id, 'voided', 'Billing information voided' );
+		$this->poller->poll();
+		$this->assertSame( 'voided', $this->r( $id )['status'] );
+		$this->assertSame( 'needs_attention', wc_get_order( $o->get_id() )->get_meta( \Anchor\Shipping\Services\LabelService::STATE_META ) );
+	}
+
+	public function test_core_clears_the_poll_when_the_module_is_switched_off() {
+		$this->poller->schedule();
+		$q = [ 'hook' => TrackingPoller::ACTION, 'group' => 'anchor-shipping', 'status' => ActionScheduler_Store::STATUS_PENDING ];
+		$this->assertCount( 1, as_get_scheduled_actions( $q ) );
+		anchor_tools_shipping_maybe_clear_poll( [ 'modules' => [ 'shipping' => 1 ] ], [ 'modules' => [] ] );
+		$this->assertCount( 0, as_get_scheduled_actions( $q ) );
 	}
 }

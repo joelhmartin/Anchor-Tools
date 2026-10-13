@@ -73,7 +73,7 @@ class Module {
 		$this->packer   = new Packing\Packer();
 		$this->labels   = new Services\LabelService( $this->carriers, $this->shipments, $this->store, $this->packer );
 		$this->paid_orders = new Services\PaidOrderHandler( $this->labels, $this->packer );
-		$this->tracking = new Services\TrackingPoller( $this->carriers, $this->shipments );
+		$this->tracking = new Services\TrackingPoller( $this->carriers, $this->shipments, $this->labels );
 		new Services\VoidOnCancel( $this->labels, $this->shipments );
 		new Checkout\ProtectionFields();
 		\add_filter( 'woocommerce_shipping_methods', [ Checkout\RateMethod::class, 'register' ] ); // dormant until an admin adds it to a zone

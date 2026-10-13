@@ -92,4 +92,21 @@ class Test_Shipping_Ups_Tracking extends Anchor_Shipping_TestCase {
 		$this->expectException( CarrierError::class );
 		( new UpsCarrier() )->track( [ self::NUMBER ] );
 	}
+
+	private function track_with_type( string $type, string $code = 'XX' ): TrackingResult {
+		$fx = $this->fixture( 'ups-track-in-transit' );
+		$fx['trackResponse']['shipment'][0]['package'][0]['currentStatus'] = [ 'description' => 'x', 'type' => $type, 'code' => $code ];
+		$this->queue_token();
+		$this->queue_response( 200, $fx );
+		$r = ( new UpsCarrier() )->track( [ self::NUMBER ] )[ self::NUMBER ];
+		delete_transient( 'anchor_shipping_ups_token_' . md5( 'sandbox|cid' ) );
+		return $r;
+	}
+
+	public function test_mv_is_voided_and_an_unmapped_type_is_unknown_type() {
+		$this->configure_ups();
+		$this->assertSame( 'voided', $this->track_with_type( 'MV' )->status );
+		$this->assertSame( 'label_created', $this->track_with_type( 'M' )->status );
+		$this->assertSame( 'unknown_type', $this->track_with_type( 'ZZ' )->status );
+	}
 }

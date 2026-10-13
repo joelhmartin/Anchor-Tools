@@ -111,7 +111,7 @@ final class ShopManager {
 	public static function parse_ids( $raw ): array {
 		$raw = is_array( $raw ) ? $raw : explode( ',', (string) $raw );
 		$ids = array_values( array_unique( array_filter( array_map( 'intval', $raw ), static fn( int $i ): bool => $i > 0 ) ) );
-		return array_slice( $ids, 0, ConsoleAjax::BULK_MAX );
+		return array_slice( $ids, 0, ConsoleAjax::BULK_SELECT_MAX );
 	}
 
 	/** @param array{tab?:string,s?:string,paged?:int,order?:int,bulk?:bool,ids?:int[]} $args */
@@ -246,8 +246,8 @@ final class ShopManager {
 		if ( 'needs-label' === $tab ) {
 			$flagged = \wc_get_orders( $base + [ 'limit' => -1, 'meta_key' => LabelService::STATE_META, 'meta_value' => 'needs_attention' ] ); // phpcs:ignore WordPress.DB.SlowDBQuery
 			$open    = \wc_get_orders( [ 'status' => [ 'wc-processing' ], 'limit' => -1 ] + $base );
-			$ids     = array_map( 'intval', (array) $flagged );
-			foreach ( (array) $open as $id ) {
+			$ids     = [];
+			foreach ( array_merge( (array) $flagged, (array) $open ) as $id ) {
 				if ( $this->in_tab( (int) $id, 'needs-label' ) ) {
 					$ids[] = (int) $id;
 				}
@@ -263,7 +263,7 @@ final class ShopManager {
 		return [ array_map( 'intval', (array) $res->orders ), (int) $res->max_num_pages ];
 	}
 
-	/** Tab membership. Needs label = flagged needs_attention, OR processing + shippable + no active label. */
+	/** Tab membership. Needs label = a live needs_attention flag (see LabelService::has_live_attention_flag), OR processing + shippable + no active label. */
 	private function in_tab( int $id, string $tab ): bool {
 		$order = \wc_get_order( $id );
 		if ( ! $order instanceof \WC_Order || in_array( $order->get_status(), [ 'trash', 'auto-draft' ], true ) ) {
@@ -276,7 +276,7 @@ final class ShopManager {
 		if ( in_array( $tab, self::STATE_TABS, true ) ) {
 			return $tab === $state;
 		}
-		return 'needs_attention' === $state
+		return $this->labels->has_live_attention_flag( $order )
 			|| ( $order->has_status( 'processing' ) && ! in_array( $state, self::STATE_TABS, true ) && $this->labels->is_shippable( $order ) && ! $this->labels->is_labelled( $order ) );
 	}
 

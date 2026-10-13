@@ -8,10 +8,11 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /** A carrier's current word on one tracking number. */
 final class TrackingResult {
 
-	public const STATUSES = [ 'label_created', 'in_transit', 'out_for_delivery', 'delivered', 'exception', 'returned', 'unknown' ];
+	public const STATUSES = [ 'label_created', 'in_transit', 'out_for_delivery', 'delivered', 'exception', 'returned', 'voided', 'unknown', 'unknown_type' ];
 
 	/**
-	 * @param string   $status   One of self::STATUSES.
+	 * @param string   $status   One of self::STATUSES. 'unknown' = the carrier has no such package (yet);
+	 *                           'unknown_type' = it answered with a status we do not map; 'voided' = the carrier says the label was voided.
 	 * @param string   $detail   Carrier's human-readable status text (may be empty).
 	 * @param int|null $event_at Unix time (UTC) of the latest carrier event, null when none.
 	 */

@@ -50,6 +50,9 @@ final class OrdersColumn {
 	public function render_cell( \WC_Order $order ): string {
 		$tracking = $this->tracking->for_order( $order->get_id() );
 		$state    = (string) $order->get_meta( LabelService::STATE_META );
+		if ( 'needs_attention' === $state && ! $this->labels->has_live_attention_flag( $order ) ) {
+			$state = ''; // stale flag on a finished order: same predicate as the console's Needs label tab
+		}
 		$label    = ShopManager::state_label( $state );
 		if ( '' === $label && $tracking ) {
 			$label = ShopManager::state_label( 'labelled' );

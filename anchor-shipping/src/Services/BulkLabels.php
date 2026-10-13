@@ -24,10 +24,11 @@ final class BulkLabels {
 
 	/**
 	 * @param array<int, array> $rows each: order_id, box, weight, and length/width/height for a custom box
+	 * @param bool $merge false for one chunk of a longer run: skip the combined file, call merge() after the last chunk
 	 * @return array{created: array<int,int[]>, skipped: array<int,string>, failed: array<int,string>, pdf: ?string, merge_error: string, individual: array<int,string>}
 	 *         `pdf` is the merged file (a .pdf, or a .zpl when the labels are ZPL) relative to the label folder.
 	 */
-	public function create( array $rows ): array {
+	public function create( array $rows, bool $merge = true ): array {
 		$out = [ 'created' => [], 'skipped' => [], 'failed' => [], 'pdf' => null, 'merge_error' => '', 'individual' => [] ];
 		foreach ( $rows as $row ) {
 			$id = (int) ( $row['order_id'] ?? 0 );
@@ -51,14 +52,26 @@ final class BulkLabels {
 				$out['failed'][ $id ] = $e->getMessage();
 			}
 		}
-		if ( $out['created'] ) {
+		return $merge ? $this->merge( $out ) : $out;
+	}
+
+	/**
+	 * Adds the combined file to a result whose `created` map (order id => shipment row ids) may span several
+	 * chunk requests. The single place labels are merged.
+	 *
+	 * @param array $result create()-shaped array
+	 * @return array the same, with pdf / individual / merge_error filled in
+	 */
+	public function merge( array $result ): array {
+		$result += [ 'pdf' => null, 'merge_error' => '', 'individual' => [] ];
+		if ( $result['created'] ) {
 			try {
-				[ $out['pdf'], $out['individual'] ] = $this->merged_file( $out['created'] );
+				[ $result['pdf'], $result['individual'] ] = $this->merged_file( $result['created'] );
 			} catch ( \Throwable $e ) {
-				$out['merge_error'] = $e->getMessage(); // labels exist and print one by one; only the combined file is missing
+				$result['merge_error'] = $e->getMessage(); // labels exist and print one by one; only the combined file is missing
 			}
 		}
-		return $out;
+		return $result;
 	}
 
 	/**

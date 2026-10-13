@@ -76,6 +76,10 @@ final class ConsoleProducts {
 		if ( ! $product instanceof \WC_Product || ! ( $product->is_type( 'simple' ) || $product->is_type( 'variation' ) ) ) {
 			throw new \RuntimeException( \__( 'Product not found, or it cannot be edited here. Variable products are edited through their variations.', 'anchor-schema' ) );
 		}
+		// Role-level edit_products is not enough: honour per-product restrictions (variations inherit their parent's).
+		if ( ! \current_user_can( 'edit_product', $product->is_type( 'variation' ) ? $product->get_parent_id() : $product->get_id() ) ) {
+			throw new \RuntimeException( \__( 'You are not allowed to edit this product.', 'anchor-schema' ) );
+		}
 
 		// A key absent from the request means "leave unchanged"; only an explicitly submitted empty value clears.
 		$has     = static fn( string $k ): bool => \array_key_exists( $k, $post );

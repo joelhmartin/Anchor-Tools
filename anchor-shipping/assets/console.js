@@ -73,6 +73,52 @@
 	function syncCustom($row) { $row.find('.asm-bulk-custom').toggle($row.find('[data-field="box"]').val() === 'custom'); }
 	$('.asm-bulk-row').each(function () { syncCustom($(this)); });
 	$(document).on('change', '.asm-bulk-row [data-field="box"]', function () { syncCustom($(this).closest('.asm-bulk-row')); });
+	// Labels are bought in chunks (server limit per request) so no single request outlives PHP/proxy timeouts;
+	// the last request merges every chunk's labels into one file and returns the combined result screen.
+	var BULK_CHUNK = 10;
+	function bulkMessage(xhr, res, fallback) {
+		var d = (xhr && xhr.responseJSON && xhr.responseJSON.data) || (res && res.data);
+		return (d && d.message) || fallback;
+	}
+	function runBulk($form, $msg, rows) {
+		var acc = { created: {}, skipped: {}, failed: {} }, done = 0, fatal = '';
+		function finish() {
+			$msg.text(txt.working || 'Creating labels...');
+			$.post(cfg.ajax, { action: 'anchor_shipping_bulk_finish', nonce: cfg.nonce, created: acc.created, skipped: acc.skipped, failed: acc.failed })
+				.done(function (res) {
+					if (res && res.success) { $form.closest('.asm-bulk').replaceWith(res.data.html); return; }
+					$form.removeClass('is-busy'); $msg.text(bulkMessage(null, res, 'Something went wrong.'));
+				})
+				.fail(function (xhr) {
+					$form.removeClass('is-busy');
+					$msg.text(bulkMessage(xhr, null, 'Could not combine the labels. They were created: print them from each order.'));
+				});
+		}
+		function next() {
+			if (fatal || done >= rows.length) { finish(); return; }
+			var chunk = rows.slice(done, done + BULK_CHUNK);
+			$msg.text((txt.working || 'Creating labels...') + ' ' + done + '/' + rows.length);
+			$.post(cfg.ajax, { action: 'anchor_shipping_bulk_create', nonce: cfg.nonce, chunk: 1, rows: chunk })
+				.done(function (res) {
+					if (res && res.success) {
+						$.each(['created', 'skipped', 'failed'], function (_, k) { $.extend(acc[k], res.data[k] || {}); });
+						done += chunk.length; next(); return;
+					}
+					stop(chunk, bulkMessage(null, res, 'Something went wrong.'));
+				})
+				.fail(function (xhr) {
+					stop(chunk, bulkMessage(xhr, null, 'Request failed. Check this order before retrying: a label may have been created.'));
+				});
+		}
+		// A chunk we could not read back stops the run; its orders are reported, earlier chunks are still merged.
+		function stop(chunk, why) {
+			fatal = why;
+			$.each(chunk, function (_, r) { acc.failed[r.order_id] = why; });
+			$.each(rows.slice(done + chunk.length), function (_, r) { acc.failed[r.order_id] = 'Not attempted.'; });
+			finish();
+		}
+		next();
+	}
 	$(document).on('submit', '.asm-bulk-form', function (e) {
 		e.preventDefault();
 		var $form = $(this), $msg = $form.find('.asm-bulk-msg'), rows = [];
@@ -84,16 +130,7 @@
 		});
 		if (!window.confirm((txt.confirmBulk || 'Create %d labels? Each one is billed by the carrier.').replace('%d', rows.length))) { return; }
 		$form.addClass('is-busy');
-		$msg.text(txt.working || 'Creating labels, this can take a minute...');
-		$.post(cfg.ajax, { action: 'anchor_shipping_bulk_create', nonce: cfg.nonce, rows: rows })
-			.done(function (res) {
-				if (res && res.success) { $form.closest('.asm-bulk').replaceWith(res.data.html); return; }
-				$form.removeClass('is-busy'); $msg.text((res && res.data && res.data.message) || 'Something went wrong.');
-			})
-			.fail(function (xhr) {
-				var m = xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message;
-				$form.removeClass('is-busy'); $msg.text(m || 'Request failed. Check the order list before retrying: some labels may have been created.');
-			});
+		runBulk($form, $msg, rows);
 	});
 
 })(jQuery);

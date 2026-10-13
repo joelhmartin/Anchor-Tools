@@ -29,15 +29,29 @@ final class TrackingPoller {
 	/** UPS voids labels that were never scanned after this many days. */
 	public const AUTO_VOID_DAYS = 10;
 
-	public function __construct( private CarrierRegistry $carriers, private ShipmentRepository $shipments ) {
-		\add_action( 'init', [ $this, 'schedule' ], 20 );
+	public function __construct( private CarrierRegistry $carriers, private ShipmentRepository $shipments, private ?LabelService $labels = null ) {
+		// admin_init, not init: the recurring job survives, so only an admin visit needs to (re)create it.
+		\add_action( 'admin_init', [ $this, 'schedule' ] );
 		\add_action( self::ACTION, [ $this, 'poll' ] );
 	}
 
 	public function schedule(): void {
 		if ( \function_exists( 'as_has_scheduled_action' ) && ! \as_has_scheduled_action( self::ACTION, [], self::GROUP ) ) {
-			\as_schedule_recurring_action( time() + 60, self::INTERVAL, self::ACTION, [], self::GROUP );
+			\as_schedule_recurring_action( time() + 60, self::INTERVAL, self::ACTION, [], self::GROUP, true );
 		}
+	}
+
+	/**
+	 * Sandbox labels are test shipments: rows still track, but the poller must not email customers
+	 * ("shipped") or complete real orders because of them. Opt in with the filter (tests).
+	 */
+	private function quiet_for( string $carrier_id ): bool {
+		$sandbox = 'sandbox' === ( Settings::carrier( $carrier_id )['environment'] ?? '' );
+		return $sandbox && ! \apply_filters( 'anchor_shipping_poll_side_effects_in_sandbox', false );
+	}
+
+	private function labels(): LabelService {
+		return $this->labels ?? \Anchor\Shipping\Module::instance()->labels;
 	}
 
 	public function poll(): void {
@@ -67,7 +81,7 @@ final class TrackingPoller {
 				if ( ! $fresh || 'voided' === $fresh['status'] ) {
 					continue; // voided (by a person) since the batch was read: leave it alone
 				}
-				if ( $this->apply( $fresh, $result, $now ) ) {
+				if ( $this->apply( $fresh, $result, $now ) && ! $this->quiet_for( (string) $row['carrier'] ) ) {
 					$touched[ (int) $row['order_id'] ] = true;
 				}
 			} catch ( \Throwable $e ) {
@@ -86,17 +100,24 @@ final class TrackingPoller {
 	/** @return bool true when the row's status changed */
 	private function apply( array $row, ?TrackingResult $r, string $now ): bool {
 		$id = (int) $row['id'];
+		// Only "carrier has no such package" (unknown) or a genuine label_created counts as never scanned;
+		// an unmapped status type (unknown_type) must leave the row alone.
 		$never_scanned = 'label_created' === $row['status'] && $this->older_than_void_window( (string) $row['created_at'] ) && ( ! $r || in_array( $r->status, [ 'label_created', 'unknown' ], true ) );
-		if ( $never_scanned ) {
-			$this->shipments->update( $id, [ 'last_polled_at' => $now, 'status' => 'voided', 'voided_at' => $now ] + ( $r && '' !== $r->detail && 'unknown' !== $r->status ? [ 'status_detail' => \mb_substr( $r->detail, 0, 255 ) ] : [] ) );
+		$carrier_void  = $r && 'voided' === $r->status;
+		if ( $never_scanned || $carrier_void ) {
+			$this->shipments->update( $id, [ 'last_polled_at' => $now, 'status' => 'voided', 'voided_at' => $now ] + ( $r && '' !== $r->detail && ! in_array( $r->status, [ 'unknown', 'unknown_type' ], true ) ? [ 'status_detail' => \mb_substr( $r->detail, 0, 255 ) ] : [] ) );
 			$this->note( (int) $row['order_id'], sprintf(
 				/* translators: %s: tracking number */
-				\__( 'UPS auto-voided (never scanned): %s', 'anchor-schema' ),
+				$carrier_void ? \__( 'UPS reports this label as voided: %s', 'anchor-schema' ) : \__( 'UPS auto-voided (never scanned): %s', 'anchor-schema' ),
 				$row['tracking_number']
 			) );
+			$order = \wc_get_order( (int) $row['order_id'] );
+			if ( $order ) {
+				$this->labels()->reset_state_after_void( $order ); // same reset as a manual void
+			}
 			return true; // the order may now be fully delivered
 		}
-		if ( ! $r || 'unknown' === $r->status ) {
+		if ( ! $r || in_array( $r->status, [ 'unknown', 'unknown_type' ], true ) ) {
 			$this->shipments->update( $id, [ 'last_polled_at' => $now ] );
 			return false;
 		}

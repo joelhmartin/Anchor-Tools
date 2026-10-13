@@ -7,9 +7,8 @@
 					{
 						"trackingNumber": "1ZK877V90300000001",
 						"currentStatus": {
-							"description": "Out For Delivery Today",
-							"type": "I",
-							"code": "OT"
+							"description": "Out For Delivery",
+							"code": "021"
 						},
 						"activity": [
 							{
@@ -22,11 +21,15 @@
 								},
 								"status": {
 									"type": "I",
-									"description": "Out For Delivery Today",
-									"code": "OT"
+									"description": "Out For Delivery",
+									"code": "OF",
+									"statusCode": "021"
 								},
 								"date": "20261013",
-								"time": "080500"
+								"time": "080500",
+								"gmtDate": "20261013",
+								"gmtTime": "12:05:00",
+								"gmtOffset": "-04:00"
 							},
 							{
 								"location": {
@@ -39,10 +42,14 @@
 								"status": {
 									"type": "M",
 									"description": "Shipper created a label, UPS has not received the package yet. ",
-									"code": "MP"
+									"code": "MP",
+									"statusCode": "003"
 								},
 								"date": "20261010",
-								"time": "091500"
+								"time": "091500",
+								"gmtDate": "20261010",
+								"gmtTime": "13:15:00",
+								"gmtOffset": "-04:00"
 							}
 						]
 					}

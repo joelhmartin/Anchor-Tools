@@ -33,7 +33,7 @@ class Test_Shipping_Ups_Tracking extends Anchor_Shipping_TestCase {
 		$this->queue_token();
 		$this->queue_response( 200, $this->fixture( 'ups-track-delivered' ) );
 		$r = ( new UpsCarrier() )->track( [ self::NUMBER ] )[ self::NUMBER ];
-		$this->assertSame( gmmktime( 13, 42, 0, 10, 13, 2026 ), $r->event_at );
+		$this->assertSame( gmmktime( 17, 42, 0, 10, 13, 2026 ), $r->event_at );
 	}
 
 	public function test_request_shape() {
@@ -91,6 +91,34 @@ class Test_Shipping_Ups_Tracking extends Anchor_Shipping_TestCase {
 		$this->queue_response( 401, [] );
 		$this->expectException( CarrierError::class );
 		( new UpsCarrier() )->track( [ self::NUMBER ] );
+	}
+
+	public function test_recorded_cie_response_is_delivered_with_gmt_event_time() {
+		$this->configure_ups();
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-track-cie-recorded' ) );
+		$r = ( new UpsCarrier() )->track( [ '1Z2B3J726821744826' ] )['1Z2B3J726821744826'];
+		$this->assertSame( 'delivered', $r->status );
+		$this->assertSame( gmmktime( 21, 46, 53, 5, 12, 2026 ), $r->event_at );
+	}
+
+	public function test_numeric_current_status_code_maps_when_there_are_no_activities() {
+		$this->configure_ups();
+		$cases = [ '003' => 'label_created', '005' => 'in_transit', '011' => 'delivered', '021' => 'out_for_delivery', '999' => 'unknown_type' ];
+		foreach ( $cases as $code => $status ) {
+			$fx = $this->fixture( 'ups-track-in-transit' );
+			$fx['trackResponse']['shipment'][0]['package'][0]['currentStatus'] = [ 'description' => 'x', 'code' => (string) $code ];
+			unset( $fx['trackResponse']['shipment'][0]['package'][0]['activity'] );
+			$this->queue_token();
+			$this->queue_response( 200, $fx );
+			$this->assertSame( $status, ( new UpsCarrier() )->track( [ self::NUMBER ] )[ self::NUMBER ]->status, $code );
+			delete_transient( 'anchor_shipping_ups_token_' . md5( 'sandbox|cid' ) );
+		}
+	}
+
+	public function test_type_I_with_code_OF_is_out_for_delivery() {
+		$this->configure_ups();
+		$this->assertSame( 'out_for_delivery', $this->track_with_type( 'I', 'OF' )->status );
 	}
 
 	private function track_with_type( string $type, string $code = 'XX' ): TrackingResult {

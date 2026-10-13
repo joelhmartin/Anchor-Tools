@@ -8,8 +8,7 @@
 						"trackingNumber": "1ZK877V90300000001",
 						"currentStatus": {
 							"description": "Departed from Facility",
-							"type": "I",
-							"code": "DP"
+							"code": "005"
 						},
 						"activity": [
 							{
@@ -23,10 +22,14 @@
 								"status": {
 									"type": "I",
 									"description": "Departed from Facility",
-									"code": "DP"
+									"code": "DP",
+									"statusCode": "005"
 								},
 								"date": "20261012",
-								"time": "143000"
+								"time": "143000",
+								"gmtDate": "20261012",
+								"gmtTime": "18:30:00",
+								"gmtOffset": "-04:00"
 							},
 							{
 								"location": {
@@ -39,10 +42,14 @@
 								"status": {
 									"type": "M",
 									"description": "Shipper created a label, UPS has not received the package yet. ",
-									"code": "MP"
+									"code": "MP",
+									"statusCode": "003"
 								},
 								"date": "20261010",
-								"time": "091500"
+								"time": "091500",
+								"gmtDate": "20261010",
+								"gmtTime": "13:15:00",
+								"gmtOffset": "-04:00"
 							}
 						]
 					}

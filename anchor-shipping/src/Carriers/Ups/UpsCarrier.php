@@ -162,27 +162,59 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 			}
 		}
 
-		$current = is_array( $pkg ) && is_array( $pkg['currentStatus'] ?? null ) ? $pkg['currentStatus'] : ( is_array( $latest ) && is_array( $latest['status'] ?? null ) ? $latest['status'] : [] );
-		$type    = strtoupper( (string) ( $current['type'] ?? '' ) );
-		$code    = strtoupper( (string) ( $current['code'] ?? '' ) );
-		$desc    = trim( (string) ( $current['description'] ?? '' ) );
+		// Real UPS responses carry no `type` on currentStatus (only a numeric `code`); the type lives on each activity's status.
+		$current  = is_array( $pkg ) && is_array( $pkg['currentStatus'] ?? null ) ? $pkg['currentStatus'] : [];
+		$latest_s = is_array( $latest ) && is_array( $latest['status'] ?? null ) ? $latest['status'] : [];
+		$type     = strtoupper( (string) ( $current['type'] ?? '' ) );
+		if ( '' !== $type ) {
+			$code = strtoupper( (string) ( $current['code'] ?? '' ) );
+		} else {
+			$type = strtoupper( (string) ( $latest_s['type'] ?? '' ) );
+			$code = strtoupper( (string) ( $latest_s['code'] ?? '' ) );
+		}
+		$desc = trim( (string) ( $current['description'] ?? '' ) );
+		if ( '' === $desc ) {
+			$desc = trim( (string) ( $latest_s['description'] ?? '' ) );
+		}
 
-		return new TrackingResult( $number, $this->map_status( $type, $code, $desc ), $desc, $latest_at );
+		if ( '' === $type && '' !== trim( (string) ( $current['code'] ?? '' ) ) ) {
+			$status = self::NUMERIC_STATUS[ trim( (string) $current['code'] ) ] ?? 'unknown_type';
+		} else {
+			$status = $this->map_status( $type, $code, $desc );
+		}
+		return new TrackingResult( $number, $status, $desc, $latest_at );
 	}
 
-	/** UPS activity date (YYYYMMDD) + time (HHMMSS) as a UTC timestamp. */
+	/** Package-level numeric status codes UPS returns without a type (used only when there is no activity to read a type from). */
+	private const NUMERIC_STATUS = [
+		'003' => 'label_created',
+		'005' => 'in_transit',
+		'011' => 'delivered',
+		'021' => 'out_for_delivery',
+	];
+
+	/** Activity moment as a UTC timestamp: gmtDate+gmtTime when present, else local date+time (offset unknown). */
 	private function activity_time( array $a ): ?int {
-		$date = (string) ( $a['date'] ?? '' );
+		$gmt_date = (string) ( $a['gmtDate'] ?? '' );
+		$gmt_time = str_replace( ':', '', (string) ( $a['gmtTime'] ?? '' ) );
+		if ( preg_match( '/^\d{8}$/', $gmt_date ) && preg_match( '/^\d{6}$/', $gmt_time ) ) {
+			return $this->to_ts( $gmt_date, $gmt_time );
+		}
 		$time = str_pad( (string) ( $a['time'] ?? '' ), 6, '0', STR_PAD_LEFT );
+		$date = (string) ( $a['date'] ?? '' );
 		if ( ! preg_match( '/^\d{8}$/', $date ) || ! preg_match( '/^\d{6}$/', $time ) ) {
 			return null;
 		}
+		return $this->to_ts( $date, $time );
+	}
+
+	private function to_ts( string $date, string $time ): ?int {
 		$ts = gmmktime( (int) substr( $time, 0, 2 ), (int) substr( $time, 2, 2 ), (int) substr( $time, 4, 2 ), (int) substr( $date, 4, 2 ), (int) substr( $date, 6, 2 ), (int) substr( $date, 0, 4 ) );
 		return false === $ts ? null : $ts;
 	}
 
 	private function map_status( string $type, string $code, string $desc ): string {
-		if ( 'O' === $type || 'OT' === $code || false !== stripos( $desc, 'out for delivery' ) ) {
+		if ( 'O' === $type || 'OT' === $code || ( 'I' === $type && 'OF' === $code ) || false !== stripos( $desc, 'out for delivery' ) ) {
 			return 'out_for_delivery';
 		}
 		switch ( $type ) {

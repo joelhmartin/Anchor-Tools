@@ -8,6 +8,8 @@
 .asm-state { display: inline-block; margin-left: .5rem; font-size: .85em; }
 .asm-pager { display: flex; gap: 1rem; margin-top: 1rem; }
 .asm-order-view { display: grid; gap: 1.5rem; }
+.asm-order-title { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+.asm-order-title h2 { margin: 0; }
 .asm-items table { width: 100%; border-collapse: collapse; }
 .asm-items th, .asm-items td { text-align: left; padding: .35rem .5rem; }
 .asm-actions.is-busy { opacity: .5; pointer-events: none; }

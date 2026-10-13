@@ -11,9 +11,11 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 <article class="asm-order-view" data-order-id="<?php echo (int) $order->get_id(); ?>">
 	<header class="asm-order-head">
-		<h2><?php echo \esc_html( sprintf( /* translators: %s: order number */ \__( 'Order #%s', 'anchor-schema' ), $order->get_order_number() ) ); ?></h2>
-		<p>
-			<span class="asm-status"><?php echo \esc_html( \wc_get_order_status_name( $order->get_status() ) ); ?></span>
+		<div class="asm-order-title">
+			<h2><?php echo \esc_html( sprintf( /* translators: %s: order number */ \__( 'Order #%s', 'anchor-schema' ), $order->get_order_number() ) ); ?></h2>
+			<span class="asm-status asm-status-<?php echo \esc_attr( $order->get_status() ); ?>"><?php echo \esc_html( \wc_get_order_status_name( $order->get_status() ) ); ?></span>
+		</div>
+		<p class="asm-order-meta">
 			<?php if ( '' !== $state ) : ?><span class="asm-state"><?php echo \esc_html( $state ); ?></span><?php endif; ?>
 			<?php echo $order->get_date_created() ? \esc_html( \wc_format_datetime( $order->get_date_created() ) ) : ''; ?>
 		</p>

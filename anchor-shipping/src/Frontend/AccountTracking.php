@@ -58,9 +58,11 @@ final class AccountTracking {
 			echo '&mdash;';
 			return;
 		}
+		$cells = [];
 		foreach ( $rows as $r ) {
-			echo '<span class="anchor-shipping-tracking-cell">' . self::link( $r ) . ( '' !== $r['status'] ? ' <small>' . \esc_html( $r['status'] ) . '</small>' : '' ) . '</span>';
+			$cells[] = '<span class="anchor-shipping-tracking-cell">' . self::link( $r ) . ( '' !== $r['status'] ? ' <small>' . \esc_html( $r['status'] ) . '</small>' : '' ) . '</span>';
 		}
+		echo implode( '<br>', $cells );
 	}
 
 	/** @param array{carrier: string, number: string, url: string, status: string} $r */

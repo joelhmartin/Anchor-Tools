@@ -90,4 +90,13 @@ class Test_Shipping_Shipped_Email extends Anchor_Shipping_TestCase {
 		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $bare );
 		$this->assertSame( '&mdash;', ob_get_clean() );
 	}
+
+	public function test_account_orders_tracking_column_separates_multiple_packages() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000003' );
+		$this->add_row( $order, '1ZK877V90300000004' );
+		ob_start();
+		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $order );
+		$this->assertSame( 1, substr_count( ob_get_clean(), '</span><br><span' ) );
+	}
 }

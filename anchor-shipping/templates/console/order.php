@@ -17,6 +17,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 			<?php if ( '' !== $state ) : ?><span class="asm-state"><?php echo \esc_html( $state ); ?></span><?php endif; ?>
 			<?php echo $order->get_date_created() ? \esc_html( \wc_format_datetime( $order->get_date_created() ) ) : ''; ?>
 		</p>
+		<p class="asm-admin-link"><a href="<?php echo \esc_url( $order->get_edit_order_url() ); ?>"><?php \esc_html_e( 'Open in WordPress admin', 'anchor-schema' ); ?></a></p>
 		<p class="asm-actions" data-order="<?php echo (int) $order->get_id(); ?>">
 			<?php if ( $can_complete ) : ?><button type="button" class="asm-status-btn" data-to="completed"><?php \esc_html_e( 'Mark completed', 'anchor-schema' ); ?></button><?php endif; ?>
 			<?php if ( $can_cancel ) : ?><button type="button" class="asm-status-btn asm-danger" data-to="cancelled"><?php \esc_html_e( 'Cancel order', 'anchor-schema' ); ?></button><?php endif; ?>
@@ -55,7 +56,10 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 		<h3><?php \esc_html_e( 'Shipping label', 'anchor-schema' ); ?></h3>
 		<?php echo $panel; // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in OrderPanel::render_panel() ?>
 		<?php if ( '' !== $label_url ) : ?>
-			<p><a class="asm-print" target="_blank" href="<?php echo \esc_url( $label_url ); ?>"><?php \esc_html_e( 'Open latest label', 'anchor-schema' ); ?></a></p>
+			<p>
+				<?php if ( $label_pdf ) : ?><button type="button" class="asm-print-btn"><?php \esc_html_e( 'Print label', 'anchor-schema' ); ?></button><?php endif; ?>
+				<a class="asm-print" target="_blank" href="<?php echo \esc_url( $label_url ); ?>"><?php \esc_html_e( 'Open latest label', 'anchor-schema' ); ?></a>
+			</p>
 			<?php if ( $label_pdf ) : ?><iframe class="asm-label-frame" title="<?php \esc_attr_e( 'Latest shipping label', 'anchor-schema' ); ?>" src="<?php echo \esc_url( $label_url ); ?>" loading="lazy"></iframe><?php endif; ?>
 		<?php endif; ?>
 	</section>
@@ -78,7 +82,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 		<?php else : ?>
 			<ul>
 				<?php foreach ( $notes as $n ) : ?>
-					<li class="asm-note<?php echo $n->customer_note ? ' is-customer' : ''; ?>"><span class="asm-sub"><?php echo \esc_html( \wc_format_datetime( $n->date_created ) ); ?></span> <?php echo \esc_html( \wp_strip_all_tags( $n->content ) ); ?></li>
+					<li class="asm-note<?php echo $n->customer_note ? ' is-customer' : ''; ?>"><span class="asm-sub"><?php echo \esc_html( \wc_format_datetime( $n->date_created ) ); ?></span> <?php echo $n->customer_note ? '<strong class="asm-to-customer">' . \esc_html__( 'To customer:', 'anchor-schema' ) . '</strong> ' : ''; ?><?php echo \esc_html( \wp_strip_all_tags( $n->content ) ); ?></li>
 				<?php endforeach; ?>
 			</ul>
 		<?php endif; ?>

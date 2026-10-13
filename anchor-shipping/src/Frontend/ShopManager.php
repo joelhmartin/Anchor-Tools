@@ -189,7 +189,7 @@ final class ShopManager {
 	/** Tab membership. Needs label = flagged needs_attention, OR processing + shippable + no active label. */
 	private function in_tab( int $id, string $tab ): bool {
 		$order = \wc_get_order( $id );
-		if ( ! $order instanceof \WC_Order ) {
+		if ( ! $order instanceof \WC_Order || in_array( $order->get_status(), [ 'trash', 'auto-draft' ], true ) ) {
 			return false;
 		}
 		$state = (string) $order->get_meta( LabelService::STATE_META );

@@ -169,6 +169,66 @@ class Test_Shipping_Shop_Manager extends Anchor_Shipping_TestCase {
 		$this->assertSame( [], Module::instance()->shipments->active_for_order( $order->get_id() ) );
 	}
 
+	public function test_cancel_with_refused_void_still_cancels_and_asks_a_person() {
+		$this->configure_ups();
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		Module::instance()->labels->create_for_order( $order, [ new \Anchor\Shipping\Domain\Parcel( 1, 10, 10, 10 ) ], 'manual' );
+		$this->queue_response( 400, [ 'response' => [ 'errors' => [ [ 'code' => '190102', 'message' => 'No shipment found within the allowed void period' ] ] ] ] );
+		reset_phpmailer_instance();
+
+		$out = $this->ajax()->handle_status( [ 'order_id' => $order->get_id(), 'to' => 'cancelled' ] );
+
+		$fresh = wc_get_order( $order->get_id() );
+		$this->assertSame( 'cancelled', $out['status'] );
+		$this->assertSame( 'cancelled', $fresh->get_status() );
+		$this->assertSame( 'needs_attention', $fresh->get_meta( LabelService::STATE_META ) );
+		$this->assertCount( 1, Module::instance()->shipments->active_for_order( $order->get_id() ), 'the label stays active for a person to resolve' );
+		$this->assertCount( 1, array_filter( tests_retrieve_phpmailer_instance()->mock_sent, static fn( $m ) => str_contains( $m['subject'], 'Shipping problem' ) ) );
+	}
+
+	public function test_view_has_admin_link_print_button_and_customer_note_marker() {
+		$this->configure_ups();
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$order->add_order_note( 'Your parcel is packed', 1 );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		Module::instance()->labels->create_for_order( $order, [ new \Anchor\Shipping\Domain\Parcel( 1, 10, 10, 10 ) ], 'manual' );
+		$html = $this->console()->render( [ 'order' => $order->get_id() ] );
+		$this->assertStringContainsString( esc_url( $order->get_edit_order_url() ), $html );
+		$this->assertStringContainsString( 'asm-print-btn', $html );
+		$this->assertStringContainsString( 'To customer:', $html );
+	}
+
+	public function test_page_past_the_end_offers_a_way_back() {
+		$this->as_role( 'shop_manager' );
+		$this->make_order( [], 'processing' );
+		$html = $this->console()->render( [ 'tab' => 'needs-label', 'paged' => 5 ] );
+		$this->assertStringContainsString( 'Back to page 1', $html );
+	}
+
+	public function test_search_skips_trashed_orders() {
+		$this->as_role( 'shop_manager' );
+		$o = $this->make_order( [], 'processing' );
+		$o->set_billing_last_name( 'Trashable' );
+		$o->save();
+		$this->assertSame( [ $o->get_id() ], $this->listed( 'all', [ 's' => 'Trashable' ] ) );
+		$o->delete( false );
+		$this->assertSame( [], $this->listed( 'all', [ 's' => 'Trashable' ] ) );
+	}
+
+	public function test_label_endpoints_follow_the_console_capability_filter() {
+		$this->as_role( 'customer' );
+		$ajax = new \Anchor\Shipping\Admin\Ajax( Module::instance()->labels, Module::instance()->shipments, Module::instance()->store, Module::instance()->packer, Module::instance()->carriers );
+		$this->assertFalse( $ajax->authorized() );
+		add_filter( 'anchor_shipping_console_capability', static fn() => 'read' );
+		$this->assertTrue( $ajax->authorized() );
+		remove_all_filters( 'anchor_shipping_console_capability' );
+	}
+
 	public function test_status_rejects_unknown_target_and_missing_order() {
 		$this->as_role( 'shop_manager' );
 		$order = $this->make_order( [], 'processing' );

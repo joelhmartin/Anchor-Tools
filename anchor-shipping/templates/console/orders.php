@@ -23,7 +23,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 </form>
 
 <?php if ( ! $rows ) : ?>
-	<p class="asm-empty"><?php \esc_html_e( 'No orders here.', 'anchor-schema' ); ?></p>
+	<p class="asm-empty"><?php \esc_html_e( 'No orders here.', 'anchor-schema' ); ?><?php if ( $page > 1 ) : ?> <a href="<?php echo \esc_url( $page_url( 1 ) ); ?>"><?php \esc_html_e( 'Back to page 1', 'anchor-schema' ); ?></a><?php endif; ?></p>
 <?php else : ?>
 	<table class="asm-orders">
 		<thead>
@@ -49,7 +49,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 					</td>
 					<td>
 						<?php echo \esc_html( \wc_get_order_status_name( $o->get_status() ) ); ?>
-						<?php if ( '' !== $r['state'] ) : ?><span class="asm-state asm-state-<?php echo \esc_attr( (string) $o->get_meta( '_anchor_shipping_state' ) ); ?>"><?php echo \esc_html( $r['state'] ); ?></span><?php endif; ?>
+						<?php if ( '' !== $r['state'] ) : ?><span class="asm-state asm-state-<?php echo \esc_attr( (string) $o->get_meta( \Anchor\Shipping\Services\LabelService::STATE_META ) ); ?>"><?php echo \esc_html( $r['state'] ); ?></span><?php endif; ?>
 					</td>
 					<td>
 						<?php foreach ( $r['tracking'] as $t ) : ?>

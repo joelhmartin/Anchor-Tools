@@ -36,7 +36,8 @@ final class Ajax {
 	}
 
 	public function authorized(): bool {
-		return \current_user_can( 'edit_shop_orders' );
+		// One capability model with the console (filter anchor_shipping_console_capability, default edit_shop_orders).
+		return \Anchor\Shipping\Frontend\ShopManager::can_use();
 	}
 
 	public function ajax_create(): void {

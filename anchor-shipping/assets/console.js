@@ -3,6 +3,12 @@
 	var cfg = window.anchorShipping || {};
 	var txt = window.anchorShippingConsole || {};
 
+	$(document).on('click', '.asm-print-btn', function () {
+		var frame = $(this).closest('.asm-label').find('.asm-label-frame')[0];
+		try { frame.contentWindow.focus(); frame.contentWindow.print(); }
+		catch (e) { window.open($(this).siblings('.asm-print').attr('href'), '_blank'); }
+	});
+
 	$(document).on('click', '.asm-status-btn', function () {
 		var $btn = $(this), $box = $btn.closest('.asm-actions'), to = $btn.data('to');
 		if ($box.hasClass('is-busy')) { return; }

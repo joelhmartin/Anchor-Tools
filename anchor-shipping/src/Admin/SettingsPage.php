@@ -44,6 +44,7 @@ final class SettingsPage {
 		$out['label_format']    = in_array( $post['label_format'] ?? '', [ 'GIF', 'ZPL' ], true ) ? $post['label_format'] : 'GIF';
 		$out['inbox']           = implode( ', ', array_filter( array_map( 'sanitize_email', array_map( 'trim', explode( ',', (string) ( $post['inbox'] ?? $current['inbox'] ) ) ) ) ) );
 		$out['auto_label']      = ! empty( $post['auto_label'] );
+		$out['complete_on_delivery'] = ! empty( $post['complete_on_delivery'] );
 
 		foreach ( array_keys( $current['ship_from'] ) as $k ) {
 			$out['ship_from'][ $k ] = $txt( $post['ship_from'][ $k ] ?? $current['ship_from'][ $k ] );
@@ -150,6 +151,8 @@ final class SettingsPage {
 				<table class="form-table">
 					<tr><th><?php \esc_html_e( 'Create labels automatically when an order is paid', 'anchor-schema' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[auto_label]' ) ); ?>" value="1" <?php \checked( $s['auto_label'] ); ?>> <?php \esc_html_e( 'When every item has a weight and a default box. Otherwise, and when this is off, the shipping inbox gets a "Ready to ship" email with a Create label button.', 'anchor-schema' ); ?></label></td></tr>
+					<tr><th><?php \esc_html_e( 'Complete orders when delivered', 'anchor-schema' ); ?></th>
+						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[complete_on_delivery]' ) ); ?>" value="1" <?php \checked( $s['complete_on_delivery'] ); ?>> <?php \esc_html_e( 'When every package of a processing order shows as delivered, mark the order Completed.', 'anchor-schema' ); ?></label></td></tr>
 					<tr><th><?php \esc_html_e( 'Shipping inbox', 'anchor-schema' ); ?></th>
 						<td><input type="text" class="regular-text" name="<?php echo \esc_attr( $name( '[inbox]' ) ); ?>" value="<?php echo \esc_attr( $s['inbox'] ); ?>" placeholder="<?php echo \esc_attr( (string) \get_option( 'admin_email' ) ); ?>"><p class="description"><?php \esc_html_e( 'Comma-separate several addresses.', 'anchor-schema' ); ?></p></td></tr>
 					<tr><th><?php \esc_html_e( 'Default carrier / service', 'anchor-schema' ); ?></th>

@@ -22,6 +22,7 @@ final class Settings {
 			'label_format'    => 'GIF',
 			'inbox'           => '',
 			'auto_label'      => false,
+			'complete_on_delivery' => true,
 			'ship_from'       => [ 'name' => '', 'company' => '', 'phone' => '', 'line1' => '', 'line2' => '', 'city' => '', 'state' => '', 'postcode' => '', 'country' => '' ],
 			'boxes'           => [],
 			'carriers'        => [ 'ups' => [ 'environment' => 'sandbox', 'client_id' => '', 'client_secret' => '', 'account' => '' ] ],
@@ -38,6 +39,7 @@ final class Settings {
 			$all['boxes'] = array_values( (array) $stored['boxes'] ); // a list: never merge by index
 		}
 		$all['auto_label'] = (bool) $all['auto_label'];
+		$all['complete_on_delivery'] = (bool) $all['complete_on_delivery'];
 		return $all;
 	}
 
@@ -114,6 +116,10 @@ final class Settings {
 
 	public static function auto_label(): bool {
 		return self::all()['auto_label'];
+	}
+
+	public static function complete_on_delivery(): bool {
+		return self::all()['complete_on_delivery'];
 	}
 
 	public static function inbox(): string {

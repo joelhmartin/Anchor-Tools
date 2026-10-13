@@ -32,6 +32,8 @@ class Module {
 
 	public Services\PaidOrderHandler $paid_orders;
 
+	public Services\TrackingPoller $tracking;
+
 	private static ?Module $instance = null;
 
 	public static function instance(): ?Module {
@@ -67,6 +69,7 @@ class Module {
 		$this->packer   = new Packing\Packer();
 		$this->labels   = new Services\LabelService( $this->carriers, $this->shipments, $this->store, $this->packer );
 		$this->paid_orders = new Services\PaidOrderHandler( $this->labels, $this->packer );
+		$this->tracking = new Services\TrackingPoller( $this->carriers, $this->shipments );
 		new Services\VoidOnCancel( $this->labels, $this->shipments );
 		new Checkout\ProtectionFields();
 		\add_filter( 'woocommerce_email_classes', [ Emails\Registry::class, 'register' ] );

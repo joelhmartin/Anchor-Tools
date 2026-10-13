@@ -22,6 +22,8 @@ final class Settings {
 			'label_format'    => 'GIF',
 			'inbox'           => '',
 			'auto_label'      => false,
+			'console_page'    => 0,
+			'new_order_button' => true,
 			'complete_on_delivery' => true,
 			'ship_from'       => [ 'name' => '', 'company' => '', 'phone' => '', 'line1' => '', 'line2' => '', 'city' => '', 'state' => '', 'postcode' => '', 'country' => '' ],
 			'boxes'           => [],
@@ -40,6 +42,8 @@ final class Settings {
 		}
 		$all['auto_label'] = (bool) $all['auto_label'];
 		$all['complete_on_delivery'] = (bool) $all['complete_on_delivery'];
+		$all['console_page'] = (int) $all['console_page'];
+		$all['new_order_button'] = (bool) $all['new_order_button'];
 		return $all;
 	}
 

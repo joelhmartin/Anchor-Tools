@@ -45,6 +45,8 @@ final class SettingsPage {
 		$out['inbox']           = implode( ', ', array_filter( array_map( 'sanitize_email', array_map( 'trim', explode( ',', (string) ( $post['inbox'] ?? $current['inbox'] ) ) ) ) ) );
 		$out['auto_label']      = ! empty( $post['auto_label'] );
 		$out['complete_on_delivery'] = ! empty( $post['complete_on_delivery'] );
+		$out['new_order_button'] = ! empty( $post['new_order_button'] );
+		$out['console_page']    = isset( $post['console_page'] ) ? max( 0, (int) $post['console_page'] ) : (int) $current['console_page'];
 
 		foreach ( array_keys( $current['ship_from'] ) as $k ) {
 			$out['ship_from'][ $k ] = $txt( $post['ship_from'][ $k ] ?? $current['ship_from'][ $k ] );
@@ -153,6 +155,10 @@ final class SettingsPage {
 						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[auto_label]' ) ); ?>" value="1" <?php \checked( $s['auto_label'] ); ?>> <?php \esc_html_e( 'When every item has a weight and a default box. Otherwise, and when this is off, the shipping inbox gets a "Ready to ship" email with a Create label button.', 'anchor-schema' ); ?></label></td></tr>
 					<tr><th><?php \esc_html_e( 'Complete orders when delivered', 'anchor-schema' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[complete_on_delivery]' ) ); ?>" value="1" <?php \checked( $s['complete_on_delivery'] ); ?>> <?php \esc_html_e( 'When every package of a processing order shows as delivered, mark the order Completed.', 'anchor-schema' ); ?></label></td></tr>
+					<tr><th><?php \esc_html_e( 'Create label button in the New order email', 'anchor-schema' ); ?></th>
+						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[new_order_button]' ) ); ?>" value="1" <?php \checked( $s['new_order_button'] ); ?>> <?php \esc_html_e( 'Add a Create shipping label button to the WooCommerce New order email when the order ships. Shipping inbox addresses that already get that email are not sent a separate Ready to ship email.', 'anchor-schema' ); ?></label></td></tr>
+					<tr><th><?php \esc_html_e( 'Shipping console page', 'anchor-schema' ); ?></th>
+						<td><?php \wp_dropdown_pages( [ 'name' => $name( '[console_page]' ), 'selected' => (int) $s['console_page'], 'show_option_none' => \__( '— None (use the order edit screen) —', 'anchor-schema' ), 'option_none_value' => '0' ] ); ?><p class="description"><?php \esc_html_e( 'The page that shows the shipping console. Email buttons link here.', 'anchor-schema' ); ?></p></td></tr>
 					<tr><th><?php \esc_html_e( 'Shipping inbox', 'anchor-schema' ); ?></th>
 						<td><input type="text" class="regular-text" name="<?php echo \esc_attr( $name( '[inbox]' ) ); ?>" value="<?php echo \esc_attr( $s['inbox'] ); ?>" placeholder="<?php echo \esc_attr( (string) \get_option( 'admin_email' ) ); ?>"><p class="description"><?php \esc_html_e( 'Comma-separate several addresses.', 'anchor-schema' ); ?></p></td></tr>
 					<tr><th><?php \esc_html_e( 'Default carrier / service', 'anchor-schema' ); ?></th>

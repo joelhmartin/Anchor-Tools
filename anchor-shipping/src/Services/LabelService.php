@@ -32,6 +32,11 @@ final class LabelService {
 
 	public const UNRECORDED_META = '_anchor_shipping_unrecorded';
 
+	/** Needs a physical shipment: a shipping address and at least one shipping line. */
+	public function is_shippable( \WC_Order $order ): bool {
+		return $order->needs_shipping_address() && [] !== $order->get_shipping_methods();
+	}
+
 	public function is_labelled( \WC_Order $order ): bool {
 		return [] !== $this->shipments->active_for_order( $order->get_id() )
 			|| '' !== (string) $order->get_meta( self::UNRECORDED_META );

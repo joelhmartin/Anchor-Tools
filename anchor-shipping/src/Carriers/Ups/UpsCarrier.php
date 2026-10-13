@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Anchor\Shipping\Carriers\Ups;
 
+use Anchor\Shipping\Carriers\AddressValidatingCarrier;
 use Anchor\Shipping\Carriers\CarrierInterface;
 use Anchor\Shipping\Domain\Address;
 use Anchor\Shipping\Domain\CarrierError;
@@ -15,7 +16,7 @@ use Anchor\Shipping\Support\Settings;
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** UPS REST (Shipping v2409). Never sends the customer's email or UPS notifications. */
-final class UpsCarrier implements CarrierInterface {
+final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 
 	public function __construct( private ?UpsClient $client = null ) {}
 

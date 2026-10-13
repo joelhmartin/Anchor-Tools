@@ -113,10 +113,62 @@ class Test_Shipping_Address_Validation extends Anchor_Shipping_TestCase {
 	public function test_unconfigured_carrier_and_non_us_skip_validation() {
 		$order = $this->make_order();
 		$this->assertStringNotContainsString( 'anchor-shipping-address-warning', $this->panel( $order ) );
+		$this->assertSame( 0, $this->xav_requests() );
 		$this->configure_ups();
 		$order->set_shipping_country( 'CA' );
 		$order->save();
 		$this->panel( wc_get_order( $order->get_id() ) );
 		$this->assertSame( 0, $this->xav_requests() );
+	}
+
+	public function test_failure_is_negative_cached_for_five_minutes() {
+		$this->configure_ups();
+		$order = $this->make_order();
+		$this->queue_token();
+		$this->queue_response( 500, '{"response":{"errors":[{"code":"250002","message":"nope"}]}}' );
+		$this->panel( $order );
+		$after_first = count( $this->requests );
+		$this->assertGreaterThan( 0, $this->xav_requests() );
+
+		$order = wc_get_order( $order->get_id() );
+		$meta  = $order->get_meta( '_anchor_shipping_xav' );
+		$this->assertNull( $meta['result'] );
+		$this->panel( $order );
+		$this->assertCount( $after_first, $this->requests, 'no UPS calls inside the window' );
+
+		$meta['failed_at'] = time() - 301;
+		$order->update_meta_data( '_anchor_shipping_xav', $meta );
+		$order->save_meta_data();
+		$this->queue_response( 200, $this->fixture( 'ups-xav-invalid' ) ); // token is still cached
+		$this->assertStringContainsString( 'anchor-shipping-address-warning', $this->panel( wc_get_order( $order->get_id() ) ) );
+	}
+
+	public function test_default_carrier_without_validation_is_skipped() {
+		$this->configure_ups( [ 'default_carrier' => 'plain' ] );
+		$plain = new class() implements \Anchor\Shipping\Carriers\CarrierInterface {
+			public function id(): string { return 'plain'; }
+			public function label(): string { return 'Plain'; }
+			public function supports( string $feature ): bool { return 'labels' === $feature; }
+			public function services(): array { return [ 'x' => 'X' ]; }
+			public function settings_fields(): array { return []; }
+			public function create_label( \Anchor\Shipping\Domain\ShipmentRequest $request ): \Anchor\Shipping\Domain\LabelResult { throw new \LogicException(); }
+			public function void_label( string $shipment_id ): void {}
+			public function track( array $tracking_numbers ): array { return []; }
+			public function rate( \Anchor\Shipping\Domain\ShipmentRequest $request ): array { return []; }
+			public function tracking_url( string $tracking_number ): string { return ''; }
+		};
+		$add = static function ( $list ) use ( $plain ) {
+			$list['plain'] = $plain;
+			return $list;
+		};
+		add_filter( 'anchor_shipping_carriers', $add );
+		Module::instance()->carriers->reset();
+		try {
+			$this->panel( $this->make_order() );
+			$this->assertSame( 0, $this->xav_requests() );
+		} finally {
+			remove_filter( 'anchor_shipping_carriers', $add );
+			Module::instance()->carriers->reset();
+		}
 	}
 }

@@ -3,7 +3,6 @@ declare(strict_types=1);
 
 namespace Anchor\Shipping\Carriers;
 
-use Anchor\Shipping\Domain\Address;
 use Anchor\Shipping\Domain\LabelResult;
 use Anchor\Shipping\Domain\ShipmentRequest;
 
@@ -43,13 +42,6 @@ interface CarrierInterface {
 
 	/** Phase 4. @return array */
 	public function rate( ShipmentRequest $request ): array;
-
-	/**
-	 * Street-level check of a ship-to address (only called when supports('address_validation')).
-	 *
-	 * @return array{valid:bool, ambiguous:bool, candidates:\Anchor\Shipping\Domain\Address[]}
-	 */
-	public function validate_address( Address $address ): array;
 
 	/** Public tracking page for a number. */
 	public function tracking_url( string $tracking_number ): string;

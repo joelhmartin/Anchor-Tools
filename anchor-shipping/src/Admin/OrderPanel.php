@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Anchor\Shipping\Admin;
 
+use Anchor\Shipping\Carriers\AddressValidatingCarrier;
 use Anchor\Shipping\Carriers\CarrierRegistry;
 use Anchor\Shipping\Domain\Address;
 use Anchor\Shipping\Database\ShipmentRepository;
@@ -14,6 +15,9 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** The Shipping box on the order screen (HPOS and legacy). */
 final class OrderPanel {
+
+	/** Seconds before retrying address validation for an address whose last check failed. */
+	private const XAV_RETRY_AFTER = 300;
 
 	public function __construct(
 		private ShipmentRepository $shipments,
@@ -135,14 +139,20 @@ final class OrderPanel {
 	private function address_check( \WC_Order $order ): ?array {
 		try {
 			$to      = Address::from_order_shipping( $order );
-			$carrier = $this->carriers->get( 'ups' );
-			if ( 'US' !== $to->country || ! $to->is_complete() || ! $carrier || ! $carrier->supports( 'address_validation' ) ) {
+			$id      = (string) ( Settings::all()['default_carrier'] ?? 'ups' );
+			$carrier = $this->carriers->get( $id ) ?? $this->carriers->get( 'ups' );
+			if ( ! \in_array( $to->country, [ 'US', 'PR' ], true ) || ! $to->is_complete() || ! $carrier instanceof AddressValidatingCarrier || ! $carrier->supports( 'address_validation' ) ) {
 				return null;
 			}
-			$hash   = md5( \wp_json_encode( [ $to->line1, $to->line2, $to->city, $to->state, $to->postcode, $to->country ] ) );
+			$hash   = md5( \wp_json_encode( [ $carrier->id(), $to->line1, $to->line2, $to->city, $to->state, $to->postcode, $to->country ] ) );
 			$cached = $order->get_meta( '_anchor_shipping_xav' );
 			if ( is_array( $cached ) && ( $cached['hash'] ?? '' ) === $hash ) {
-				return $cached['result'];
+				if ( is_array( $cached['result'] ?? null ) ) {
+					return $cached['result'];
+				}
+				if ( time() - (int) ( $cached['failed_at'] ?? 0 ) < self::XAV_RETRY_AFTER ) {
+					return null; // recent failure: don't hammer a struggling carrier
+				}
 			}
 			$r      = $carrier->validate_address( $to );
 			$result = [
@@ -154,6 +164,12 @@ final class OrderPanel {
 			$order->save_meta_data();
 			return $result;
 		} catch ( \Throwable $e ) {
+			if ( isset( $hash ) ) {
+				try {
+					$order->update_meta_data( '_anchor_shipping_xav', [ 'hash' => $hash, 'result' => null, 'failed_at' => time() ] );
+					$order->save_meta_data();
+				} catch ( \Throwable $ignored ) {} // phpcs:ignore
+			}
 			return null;
 		}
 	}

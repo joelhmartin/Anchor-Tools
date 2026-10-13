@@ -18,7 +18,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 class Module {
 
-	public const VERSION = '1.0.0';
+	public const VERSION = '1.1.0';
 
 	public ShipmentRepository $shipments;
 
@@ -31,6 +31,12 @@ class Module {
 	public Services\LabelService $labels;
 
 	public Services\PaidOrderHandler $paid_orders;
+
+	public Services\TrackingPoller $tracking;
+
+	public Services\BulkLabels $bulk;
+
+	public Frontend\ShopManager $console;
 
 	private static ?Module $instance = null;
 
@@ -67,15 +73,27 @@ class Module {
 		$this->packer   = new Packing\Packer();
 		$this->labels   = new Services\LabelService( $this->carriers, $this->shipments, $this->store, $this->packer );
 		$this->paid_orders = new Services\PaidOrderHandler( $this->labels, $this->packer );
+		$this->tracking = new Services\TrackingPoller( $this->carriers, $this->shipments, $this->labels );
 		new Services\VoidOnCancel( $this->labels, $this->shipments );
 		new Checkout\ProtectionFields();
+		\add_filter( 'woocommerce_shipping_methods', [ Checkout\RateMethod::class, 'register' ] ); // dormant until an admin adds it to a zone
+		new Frontend\AccountTracking( new Support\TrackingLinks( $this->shipments, $this->carriers ) );
+		new Emails\CreateLabelBlock( $this->labels );
 		\add_filter( 'woocommerce_email_classes', [ Emails\Registry::class, 'register' ] );
 		\add_filter( 'woocommerce_email_actions', [ Emails\Registry::class, 'actions' ] );
 		if ( \is_admin() ) {
 			new Admin\SettingsPage( $this->carriers );
 			new Admin\ProductFields();
-			new Admin\OrderPanel( $this->shipments, $this->packer, $this->carriers );
-			new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers );
+		}
+		// The panel and its AJAX endpoints also serve the front-end console; the metabox hooks only ever fire in wp-admin.
+		new Admin\OrderPanel( $this->shipments, $this->packer, $this->carriers );
+		new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers );
+		$this->bulk    = new Services\BulkLabels( $this->labels, $this->shipments, $this->store );
+		$this->console = new Frontend\ShopManager( $this->labels, $this->shipments, $this->carriers, $this->packer );
+		new Frontend\ConsoleAjax( $this->bulk );
+		if ( \is_admin() ) {
+			new Admin\OrdersColumn( new Support\TrackingLinks( $this->shipments, $this->carriers ), $this->labels );
+			new Admin\BulkActions( $this->console );
 		}
 	}
 }

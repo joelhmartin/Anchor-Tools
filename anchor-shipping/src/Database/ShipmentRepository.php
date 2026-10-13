@@ -47,4 +47,14 @@ final class ShipmentRepository {
 			throw new \RuntimeException( 'Could not update the shipment record: ' . $wpdb->last_error );
 		}
 	}
+
+	/**
+	 * Rows worth asking the carrier about: still moving, shipped within the last 30 days,
+	 * the longest-unpolled first (never-polled rows lead).
+	 */
+	public function pollable( int $limit ): array {
+		global $wpdb;
+		$cutoff = gmdate( 'Y-m-d H:i:s', time() - 30 * DAY_IN_SECONDS );
+		return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM " . Migrations::table() . " WHERE status NOT IN ('voided','delivered','returned') AND created_at > %s ORDER BY last_polled_at IS NULL DESC, last_polled_at ASC, id ASC LIMIT %d", $cutoff, $limit ), ARRAY_A ) ?: []; // phpcs:ignore
+	}
 }

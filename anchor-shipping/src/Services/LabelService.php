@@ -32,6 +32,11 @@ final class LabelService {
 
 	public const UNRECORDED_META = '_anchor_shipping_unrecorded';
 
+	/** Needs a physical shipment: a shipping address and at least one shipping line. */
+	public function is_shippable( \WC_Order $order ): bool {
+		return $order->needs_shipping_address() && [] !== $order->get_shipping_methods();
+	}
+
 	public function is_labelled( \WC_Order $order ): bool {
 		return [] !== $this->shipments->active_for_order( $order->get_id() )
 			|| '' !== (string) $order->get_meta( self::UNRECORDED_META );
@@ -299,13 +304,40 @@ final class LabelService {
 		if ( $order ) {
 			/* translators: 1: carrier, 2: shipment id */
 			$order->add_order_note( sprintf( \__( '%1$s label voided: %2$s.', 'anchor-schema' ), $carrier->label(), $row['shipment_id'] ) );
-			if ( ! $this->is_labelled( $order ) ) {
-				// Staff voided it themselves, so no email; but a still-paid order has no label now.
-				$order->update_meta_data( self::STATE_META, $order->has_status( 'processing' ) ? 'needs_attention' : '' );
-			}
+			$this->reset_state_after_void( $order ); // staff voided it themselves, so no email
 			$order->save();
 		}
 		\do_action( 'anchor_shipping_label_voided', (int) $row['order_id'], $row['shipment_id'] );
+	}
+
+	/**
+	 * After a void (by staff or the carrier's auto-void): with no active label left a still-paid order
+	 * needs one again; any other order simply has no shipping state. Saves the order.
+	 */
+	public function reset_state_after_void( \WC_Order $order ): void {
+		if ( ! $this->is_labelled( $order ) ) {
+			$order->update_meta_data( self::STATE_META, $order->has_status( 'processing' ) ? 'needs_attention' : '' );
+			$order->save();
+		}
+	}
+
+	/**
+	 * Is the needs_attention flag still something a person must act on? Only while the order is
+	 * open (processing / on-hold) or still carries an active label (e.g. cancelled but the void was
+	 * refused). The one predicate behind the console's Needs label tab and the wp-admin column.
+	 */
+	public function has_live_attention_flag( \WC_Order $order ): bool {
+		return 'needs_attention' === (string) $order->get_meta( self::STATE_META )
+			&& ( $order->has_status( [ 'processing', 'on-hold' ] ) || $this->is_labelled( $order ) );
+	}
+
+	/** Status hook: completed / cancelled / refunded orders with no active label no longer need attention. */
+	public function clear_stale_attention( int $order_id ): void {
+		$order = \wc_get_order( $order_id );
+		if ( $order && 'needs_attention' === (string) $order->get_meta( self::STATE_META ) && ! $this->has_live_attention_flag( $order ) ) {
+			$order->update_meta_data( self::STATE_META, '' );
+			$order->save();
+		}
 	}
 
 	/**

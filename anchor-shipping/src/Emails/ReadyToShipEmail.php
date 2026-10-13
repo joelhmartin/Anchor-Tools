@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Anchor\Shipping\Emails;
 
 use Anchor\Shipping\Module;
+use Anchor\Shipping\Support\Settings;
+use Anchor\Shipping\Support\Urls;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -28,5 +30,16 @@ final class ReadyToShipEmail extends OrderAlertEmail {
 
 	public function get_default_heading(): string {
 		return \__( 'Order #{order_number} is ready to ship', 'anchor-schema' );
+	}
+
+	/** The inbox, minus anyone who already gets the New order email (which carries the Create label button). */
+	public function get_recipient() {
+		$recipient = (string) parent::get_recipient();
+		if ( ! Settings::all()['new_order_button'] ) {
+			return $recipient;
+		}
+		$covered = Urls::new_order_recipients();
+		$keep    = array_filter( array_map( 'trim', explode( ',', $recipient ) ), static fn( string $a ): bool => '' !== $a && ! \in_array( strtolower( $a ), $covered, true ) );
+		return implode( ', ', $keep );
 	}
 }

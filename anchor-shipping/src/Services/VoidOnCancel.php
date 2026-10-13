@@ -7,12 +7,17 @@ use Anchor\Shipping\Database\ShipmentRepository;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
-/** Cancelled or fully refunded → void its labels; if the carrier refuses, tell a person. */
+/** Cancelled or fully refunded → void its labels; if the carrier refuses, tell a person.
+ * Also clears a stale needs_attention flag once an order is completed/cancelled/refunded with no active label. */
 final class VoidOnCancel {
 
 	public function __construct( private LabelService $labels, private ShipmentRepository $shipments ) {
 		\add_action( 'woocommerce_order_status_cancelled', [ $this, 'handle' ], 20, 1 );
 		\add_action( 'woocommerce_order_status_refunded', [ $this, 'handle' ], 20, 1 );
+		// After the void attempt (20): clears the flag unless a refused void left an active label.
+		foreach ( [ 'completed', 'cancelled', 'refunded' ] as $status ) {
+			\add_action( "woocommerce_order_status_{$status}", [ $this->labels, 'clear_stale_attention' ], 30, 1 );
+		}
 	}
 
 	public function handle( int $order_id ): void {

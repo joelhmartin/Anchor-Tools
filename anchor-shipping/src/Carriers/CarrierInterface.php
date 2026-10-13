@@ -19,7 +19,7 @@ interface CarrierInterface {
 
 	public function label(): string;
 
-	/** 'labels' | 'void' | 'track' | 'rates' */
+	/** 'labels' | 'void' | 'track' | 'rates' | 'address_validation' */
 	public function supports( string $feature ): bool;
 
 	/** @return array<string, string> service code => label */
@@ -40,7 +40,7 @@ interface CarrierInterface {
 	/** Phase 3. @return array */
 	public function track( array $tracking_numbers ): array;
 
-	/** Phase 4. @return array */
+	/** Every service the carrier can offer for this shipment, priced. @return \Anchor\Shipping\Domain\RateQuote[] */
 	public function rate( ShipmentRequest $request ): array;
 
 	/** Public tracking page for a number. */

@@ -42,6 +42,20 @@ final class LabelStore {
 		return [ 'path' => $name, 'format' => $is_zpl ? 'ZPL' : 'PDF' ];
 	}
 
+	/** Saves a merged multi-order file (`bulk-<date>-<token>.pdf|zpl`); returns its relative name. */
+	public function save_bulk( string $bytes, string $ext ): string {
+		$ext  = 'zpl' === $ext ? 'zpl' : 'pdf';
+		$name = sprintf( 'bulk-%s-%s.%s', gmdate( 'Ymd-His' ), \wp_generate_password( 32, false ), $ext );
+		if ( false === @file_put_contents( $this->dir() . '/' . $name, $bytes ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			throw new \RuntimeException( 'Could not write the merged label file.' );
+		}
+		return $name;
+	}
+
+	public static function is_bulk_name( string $relative ): bool {
+		return 1 === preg_match( '/^bulk-\d{8}-\d{6}-[A-Za-z0-9]{32}\.(pdf|zpl)$/', $relative );
+	}
+
 	public function absolute( string $relative ): ?string {
 		if ( '' === $relative || basename( $relative ) !== $relative ) {
 			return null;

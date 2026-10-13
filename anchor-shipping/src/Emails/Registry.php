@@ -7,12 +7,13 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 final class Registry {
 
-	public const ACTIONS = [ 'anchor_shipping_label_created', 'anchor_shipping_needs_attention', 'anchor_shipping_problem' ];
+	public const ACTIONS = [ 'anchor_shipping_label_created', 'anchor_shipping_needs_attention', 'anchor_shipping_problem', 'anchor_shipping_first_scan' ];
 
 	public static function register( array $emails ): array {
 		$emails['Anchor_Shipping_Label_Email']         = new LabelEmail();
 		$emails['Anchor_Shipping_Ready_To_Ship_Email'] = new ReadyToShipEmail();
 		$emails['Anchor_Shipping_Problem_Email']       = new ProblemEmail();
+		$emails['Anchor_Shipping_Shipped_Email']       = new ShippedEmail();
 		return $emails;
 	}
 

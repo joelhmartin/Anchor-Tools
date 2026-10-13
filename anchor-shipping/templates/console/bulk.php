@@ -24,6 +24,12 @@ $order_link = static function ( int $id ): string {
 				<?php foreach ( $result['created'] as $id => $row_ids ) : ?><li><?php echo $order_link( (int) $id ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in $order_link ?></li><?php endforeach; ?>
 			</ul>
 		<?php endif; ?>
+		<?php if ( ! empty( $result['individual'] ) ) : ?>
+			<h3><?php \esc_html_e( 'Print individually', 'anchor-schema' ); ?></h3>
+			<ul class="asm-bulk-individual">
+				<?php foreach ( $result['individual'] as $id => $why ) : ?><li><?php echo $order_link( (int) $id ); // phpcs:ignore WordPress.Security.EscapeOutput ?> &mdash; <?php echo \esc_html( $why ); ?></li><?php endforeach; ?>
+			</ul>
+		<?php endif; ?>
 		<?php if ( $result['skipped'] ) : ?>
 			<h3><?php \esc_html_e( 'Skipped', 'anchor-schema' ); ?></h3>
 			<ul class="asm-bulk-skipped">

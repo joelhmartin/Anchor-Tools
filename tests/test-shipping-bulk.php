@@ -23,18 +23,64 @@ class Test_Shipping_Bulk extends Anchor_Shipping_TestCase {
 		return preg_match_all( '#/Type\s*/Page\b(?!s)#', $bytes );
 	}
 
-	public function test_merging_two_fixture_pdfs_gives_two_pages() {
-		$dir   = __DIR__ . '/fixtures/shipping/';
-		$bytes = PdfMerge::merge( [ $dir . 'page-a.pdf', $dir . 'page-b.pdf' ] );
-		$this->assertStringStartsWith( '%PDF', $bytes );
-		$this->assertSame( 2, $this->page_count( $bytes ) );
+	private function label_pdf( int $w, int $h, int $gray ): string {
+		$im = imagecreatetruecolor( $w, $h );
+		imagefill( $im, 0, 0, imagecolorallocate( $im, $gray, $gray, $gray ) );
+		$f = wp_tempnam( 'lbl' );
+		file_put_contents( $f, \Anchor\Shipping\Support\ImagePdf::from_images( [ $im ], 4, 6 ) );
+		return $f;
 	}
 
-	public function test_merge_rejects_a_file_that_is_not_a_pdf() {
-		$f = wp_tempnam( 'notpdf' );
-		file_put_contents( $f, 'hello' );
+	public function test_merging_two_image_pdf_labels_keeps_both_pages_and_images() {
+		$a     = $this->label_pdf( 40, 60, 10 );
+		$b     = $this->label_pdf( 30, 45, 200 );
+		$bytes = PdfMerge::merge( [ $a, $b ] );
+		$this->assertStringStartsWith( '%PDF', $bytes );
+		$this->assertSame( 2, $this->page_count( $bytes ) );
+		$this->assertSame( 2, preg_match_all( '#/Subtype /Image#', $bytes ) );
+		$this->assertStringContainsString( '/Width 40 /Height 60', $bytes );
+		$this->assertStringContainsString( '/Width 30 /Height 45', $bytes );
+		// The merged file is itself mergeable and the pixels survive byte for byte.
+		$m = wp_tempnam( 'm' );
+		file_put_contents( $m, $bytes );
+		$this->assertSame( 3, $this->page_count( PdfMerge::merge( [ $m, $a ] ) ) );
+		preg_match( '#/Width 40 /Height 60[^>]*>>\nstream\n(.*?)\nendstream#s', $bytes, $mm );
+		$this->assertSame( str_repeat( chr( 10 ), 40 * 60 ), gzuncompress( $mm[1] ) );
+	}
+
+	public function test_merge_rejects_a_pdf_that_ImagePdf_did_not_write() {
+		$f = wp_tempnam( 'foreign' );
+		file_put_contents( $f, "%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< >>\n%%EOF\n" );
+		$this->assertFalse( PdfMerge::can_merge( $f ) );
 		$this->expectException( RuntimeException::class );
 		PdfMerge::merge( [ $f ] );
+	}
+
+	public function test_a_label_that_cannot_be_merged_is_reported_as_print_individually() {
+		$this->configure_ups();
+		$ok  = $this->make_order( [], 'processing' );
+		$odd = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		$bulk = $this->bulk();
+		// Make the second order's stored label a foreign PDF right after it is bought.
+		$res = $bulk->create( [ $this->row( $ok ) ] );
+		$this->assertSame( [], $res['individual'] );
+		$store = Module::instance()->store;
+		$row   = Module::instance()->shipments->active_for_order( $odd->get_id() );
+		$this->assertSame( [], $row );
+		$res2 = $bulk->create( [ $this->row( $odd ) ] );
+		$id   = $res2['created'][ $odd->get_id() ][0];
+		$path = $store->absolute( Module::instance()->shipments->find( $id )['label_path'] );
+		file_put_contents( $path, "%PDF-1.7\nforeign\n" );
+		// Re-run the merge step over both orders' rows, as a batch would.
+		$m = new ReflectionMethod( BulkLabels::class, 'merged_file' );
+		$m->setAccessible( true );
+		[ $file, $individual ] = $m->invoke( $bulk, $res['created'] + $res2['created'] );
+		$this->assertNotNull( $file );
+		$this->assertSame( [ $odd->get_id() ], array_keys( $individual ) );
+		$this->assertSame( 1, $this->page_count( (string) file_get_contents( $store->absolute( $file ) ) ) );
 	}
 
 	public function test_mixed_batch_sorts_into_created_skipped_and_failed() {

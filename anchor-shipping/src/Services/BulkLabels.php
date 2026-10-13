@@ -24,11 +24,11 @@ final class BulkLabels {
 
 	/**
 	 * @param array<int, array> $rows each: order_id, box, weight, and length/width/height for a custom box
-	 * @return array{created: array<int,int[]>, skipped: array<int,string>, failed: array<int,string>, pdf: ?string, merge_error: string}
+	 * @return array{created: array<int,int[]>, skipped: array<int,string>, failed: array<int,string>, pdf: ?string, merge_error: string, individual: array<int,string>}
 	 *         `pdf` is the merged file (a .pdf, or a .zpl when the labels are ZPL) relative to the label folder.
 	 */
 	public function create( array $rows ): array {
-		$out = [ 'created' => [], 'skipped' => [], 'failed' => [], 'pdf' => null, 'merge_error' => '' ];
+		$out = [ 'created' => [], 'skipped' => [], 'failed' => [], 'pdf' => null, 'merge_error' => '', 'individual' => [] ];
 		foreach ( $rows as $row ) {
 			$id = (int) ( $row['order_id'] ?? 0 );
 			if ( isset( $out['created'][ $id ] ) || isset( $out['skipped'][ $id ] ) || isset( $out['failed'][ $id ] ) ) {
@@ -53,7 +53,7 @@ final class BulkLabels {
 		}
 		if ( $out['created'] ) {
 			try {
-				$out['pdf'] = $this->merged_file( array_merge( ...array_values( $out['created'] ) ) );
+				[ $out['pdf'], $out['individual'] ] = $this->merged_file( $out['created'] );
 			} catch ( \Throwable $e ) {
 				$out['merge_error'] = $e->getMessage(); // labels exist and print one by one; only the combined file is missing
 			}
@@ -61,26 +61,33 @@ final class BulkLabels {
 		return $out;
 	}
 
-	/** @param int[] $row_ids */
-	private function merged_file( array $row_ids ): ?string {
-		$pdfs = [];
-		$zpl  = '';
-		foreach ( $row_ids as $row_id ) {
-			$row  = $this->shipments->find( $row_id );
-			$path = $row ? $this->store->absolute( (string) $row['label_path'] ) : null;
-			if ( ! $path ) {
-				continue;
-			}
-			if ( 'ZPL' === $row['label_format'] ) {
-				$zpl .= rtrim( (string) file_get_contents( $path ) ) . "\n";
-			} else {
-				$pdfs[] = $path;
+	/**
+	 * @param array<int,int[]> $created order id => shipment row ids
+	 * @return array{0:?string, 1:array<int,string>} merged file name, and orders whose label is not in it (print from the order)
+	 */
+	private function merged_file( array $created ): array {
+		$pdfs       = [];
+		$zpl        = '';
+		$individual = [];
+		foreach ( $created as $order_id => $row_ids ) {
+			foreach ( $row_ids as $row_id ) {
+				$row  = $this->shipments->find( $row_id );
+				$path = $row ? $this->store->absolute( (string) $row['label_path'] ) : null;
+				if ( ! $path ) {
+					$individual[ $order_id ] = \__( 'Label file not available; print it from the order.', 'anchor-schema' );
+				} elseif ( 'ZPL' === $row['label_format'] ) {
+					$zpl .= rtrim( (string) file_get_contents( $path ) ) . "\n";
+				} elseif ( PdfMerge::can_merge( $path ) ) {
+					$pdfs[] = $path;
+				} else {
+					$individual[ $order_id ] = \__( 'Print this label individually; it could not be added to the combined file.', 'anchor-schema' );
+				}
 			}
 		}
 		// One carrier setting drives the format, so a batch is all-PDF or all-ZPL; PDF wins if it ever mixes.
 		if ( $pdfs ) {
-			return $this->store->save_bulk( PdfMerge::merge( $pdfs ), 'pdf' );
+			return [ $this->store->save_bulk( PdfMerge::merge( $pdfs ), 'pdf' ), $individual ];
 		}
-		return '' !== $zpl ? $this->store->save_bulk( $zpl, 'zpl' ) : null;
+		return [ '' !== $zpl ? $this->store->save_bulk( $zpl, 'zpl' ) : null, $individual ];
 	}
 }

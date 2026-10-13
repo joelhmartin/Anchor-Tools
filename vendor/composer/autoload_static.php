@@ -14,10 +14,6 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
     );
 
     public static $prefixLengthsPsr4 = array (
-        's' => 
-        array (
-            'setasign\\Fpdi\\' => 14,
-        ),
         'S' => 
         array (
             'Symfony\\Polyfill\\Php80\\' => 23,
@@ -46,10 +42,6 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
     );
 
     public static $prefixDirsPsr4 = array (
-        'setasign\\Fpdi\\' => 
-        array (
-            0 => __DIR__ . '/..' . '/setasign/fpdi/src',
-        ),
         'Symfony\\Polyfill\\Php80\\' => 
         array (
             0 => __DIR__ . '/..' . '/symfony/polyfill-php80',
@@ -95,7 +87,6 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
     public static $classMap = array (
         'Attribute' => __DIR__ . '/..' . '/symfony/polyfill-php80/Resources/stubs/Attribute.php',
         'Composer\\InstalledVersions' => __DIR__ . '/..' . '/composer/InstalledVersions.php',
-        'FPDF' => __DIR__ . '/..' . '/setasign/fpdf/fpdf.php',
         'PhpToken' => __DIR__ . '/..' . '/symfony/polyfill-php80/Resources/stubs/PhpToken.php',
         'Stringable' => __DIR__ . '/..' . '/symfony/polyfill-php80/Resources/stubs/Stringable.php',
         'UnhandledMatchError' => __DIR__ . '/..' . '/symfony/polyfill-php80/Resources/stubs/UnhandledMatchError.php',

@@ -24,6 +24,18 @@ Usage:
 
 == Changelog ==
 
+= Unreleased =
+
+Shipping (module 1.1.0): UPS tracking with a 2-hourly poller that completes orders on delivery and
+auto-voids unused labels after 10 days. Customers get a "shipped" email on the first carrier scan,
+and tracking shows in My Account. WooCommerce's New order email carries a Create-label button (a
+separate Ready-to-ship email goes only to inbox addresses that do not receive New order). New
+front-end Shop Manager console, shortcode [shop_manager]: order tabs and search, order view with
+label panel, print, mark completed and cancel; a Products tab for price, sale, stock, weight and
+default box; bulk labels merged into one PDF. UPS address validation warns on questionable
+addresses. Live UPS checkout rates are included as a method that is not attached to any shipping
+zone until you add it.
+
 = 3.36.3 =
 
 Events: "Choose any" attendee questions (multi-choice dropdown of checkboxes, with a write-in

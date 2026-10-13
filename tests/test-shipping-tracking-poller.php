@@ -231,6 +231,42 @@ class Test_Shipping_Tracking_Poller extends Anchor_Shipping_TestCase {
 		$this->assertStringContainsString( 'UPS auto-voided (never scanned)', $notes );
 	}
 
+	public function test_auto_void_of_the_last_open_package_completes_the_order() {
+		$o = $this->make_order( [], 'processing' );
+		$a = $this->row( $o->get_id() );
+		$b = $this->row( $o->get_id(), [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 11 * DAY_IN_SECONDS ) ] );
+		$this->say( $a, 'delivered' );
+		$this->say( $b, 'label_created' );
+		$this->carrier->script[ $this->r( $b )['tracking_number'] ] = new TrackingResult( $this->r( $b )['tracking_number'], 'unknown', '', null );
+		// A is delivered while B is still inside its window.
+		global $wpdb;
+		$wpdb->update( \Anchor\Shipping\Database\Migrations::table(), [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 5 * DAY_IN_SECONDS ) ], [ 'id' => $b ] );
+		$this->poller->poll();
+		$this->assertSame( 'processing', wc_get_order( $o->get_id() )->get_status() );
+		$wpdb->update( \Anchor\Shipping\Database\Migrations::table(), [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 11 * DAY_IN_SECONDS ) ], [ 'id' => $b ] );
+		$this->poller->poll();
+		$this->assertSame( 'voided', $this->r( $b )['status'] );
+		$this->assertSame( 'completed', wc_get_order( $o->get_id() )->get_status() );
+	}
+
+	public function test_unknown_result_still_auto_voids_an_old_label_created_row() {
+		$o  = $this->make_order( [], 'processing' );
+		$id = $this->row( $o->get_id(), [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 11 * DAY_IN_SECONDS ) ] );
+		$young = $this->row( $o->get_id() );
+		$this->poller->poll(); // both unknown
+		$this->assertSame( 'voided', $this->r( $id )['status'] );
+		$this->assertSame( 'label_created', $this->r( $young )['status'] );
+	}
+
+	public function test_a_row_voided_mid_run_is_not_overwritten() {
+		$o  = $this->make_order( [], 'processing' );
+		$id = $this->row( $o->get_id() );
+		$this->say( $id, 'in_transit' );
+		Module::instance()->shipments->update( $id, [ 'status' => 'voided' ] );
+		$this->poller->poll(); // pollable() excludes it; simulate the race by re-reading
+		$this->assertSame( 'voided', $this->r( $id )['status'] );
+	}
+
 	public function test_a_carrier_error_does_not_stop_the_others() {
 		$o = $this->make_order( [], 'processing' );
 		$a = $this->row( $o->get_id() );

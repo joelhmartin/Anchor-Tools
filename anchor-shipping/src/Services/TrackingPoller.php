@@ -55,11 +55,19 @@ final class TrackingPoller {
 				$result = $carrier->track( [ $number ] )[ $number ] ?? null;
 			} catch ( \Throwable $e ) {
 				$this->log( sprintf( 'Tracking %s failed: %s', $number, $e->getMessage() ) );
-				$this->shipments->update( $id, [ 'last_polled_at' => $now ] );
+				try {
+					$this->shipments->update( $id, [ 'last_polled_at' => $now ] );
+				} catch ( \Throwable $e2 ) {
+					$this->log( sprintf( 'Could not stamp %s: %s', $number, $e2->getMessage() ) );
+				}
 				continue;
 			}
 			try {
-				if ( $this->apply( $row, $result, $now ) ) {
+				$fresh = $this->shipments->find( $id );
+				if ( ! $fresh || 'voided' === $fresh['status'] ) {
+					continue; // voided (by a person) since the batch was read: leave it alone
+				}
+				if ( $this->apply( $fresh, $result, $now ) ) {
 					$touched[ (int) $row['order_id'] ] = true;
 				}
 			} catch ( \Throwable $e ) {
@@ -78,6 +86,16 @@ final class TrackingPoller {
 	/** @return bool true when the row's status changed */
 	private function apply( array $row, ?TrackingResult $r, string $now ): bool {
 		$id = (int) $row['id'];
+		$never_scanned = 'label_created' === $row['status'] && $this->older_than_void_window( (string) $row['created_at'] ) && ( ! $r || in_array( $r->status, [ 'label_created', 'unknown' ], true ) );
+		if ( $never_scanned ) {
+			$this->shipments->update( $id, [ 'last_polled_at' => $now, 'status' => 'voided', 'voided_at' => $now ] + ( $r && '' !== $r->detail && 'unknown' !== $r->status ? [ 'status_detail' => \mb_substr( $r->detail, 0, 255 ) ] : [] ) );
+			$this->note( (int) $row['order_id'], sprintf(
+				/* translators: %s: tracking number */
+				\__( 'UPS auto-voided (never scanned): %s', 'anchor-schema' ),
+				$row['tracking_number']
+			) );
+			return true; // the order may now be fully delivered
+		}
 		if ( ! $r || 'unknown' === $r->status ) {
 			$this->shipments->update( $id, [ 'last_polled_at' => $now ] );
 			return false;
@@ -86,18 +104,6 @@ final class TrackingPoller {
 		$fields  = [ 'last_polled_at' => $now, 'status_detail' => \mb_substr( $r->detail, 0, 255 ) ];
 		if ( null !== $r->event_at ) {
 			$fields['last_event_at'] = gmdate( 'Y-m-d H:i:s', $r->event_at );
-		}
-
-		if ( 'label_created' === $r->status && $this->older_than_void_window( (string) $row['created_at'] ) ) {
-			$fields['status']    = 'voided';
-			$fields['voided_at'] = $now;
-			$this->shipments->update( $id, $fields );
-			$this->note( (int) $row['order_id'], sprintf(
-				/* translators: %s: tracking number */
-				\__( 'UPS auto-voided (never scanned): %s', 'anchor-schema' ),
-				$row['tracking_number']
-			) );
-			return false;
 		}
 
 		$fields['status'] = $r->status;

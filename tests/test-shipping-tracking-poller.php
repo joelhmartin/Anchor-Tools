@@ -17,6 +17,7 @@ class Anchor_Shipping_Stub_Tracker implements \Anchor\Shipping\Carriers\CarrierI
 	public function create_label( \Anchor\Shipping\Domain\ShipmentRequest $r ): \Anchor\Shipping\Domain\LabelResult { throw new \LogicException(); }
 	public function void_label( string $id ): void {}
 	public function rate( \Anchor\Shipping\Domain\ShipmentRequest $r ): array { return []; }
+	public function validate_address( \Anchor\Shipping\Domain\Address $a ): array { return [ 'valid' => true, 'ambiguous' => false, 'candidates' => [] ]; }
 	public function tracking_url( string $n ): string { return ''; }
 	public function supports( string $feature ): bool {
 		return 'track' === $feature;

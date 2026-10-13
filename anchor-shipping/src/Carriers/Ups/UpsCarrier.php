@@ -28,7 +28,7 @@ final class UpsCarrier implements CarrierInterface {
 	}
 
 	public function supports( string $feature ): bool {
-		return in_array( $feature, [ 'labels', 'void', 'track' ], true );
+		return in_array( $feature, [ 'labels', 'void', 'track', 'address_validation' ], true );
 	}
 
 	public function services(): array {
@@ -198,6 +198,50 @@ final class UpsCarrier implements CarrierInterface {
 				return 'returned';
 		}
 		return 'unknown';
+	}
+
+	public function validate_address( Address $address ): array {
+		$key = [
+			'ConsigneeName'      => substr( '' !== $address->company ? $address->company : $address->name, 0, 35 ),
+			'AddressLine'        => array_values( array_filter( [ $address->line1, $address->line2 ] ) ),
+			'PoliticalDivision2' => $address->city,
+			'PoliticalDivision1' => $address->state,
+			'PostcodePrimaryLow' => $address->postcode,
+			'CountryCode'        => $address->country,
+		];
+		$json = $this->client()->request( 'POST', '/api/addressvalidation/v2/1', [ 'XAVRequest' => [ 'AddressKeyFormat' => $key ] ] );
+		$res  = $json['XAVResponse'] ?? null;
+		if ( ! is_array( $res ) ) {
+			throw new CarrierError( 'parse', \__( 'UPS address validation returned an unreadable answer.', 'anchor-schema' ) );
+		}
+		// UPS signals the outcome with empty-string indicator keys, so test presence, not truthiness.
+		$valid      = array_key_exists( 'ValidAddressIndicator', $res );
+		$ambiguous  = array_key_exists( 'AmbiguousAddressIndicator', $res );
+		$candidates = [];
+		if ( $ambiguous ) {
+			$list = $res['Candidate'] ?? [];
+			$list = is_array( $list ) && isset( $list['AddressKeyFormat'] ) ? [ $list ] : ( is_array( $list ) ? $list : [] );
+			foreach ( $list as $c ) {
+				$k = is_array( $c ) ? ( $c['AddressKeyFormat'] ?? null ) : null;
+				if ( ! is_array( $k ) ) {
+					continue;
+				}
+				$lines        = (array) ( $k['AddressLine'] ?? [] );
+				$ext          = (string) ( $k['PostcodeExtendedLow'] ?? '' );
+				$candidates[] = new Address(
+					$address->name,
+					$address->company,
+					(string) ( $lines[0] ?? '' ),
+					(string) ( $lines[1] ?? '' ),
+					(string) ( $k['PoliticalDivision2'] ?? '' ),
+					(string) ( $k['PoliticalDivision1'] ?? '' ),
+					(string) ( $k['PostcodePrimaryLow'] ?? '' ) . ( '' !== $ext ? '-' . $ext : '' ),
+					(string) ( $k['CountryCode'] ?? $address->country ),
+					$address->phone
+				);
+			}
+		}
+		return [ 'valid' => $valid, 'ambiguous' => $ambiguous, 'candidates' => $candidates ];
 	}
 
 	public function rate( ShipmentRequest $request ): array {

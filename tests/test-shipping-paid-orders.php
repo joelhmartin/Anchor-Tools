@@ -149,6 +149,7 @@ class Test_Shipping_Paid_Orders extends Anchor_Shipping_TestCase {
 			public function void_label( string $shipment_id ): void {}
 			public function track( array $tracking_numbers ): array { return []; }
 			public function rate( \Anchor\Shipping\Domain\ShipmentRequest $request ): array { return []; }
+			public function validate_address( \Anchor\Shipping\Domain\Address $a ): array { return [ 'valid' => true, 'ambiguous' => false, 'candidates' => [] ]; }
 			public function tracking_url( string $tracking_number ): string { return ''; }
 		};
 		$add = static function ( $list ) use ( $boom ) {

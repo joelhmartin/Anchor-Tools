@@ -1,0 +1,37 @@
+{
+  "XAVResponse": {
+    "Response": {
+      "ResponseStatus": {
+        "Code": "1",
+        "Description": "Success"
+      }
+    },
+    "AmbiguousAddressIndicator": "",
+    "Candidate": [
+      {
+        "AddressKeyFormat": {
+          "AddressLine": [
+            "400 N ASHLEY DR"
+          ],
+          "PoliticalDivision2": "TAMPA",
+          "PoliticalDivision1": "FL",
+          "PostcodePrimaryLow": "33602",
+          "PostcodeExtendedLow": "5200",
+          "CountryCode": "US"
+        }
+      },
+      {
+        "AddressKeyFormat": {
+          "AddressLine": [
+            "400 S ASHLEY DR"
+          ],
+          "PoliticalDivision2": "TAMPA",
+          "PoliticalDivision1": "FL",
+          "PostcodePrimaryLow": "33602",
+          "PostcodeExtendedLow": "5301",
+          "CountryCode": "US"
+        }
+      }
+    ]
+  }
+}

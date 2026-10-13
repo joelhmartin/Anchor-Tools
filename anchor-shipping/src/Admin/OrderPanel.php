@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Shipping\Admin;
 
 use Anchor\Shipping\Carriers\CarrierRegistry;
+use Anchor\Shipping\Domain\Address;
 use Anchor\Shipping\Database\ShipmentRepository;
 use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Services\Protection;
@@ -58,6 +59,7 @@ final class OrderPanel {
 		$protection = Protection::for_order( $order, $this->packer->shippable_subtotal( $order ) );
 		$boxes      = Settings::boxes();
 		$unrecorded = (string) $order->get_meta( '_anchor_shipping_unrecorded' );
+		$xav        = $this->address_check( $order );
 
 		ob_start();
 		?>
@@ -83,6 +85,13 @@ final class OrderPanel {
 
 			<?php if ( ! $pack->ok() && '' !== $pack->reason && ! $active ) : ?>
 				<p class="anchor-shipping-note"><?php echo \esc_html( $pack->reason ); ?></p>
+			<?php endif; ?>
+
+			<?php if ( $xav && ! $xav['valid'] ) : ?>
+				<p class="anchor-shipping-note anchor-shipping-address-warning">
+					<?php echo \esc_html( $xav['ambiguous'] ? \__( 'UPS could not confirm this address exactly. Check it before shipping; suggestions:', 'anchor-schema' ) : \__( 'UPS does not recognise this address. Check it before shipping.', 'anchor-schema' ) ); ?>
+					<?php foreach ( $xav['candidates'] as $c ) : ?><br><?php echo \esc_html( $c ); ?><?php endforeach; ?>
+				</p>
 			<?php endif; ?>
 
 			<?php if ( '' !== $unrecorded ) : ?>
@@ -115,5 +124,37 @@ final class OrderPanel {
 		</div>
 		<?php
 		return (string) ob_get_clean();
+	}
+
+	/**
+	 * Cached UPS address check for the order's ship-to, or null when it can't or shouldn't be checked.
+	 * Advisory only: any carrier failure yields null so the panel and Create label are never blocked.
+	 *
+	 * @return array{valid:bool, ambiguous:bool, candidates:string[]}|null
+	 */
+	private function address_check( \WC_Order $order ): ?array {
+		try {
+			$to      = Address::from_order_shipping( $order );
+			$carrier = $this->carriers->get( 'ups' );
+			if ( 'US' !== $to->country || ! $to->is_complete() || ! $carrier || ! $carrier->supports( 'address_validation' ) ) {
+				return null;
+			}
+			$hash   = md5( \wp_json_encode( [ $to->line1, $to->line2, $to->city, $to->state, $to->postcode, $to->country ] ) );
+			$cached = $order->get_meta( '_anchor_shipping_xav' );
+			if ( is_array( $cached ) && ( $cached['hash'] ?? '' ) === $hash ) {
+				return $cached['result'];
+			}
+			$r      = $carrier->validate_address( $to );
+			$result = [
+				'valid'      => (bool) $r['valid'],
+				'ambiguous'  => (bool) $r['ambiguous'],
+				'candidates' => array_map( static fn( Address $c ): string => trim( $c->line1 . ' ' . $c->line2 . ', ' . $c->city . ', ' . $c->state . ' ' . $c->postcode, ' ,' ), $r['candidates'] ),
+			];
+			$order->update_meta_data( '_anchor_shipping_xav', [ 'hash' => $hash, 'result' => $result ] );
+			$order->save_meta_data();
+			return $result;
+		} catch ( \Throwable $e ) {
+			return null;
+		}
 	}
 }

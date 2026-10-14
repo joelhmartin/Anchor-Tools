@@ -3,10 +3,15 @@
 	var cfg = window.anchorShipping || {};
 	var txt = window.anchorShippingConsole || {};
 
-	$(document).on('click', '.asm-print-btn', function () {
-		var frame = $(this).closest('.asm-label').find('.asm-label-frame')[0];
-		try { frame.contentWindow.focus(); frame.contentWindow.print(); }
-		catch (e) { window.open($(this).siblings('.asm-print').attr('href'), '_blank'); }
+	// The label row's Print link prints the preview frame in place when the frame shows that same
+	// label; otherwise (ZPL, an older label, a blocked frame) the link opens the file as usual.
+	$(document).on('click', '.asm-label .anchor-shipping-print', function (e) {
+		var frame = $(this).closest('.asm-label').find('.asm-label-frame').filter(function () {
+			return this.getAttribute('data-label-url') === e.currentTarget.getAttribute('href');
+		})[0];
+		if (!frame) { return; }
+		try { frame.contentWindow.focus(); frame.contentWindow.print(); e.preventDefault(); }
+		catch (err) { /* cross-origin or not loaded: fall through to opening the link */ }
 	});
 
 	$(document).on('click', '.asm-status-btn', function () {

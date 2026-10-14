@@ -10,6 +10,7 @@ use Anchor\Shipping\Database\ShipmentRepository;
 use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Services\Protection;
 use Anchor\Shipping\Support\Settings;
+use Anchor\Shipping\Support\TrackingLinks;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -42,7 +43,7 @@ final class OrderPanel {
 
 	/** Styles + script + the `anchorShipping` object the panel's JS needs; callable from wp-admin and the front-end console. */
 	public static function enqueue(): void {
-		\wp_enqueue_style( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.css', [], '1.0.1' );
+		\wp_enqueue_style( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.css', [], '1.0.2' );
 		\wp_enqueue_script( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.js', [ 'jquery' ], '1.0.2', true );
 		\wp_localize_script( 'anchor-shipping-admin', 'anchorShipping', [ 'ajax' => \admin_url( 'admin-ajax.php' ), 'nonce' => \wp_create_nonce( Ajax::NONCE ), 'confirmVoid' => \__( 'Click again to void', 'anchor-schema' ) ] );
 	}
@@ -90,12 +91,12 @@ final class OrderPanel {
 				?>
 				<div class="anchor-shipping-row<?php echo $voided ? ' is-voided' : ''; ?>">
 					<strong><?php echo \esc_html( $r['tracking_number'] ); ?></strong>
-					<span class="anchor-shipping-meta"><?php echo \esc_html( trim( ( $carrier ? $carrier->label() : $r['carrier'] ) . ' · ' . $r['status'] . ( (float) $r['declared_value'] > 0 ? ' · insured' : '' ) . ( '1' === (string) $r['signature'] ? ' · signature' : '' ) ) ); ?></span>
+					<span class="anchor-shipping-meta"><?php echo \esc_html( trim( ( $carrier ? $carrier->label() : $r['carrier'] ) . ' · ' . ( TrackingLinks::status_label( (string) $r['status'] ) ?: $r['status'] ) . ( (float) $r['declared_value'] > 0 ? ' · insured' : '' ) . ( '1' === (string) $r['signature'] ? ' · signature' : '' ) ) ); ?></span>
 					<?php if ( ! $voided ) : ?>
 						<?php if ( '' === (string) $r['label_path'] ) : ?>
 							<em class="anchor-shipping-meta"><?php \esc_html_e( 'Label file missing', 'anchor-schema' ); ?></em>
 						<?php else : ?>
-							<a class="button button-small" target="_blank" href="<?php echo \esc_url( Ajax::download_url( (int) $r['id'] ) ); ?>"><?php \esc_html_e( 'Print', 'anchor-schema' ); ?></a>
+							<a class="button button-small anchor-shipping-print" target="_blank" href="<?php echo \esc_url( Ajax::download_url( (int) $r['id'] ) ); ?>"><?php \esc_html_e( 'Print', 'anchor-schema' ); ?></a>
 						<?php endif; ?>
 						<?php if ( $carrier ) : ?><a class="button button-small" target="_blank" rel="noopener" href="<?php echo \esc_url( $carrier->tracking_url( $r['tracking_number'] ) ); ?>"><?php \esc_html_e( 'Track', 'anchor-schema' ); ?></a><?php endif; ?>
 						<button type="button" class="button button-small anchor-shipping-void" data-id="<?php echo (int) $r['id']; ?>"><?php \esc_html_e( 'Void', 'anchor-schema' ); ?></button>
@@ -118,13 +119,18 @@ final class OrderPanel {
 				<p class="anchor-shipping-note"><?php echo \esc_html( sprintf( /* translators: %s: UPS shipment identifier */ \__( 'UPS shipment %s was created but not recorded here. Void it at ups.com before creating another label.', 'anchor-schema' ), $unrecorded ) ); ?></p>
 			<?php endif; ?>
 
+			<?php
+			// Once a label exists the form is only for an extra parcel, so it folds away behind a
+			// toggle and always posts additional=1 instead of asking for a checkbox.
+			if ( $active ) :
+				?>
+			<details class="anchor-shipping-more"><summary><?php \esc_html_e( 'Create another label (additional package)', 'anchor-schema' ); ?></summary>
+			<?php endif; ?>
 			<div class="anchor-shipping-create">
 				<?php if ( '' !== $unrecorded ) : ?>
 					<p><label><input type="checkbox" name="unrecorded_voided" value="<?php echo \esc_attr( $unrecorded ); ?>" required> <?php echo \esc_html( sprintf( /* translators: %s: UPS shipment identifier */ \__( 'UPS shipment %s has been voided at ups.com', 'anchor-schema' ), $unrecorded ) ); ?></label></p>
 				<?php endif; ?>
-				<?php if ( $active ) : ?>
-					<label><input type="checkbox" name="additional" value="1"> <?php \esc_html_e( 'Additional package', 'anchor-schema' ); ?></label>
-				<?php endif; ?>
+				<?php if ( $active ) : ?><input type="hidden" name="additional" value="1"><?php endif; ?>
 				<p><select name="carrier"><?php foreach ( $this->carriers->all() as $id => $c ) : if ( ! $c->supports( 'labels' ) ) { continue; } ?><option value="<?php echo \esc_attr( $id ); ?>" <?php \selected( $s['default_carrier'], $id ); ?>><?php echo \esc_html( $c->label() ); ?></option><?php endforeach; ?></select>
 				<select name="service"><?php foreach ( ( $this->carriers->get( $s['default_carrier'] ) ?? $this->carriers->get( 'ups' ) )->services() as $code => $label ) : ?><option value="<?php echo \esc_attr( (string) $code ); ?>" <?php \selected( $s['default_service'], (string) $code ); ?>><?php echo \esc_html( $label ); ?></option><?php endforeach; ?></select></p>
 				<p><select name="box">
@@ -144,8 +150,10 @@ final class OrderPanel {
 					<?php endforeach; ?>
 				</p>
 				<p><button type="button" class="button button-primary anchor-shipping-submit"><?php \esc_html_e( 'Create label', 'anchor-schema' ); ?></button></p>
-				<p class="anchor-shipping-error" role="alert"></p>
 			</div>
+			<?php if ( $active ) : ?></details><?php endif; ?>
+			<?php // Outside the toggle: void errors land here too and must not hide in a closed <details>. ?>
+			<p class="anchor-shipping-error" role="alert"></p>
 		</div>
 		<?php
 		return (string) ob_get_clean();

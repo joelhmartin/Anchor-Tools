@@ -98,8 +98,8 @@ final class ShopManager {
 
 	public static function enqueue(): void {
 		OrderPanel::enqueue();
-		\wp_enqueue_style( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.css', [ 'anchor-shipping-admin' ], '1.0.0' );
-		\wp_enqueue_script( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.js', [ 'jquery', 'anchor-shipping-admin' ], '1.0.1', true );
+		\wp_enqueue_style( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.css', [ 'anchor-shipping-admin' ], '1.0.1' );
+		\wp_enqueue_script( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.js', [ 'jquery', 'anchor-shipping-admin' ], '1.0.2', true );
 		\wp_localize_script( 'anchor-shipping-console', 'anchorShippingConsole', [
 			'confirmCancel' => \__( 'Click again to cancel + void labels', 'anchor-schema' ),
 			'confirmDone'   => \__( 'Click again to complete', 'anchor-schema' ),
@@ -306,7 +306,6 @@ final class ShopManager {
 			'order'     => $order,
 			'back'      => $this->url(),
 			'state'     => self::state_label( (string) $order->get_meta( LabelService::STATE_META ) ),
-			'tracking'  => $this->tracking->for_order( $id ),
 			'notes'     => \wc_get_order_notes( [ 'order_id' => $id ] ),
 			'panel'     => $panel->render_panel( $order ),
 			'label_url' => $latest ? Ajax::download_url( (int) $latest['id'] ) : '',

@@ -51,6 +51,7 @@ final class TrackingLinks {
 			'delivered'        => \__( 'Delivered', 'anchor-schema' ),
 			'exception'        => \__( 'Delivery exception', 'anchor-schema' ),
 			'returned'         => \__( 'Returned', 'anchor-schema' ),
+			'voided'           => \__( 'Voided', 'anchor-schema' ),
 		];
 		return $labels[ $status ] ?? '';
 	}

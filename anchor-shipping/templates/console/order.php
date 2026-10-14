@@ -1,6 +1,9 @@
 <?php
 /**
- * Console order view. Vars: $order, $back, $state, $tracking, $notes, $panel, $label_url, $label_pdf, $can_complete, $can_cancel.
+ * Console order view. Vars: $order, $back, $state, $notes, $panel, $label_url, $label_pdf, $can_complete, $can_cancel.
+ *
+ * Two independent columns (.asm-order-main / .asm-order-side) so a tall label preview never
+ * pushes the notes down. Tracking lives in the label panel's rows, not a separate card.
  *
  * @package Anchor\Shipping
  */
@@ -27,6 +30,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 		</p>
 	</header>
 
+	<div class="asm-order-main">
 	<section class="asm-ship-to">
 		<h3><?php \esc_html_e( 'Ship to', 'anchor-schema' ); ?></h3>
 		<address><?php echo wp_kses_post( $order->get_formatted_shipping_address( \esc_html__( 'No shipping address', 'anchor-schema' ) ) ); ?></address>
@@ -50,32 +54,14 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 					</tr>
 				<?php endforeach; ?>
 			</tbody>
-			<tfoot><tr><th scope="row" colspan="2"><?php \esc_html_e( 'Order total', 'anchor-schema' ); ?></th><td><?php echo wp_kses_post( $order->get_formatted_order_total() ); ?></td></tr></tfoot>
+			<tfoot>
+				<?php // Woo's own breakdown (subtotal, discount, shipping, fees such as insurance/signature, payment method, total). ?>
+				<?php foreach ( $order->get_order_item_totals() as $key => $row ) : ?>
+					<tr class="asm-total asm-total-<?php echo \esc_attr( $key ); ?>"><th scope="row" colspan="2"><?php echo \esc_html( rtrim( \wp_strip_all_tags( $row['label'] ), ':' ) ); ?></th><td><?php echo wp_kses_post( $row['value'] ); ?></td></tr>
+				<?php endforeach; ?>
+			</tfoot>
 		</table>
 	</section>
-
-	<section class="asm-label">
-		<h3><?php \esc_html_e( 'Shipping label', 'anchor-schema' ); ?></h3>
-		<?php echo $panel; // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in OrderPanel::render_panel() ?>
-		<?php if ( '' !== $label_url ) : ?>
-			<p>
-				<?php if ( $label_pdf ) : ?><button type="button" class="asm-print-btn"><?php \esc_html_e( 'Print label', 'anchor-schema' ); ?></button><?php endif; ?>
-				<a class="asm-print" target="_blank" href="<?php echo \esc_url( $label_url ); ?>"><?php \esc_html_e( 'Open latest label', 'anchor-schema' ); ?></a>
-			</p>
-			<?php if ( $label_pdf ) : ?><iframe class="asm-label-frame" title="<?php \esc_attr_e( 'Latest shipping label', 'anchor-schema' ); ?>" src="<?php echo \esc_url( $label_url ); ?>" loading="lazy"></iframe><?php endif; ?>
-		<?php endif; ?>
-	</section>
-
-	<?php if ( $tracking ) : ?>
-		<section class="asm-tracking">
-			<h3><?php \esc_html_e( 'Tracking', 'anchor-schema' ); ?></h3>
-			<ul>
-				<?php foreach ( $tracking as $t ) : ?>
-					<li><?php echo \esc_html( $t['carrier'] ); ?> <?php echo '' !== $t['url'] ? '<a href="' . \esc_url( $t['url'] ) . '" target="_blank" rel="noopener">' . \esc_html( $t['number'] ) . '</a>' : \esc_html( $t['number'] ); ?><?php echo '' !== $t['status'] ? ' &mdash; ' . \esc_html( $t['status'] ) : ''; ?></li>
-				<?php endforeach; ?>
-			</ul>
-		</section>
-	<?php endif; ?>
 
 	<section class="asm-notes">
 		<h3><?php \esc_html_e( 'Order notes', 'anchor-schema' ); ?></h3>
@@ -89,4 +75,16 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 			</ul>
 		<?php endif; ?>
 	</section>
+	</div>
+
+	<div class="asm-order-side">
+	<section class="asm-label">
+		<h3><?php \esc_html_e( 'Shipping label', 'anchor-schema' ); ?></h3>
+		<?php echo $panel; // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in OrderPanel::render_panel() ?>
+		<?php if ( '' !== $label_url && $label_pdf ) : ?>
+			<?php // Preview only: the panel's Print button prints this frame (console.js). The fragment hides the browser's PDF toolbar. ?>
+			<iframe class="asm-label-frame" title="<?php \esc_attr_e( 'Latest shipping label', 'anchor-schema' ); ?>" src="<?php echo \esc_url( $label_url ); ?>#toolbar=0&amp;navpanes=0&amp;scrollbar=0&amp;view=Fit" data-label-url="<?php echo \esc_url( $label_url ); ?>" loading="lazy"></iframe>
+		<?php endif; ?>
+	</section>
+	</div>
 </article>

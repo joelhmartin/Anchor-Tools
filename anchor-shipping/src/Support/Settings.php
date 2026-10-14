@@ -29,7 +29,7 @@ final class Settings {
 			'ship_from'       => [ 'name' => '', 'company' => '', 'phone' => '', 'line1' => '', 'line2' => '', 'city' => '', 'state' => '', 'postcode' => '', 'country' => '' ],
 			'boxes'           => [],
 			'carriers'        => [ 'ups' => [ 'environment' => 'sandbox', 'client_id' => '', 'client_secret' => '', 'account' => '' ] ],
-			'insurance'       => [ 'mode' => 'off', 'threshold' => 100.0, 'fee_per_100' => '' ],
+			'insurance'       => [ 'mode' => 'off', 'threshold' => 100.0, 'fee_per_100' => '', 'fee_to_300' => '' ],
 			'signature'       => [ 'mode' => 'off', 'threshold' => 0.0, 'fee' => '' ],
 		];
 	}

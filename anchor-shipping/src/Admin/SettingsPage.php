@@ -71,6 +71,7 @@ final class SettingsPage {
 		$out['insurance']['mode']        = in_array( $post['insurance']['mode'] ?? '', self::MODES, true ) ? $post['insurance']['mode'] : 'off';
 		$out['insurance']['threshold']   = $num( $post['insurance']['threshold'] ?? $current['insurance']['threshold'] );
 		$out['insurance']['fee_per_100'] = '' === ( $post['insurance']['fee_per_100'] ?? '' ) ? '' : (string) $num( $post['insurance']['fee_per_100'] );
+		$out['insurance']['fee_to_300']  = '' === ( $post['insurance']['fee_to_300'] ?? '' ) ? '' : (string) $num( $post['insurance']['fee_to_300'] );
 		$out['signature']['mode']        = in_array( $post['signature']['mode'] ?? '', self::MODES, true ) ? $post['signature']['mode'] : 'off';
 		$out['signature']['threshold']   = $num( $post['signature']['threshold'] ?? $current['signature']['threshold'] );
 		$out['signature']['fee']         = '' === ( $post['signature']['fee'] ?? '' ) ? '' : (string) $num( $post['signature']['fee'] );
@@ -197,7 +198,9 @@ final class SettingsPage {
 					<tr><th><?php \esc_html_e( 'Insurance (declared value)', 'anchor-schema' ); ?></th><td>
 						<select name="<?php echo \esc_attr( $name( '[insurance][mode]' ) ); ?>"><?php foreach ( $modes as $k => $l ) : ?><option value="<?php echo \esc_attr( $k ); ?>" <?php \selected( $s['insurance']['mode'], $k ); ?>><?php echo \esc_html( $l ); ?></option><?php endforeach; ?></select>
 						<p><label><?php \esc_html_e( 'Automatic above order value', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][threshold]' ) ); ?>" value="<?php echo \esc_attr( (string) $s['insurance']['threshold'] ); ?>"></label></p>
-						<p><label><?php \esc_html_e( 'Customer fee per $100 over $100', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][fee_per_100]' ) ); ?>" value="<?php echo \esc_attr( (string) $s['insurance']['fee_per_100'] ); ?>"></label></p>
+						<p><label><?php \esc_html_e( 'Customer fee for values $100.01–$300 (flat)', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][fee_to_300]' ) ); ?>" value="<?php echo \esc_attr( (string) ( $s['insurance']['fee_to_300'] ?? '' ) ); ?>"></label></p>
+						<p><label><?php \esc_html_e( 'Customer fee per $100 of the full value, above $300', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][fee_per_100]' ) ); ?>" value="<?php echo \esc_attr( (string) $s['insurance']['fee_per_100'] ); ?>"></label></p>
+						<p class="description"><?php \esc_html_e( 'Same shape as UPS declared value: the first $100 is covered free, one flat charge up to $300, then per started $100 of the whole value. Insurance is offered at checkout only once the per-$100 fee is set (it prices every value above $300, and values up to $300 too when the flat fee is blank).', 'anchor-schema' ); ?></p>
 					</td></tr>
 					<tr><th><?php \esc_html_e( 'Signature required', 'anchor-schema' ); ?></th><td>
 						<select name="<?php echo \esc_attr( $name( '[signature][mode]' ) ); ?>"><?php foreach ( $modes as $k => $l ) : ?><option value="<?php echo \esc_attr( $k ); ?>" <?php \selected( $s['signature']['mode'], $k ); ?>><?php echo \esc_html( $l ); ?></option><?php endforeach; ?></select>

@@ -8,6 +8,7 @@ use Anchor\Shipping\Database\ShipmentRepository;
 use Anchor\Shipping\Domain\CarrierError;
 use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Services\LabelService;
+use Anchor\Shipping\Services\Protection;
 use Anchor\Shipping\Services\LabelStore;
 use Anchor\Shipping\Support\ParcelFactory;
 
@@ -94,20 +95,21 @@ final class Ajax {
 		$parcel = ParcelFactory::from_row( $post );
 
 		$subtotal = $this->packer->shippable_subtotal( $order );
+		$opts     = [
+			'carrier'        => \sanitize_key( (string) ( $post['carrier'] ?? '' ) ) ?: null,
+			'service'        => \sanitize_text_field( (string) ( $post['service'] ?? '' ) ) ?: null,
+			'additional'     => ! empty( $post['additional'] ),
+			'unrecorded_voided' => \sanitize_text_field( (string) ( $post['unrecorded_voided'] ?? '' ) ),
+		];
+		// A locked option is the order's (customer-chosen at checkout, or the auto rule): never what was posted.
+		if ( ! Protection::locked( 'insurance', $order ) ) {
+			$opts['declared_value'] = ! empty( $post['insure'] ) ? $subtotal : 0.0;
+		}
+		if ( ! Protection::locked( 'signature', $order ) ) {
+			$opts['signature'] = ! empty( $post['signature'] );
+		}
 		try {
-			$this->labels->create_for_order(
-				$order,
-				[ $parcel ],
-				'manual',
-				[
-					'carrier'        => \sanitize_key( (string) ( $post['carrier'] ?? '' ) ) ?: null,
-					'service'        => \sanitize_text_field( (string) ( $post['service'] ?? '' ) ) ?: null,
-					'additional'     => ! empty( $post['additional'] ),
-					'unrecorded_voided' => \sanitize_text_field( (string) ( $post['unrecorded_voided'] ?? '' ) ),
-					'declared_value' => ! empty( $post['insure'] ) ? $subtotal : 0.0,
-					'signature'      => ! empty( $post['signature'] ),
-				]
-			);
+			$this->labels->create_for_order( $order, [ $parcel ], 'manual', $opts );
 		} catch ( \RuntimeException | \LogicException $e ) {
 			throw new \RuntimeException( $e->getMessage() );
 		}

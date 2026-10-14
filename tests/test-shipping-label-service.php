@@ -243,11 +243,21 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 	public function test_insurance_fee_rule() {
 		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '1.25' ] ] );
 		$this->assertSame( 0.0, Protection::insurance_fee( 100.0 ) );
-		$this->assertSame( 1.25, Protection::insurance_fee( 100.01 ) );
-		$this->assertSame( 5.0, Protection::insurance_fee( 450.0 ) );
+		$this->assertSame( 2.5, Protection::insurance_fee( 100.01 ) ); // no flat fee set: per started $100 of the whole value
+		$this->assertSame( 6.25, Protection::insurance_fee( 450.0 ) );
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '0.95', 'fee_to_300' => '2.85' ] ] );
+		$this->assertSame( 0.0, Protection::insurance_fee( 100.0 ) );
+		$this->assertSame( 2.85, Protection::insurance_fee( 150.0 ) );
+		$this->assertSame( 2.85, Protection::insurance_fee( 300.0 ) );
+		$this->assertSame( 3.8, Protection::insurance_fee( 301.0 ) );   // UPS rated DEKA's account at these exact figures
+		$this->assertSame( 7.6, Protection::insurance_fee( 795.0 ) );
+		$this->assertSame( 10.45, Protection::insurance_fee( 1050.0 ) );
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '1.25', 'fee_to_300' => '' ] ] );
 		$this->assertTrue( Protection::offered( 'insurance' ) );
 		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '' ] ] );
 		$this->assertFalse( Protection::offered( 'insurance' ), 'hidden until a fee is set' );
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '', 'fee_to_300' => '2.85' ] ] );
+		$this->assertFalse( Protection::offered( 'insurance' ), 'a flat fee alone would leave values over $300 free' );
 	}
 
 	public function test_explicit_protection_opts_override_and_reach_the_carrier() {

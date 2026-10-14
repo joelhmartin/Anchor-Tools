@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.37.6
+Stable tag: 3.37.7
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.37.7 =
+* Shipping: Shop Manager can refund a paid order in full through its payment gateway (money back, items restocked, labels voided); on paid orders Cancel reads "Cancel without refund".
 
 = 3.37.6 =
 * Shipping: Shop Manager order view tidied — two independent columns, readable label status, the create form folds behind "Create another label" once a label exists, one Print button (prints the preview in place), 4x6 label preview without browser PDF chrome, full totals breakdown.

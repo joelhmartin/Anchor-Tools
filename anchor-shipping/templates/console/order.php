@@ -1,6 +1,6 @@
 <?php
 /**
- * Console order view. Vars: $order, $back, $state, $notes, $panel, $label_url, $label_pdf, $can_complete, $can_cancel.
+ * Console order view. Vars: $order, $back, $state, $notes, $panel, $label_url, $label_pdf, $can_complete, $can_cancel, $refundable, $paid.
  *
  * Two independent columns (.asm-order-main / .asm-order-side) so a tall label preview never
  * pushes the notes down. Tracking lives in the label panel's rows, not a separate card.
@@ -25,7 +25,12 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 		<p class="asm-admin-link"><a href="<?php echo \esc_url( $order->get_edit_order_url() ); ?>"><?php \esc_html_e( 'Open in WordPress admin', 'anchor-schema' ); ?></a></p>
 		<p class="asm-actions" data-order="<?php echo (int) $order->get_id(); ?>" data-status="<?php echo \esc_attr( $order->get_status() ); ?>">
 			<?php if ( $can_complete ) : ?><button type="button" class="asm-status-btn" data-to="completed"><?php \esc_html_e( 'Mark completed', 'anchor-schema' ); ?></button><?php endif; ?>
-			<?php if ( $can_cancel ) : ?><button type="button" class="asm-status-btn asm-danger" data-to="cancelled"><?php \esc_html_e( 'Cancel order', 'anchor-schema' ); ?></button><?php endif; ?>
+			<?php if ( $refundable > 0 ) :
+				$amount = \wp_strip_all_tags( \wc_price( $refundable, [ 'currency' => $order->get_currency() ] ) );
+				?>
+				<button type="button" class="asm-status-btn asm-refund" data-to="refunded" data-confirm="<?php echo \esc_attr( sprintf( /* translators: %s: amount */ \__( 'Click again to refund %s', 'anchor-schema' ), \html_entity_decode( $amount ) ) ); ?>"><?php echo \esc_html( sprintf( /* translators: %s: amount */ \__( 'Refund %s', 'anchor-schema' ), \html_entity_decode( $amount ) ) ); ?></button>
+			<?php endif; ?>
+			<?php if ( $can_cancel ) : ?><button type="button" class="asm-status-btn asm-danger" data-to="cancelled"<?php echo $paid ? ' data-paid="1"' : ''; ?>><?php echo \esc_html( $paid ? \__( 'Cancel without refund', 'anchor-schema' ) : \__( 'Cancel order', 'anchor-schema' ) ); ?></button><?php endif; ?>
 			<span class="asm-status-error" role="alert"></span>
 		</p>
 	</header>

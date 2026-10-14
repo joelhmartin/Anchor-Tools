@@ -22,7 +22,8 @@
 	$(document).on('click', '.asm-status-btn', function () {
 		var $btn = $(this), $box = $btn.closest('.asm-actions'), to = $btn.data('to');
 		if ($box.hasClass('is-busy')) { return; }
-		var msg = to === 'cancelled' ? txt.confirmCancel : ($box.data('status') === 'on-hold' ? txt.confirmDoneOnHold : txt.confirmDone);
+		var msg = $btn.data('confirm') ||
+			(to === 'cancelled' ? ($btn.data('paid') ? txt.confirmCancelPaid : txt.confirmCancel) : ($box.data('status') === 'on-hold' ? txt.confirmDoneOnHold : txt.confirmDone));
 		if (!window.anchorShippingArm($btn, msg)) { return; }
 		$box.addClass('is-busy').find('.asm-status-error').text('');
 		$.post(cfg.ajax, { action: 'anchor_shipping_console_status', nonce: cfg.nonce, order_id: $box.data('order'), to: to })

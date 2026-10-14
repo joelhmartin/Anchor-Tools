@@ -56,8 +56,9 @@ final class Settings {
 
 	/** Records the first time the module runs as the label cutoff, so an existing store's order history is not all "Needs label". */
 	public static function ensure_labels_since(): void {
-		if ( '' !== (string) self::all()['labels_since'] ) {
-			return;
+		$stored = \get_option( self::OPTION, [] );
+		if ( \wp_doing_ajax() || ( is_array( $stored ) && array_key_exists( 'labels_since', $stored ) ) ) {
+			return; // already established, including deliberately blank (= no cutoff)
 		}
 		$s                 = self::all();
 		$s['labels_since'] = \gmdate( 'Y-m-d H:i:s' );

@@ -91,7 +91,9 @@ class Test_Shipping_Labels_Since extends Anchor_Shipping_TestCase {
 	}
 
 	public function test_first_run_records_the_cutoff_once() {
-		$this->cutoff( '' );
+		$s = Settings::all();
+		unset( $s['labels_since'] );
+		Settings::save( $s ); // never established
 		Settings::ensure_labels_since();
 		$first = Settings::all()['labels_since'];
 		$this->assertMatchesRegularExpression( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $first );
@@ -110,5 +112,28 @@ class Test_Shipping_Labels_Since extends Anchor_Shipping_TestCase {
 		$this->assertSame( '', $page->sanitize( [ 'labels_since' => '' ], $current )['labels_since'] );
 		$this->assertSame( '2026-10-13 21:28:00', $page->sanitize( [ 'labels_since' => 'nonsense' ], $current )['labels_since'] );
 		$this->assertSame( '2026-10-13 21:28:00', $page->sanitize( [], $current )['labels_since'] );
+	}
+
+	public function test_a_deliberately_blank_cutoff_is_not_restamped() {
+		$this->cutoff( '' );
+		Settings::ensure_labels_since();
+		$this->assertSame( '', Settings::all()['labels_since'] );
+	}
+
+	public function test_paid_order_automation_skips_older_orders() {
+		$this->cutoff( '2026-10-13 21:28:00' );
+		$handler = Module::instance()->paid_orders;
+		$this->assertFalse( $handler->eligible( $this->order_at( '2026-10-12 15:00:00' ) ) );
+		$this->assertTrue( $handler->eligible( $this->order_at( '2026-10-14 15:00:00' ) ) );
+	}
+
+	public function test_older_order_with_an_unrecorded_shipment_keeps_the_full_panel() {
+		$this->cutoff( '2026-10-13 21:28:00' );
+		$old = $this->order_at( '2026-10-12 15:00:00' );
+		$old->update_meta_data( '_anchor_shipping_unrecorded', 'SHIPX' );
+		$old->save();
+		$html = $this->panel()->render_panel( $old );
+		$this->assertStringNotContainsString( 'anchor-shipping-predates', $html );
+		$this->assertStringContainsString( 'SHIPX', $html );
 	}
 }

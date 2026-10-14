@@ -70,7 +70,7 @@ final class OrderPanel {
 
 	public function render_panel( \WC_Order $order ): string {
 		$rows       = $this->shipments->for_order( $order->get_id() );
-		if ( ! $rows && Settings::order_predates_labels( $order ) && empty( $_GET[ self::OPEN_ARG ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display toggle only
+		if ( ! $rows && '' === (string) $order->get_meta( '_anchor_shipping_unrecorded' ) && Settings::order_predates_labels( $order ) && empty( $_GET[ self::OPEN_ARG ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display toggle only
 			return $this->render_predates_note( $order );
 		}
 		$active     = array_filter( $rows, static fn( $r ) => 'voided' !== $r['status'] );

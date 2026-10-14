@@ -264,7 +264,7 @@ final class ShopManager {
 		return [ array_map( 'intval', (array) $res->orders ), (int) $res->max_num_pages ];
 	}
 
-	/** Tab membership. Needs label = a live needs_attention flag (see LabelService::has_live_attention_flag), OR processing + shippable + no active label. */
+	/** Tab membership. Needs label = a live needs_attention flag (see LabelService::has_live_attention_flag), OR LabelService::awaits_label(). */
 	private function in_tab( int $id, string $tab ): bool {
 		$order = \wc_get_order( $id );
 		if ( ! $order instanceof \WC_Order || in_array( $order->get_status(), [ 'trash', 'auto-draft' ], true ) ) {
@@ -278,7 +278,7 @@ final class ShopManager {
 			return $tab === $state;
 		}
 		return $this->labels->has_live_attention_flag( $order )
-			|| ( $order->has_status( 'processing' ) && ! in_array( $state, self::STATE_TABS, true ) && $this->labels->is_shippable( $order ) && ! $this->labels->is_labelled( $order ) );
+			|| ( ! in_array( $state, self::STATE_TABS, true ) && $this->labels->awaits_label( $order ) );
 	}
 
 	/** @return array{0:int[],1:int} */

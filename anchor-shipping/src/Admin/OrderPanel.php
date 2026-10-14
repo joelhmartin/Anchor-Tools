@@ -47,6 +47,16 @@ final class OrderPanel {
 		\wp_localize_script( 'anchor-shipping-admin', 'anchorShipping', [ 'ajax' => \admin_url( 'admin-ajax.php' ), 'nonce' => \wp_create_nonce( Ajax::NONCE ), 'confirmVoid' => \__( 'Void this label? It cannot be used afterwards.', 'anchor-schema' ) ] );
 	}
 
+	/** Short note in place of the label form; the link reloads the page with the full panel. */
+	private function render_predates_note( \WC_Order $order ): string {
+		$date = \wp_date( (string) \get_option( 'date_format' ), Settings::labels_since() );
+		$url  = \add_query_arg( self::OPEN_ARG, '1' );
+		return '<div class="anchor-shipping-panel anchor-shipping-predates" data-order="' . (int) $order->get_id() . '">'
+			. '<p class="anchor-shipping-note">' . \esc_html( sprintf( /* translators: %s: date label printing started */ \__( 'Placed before label printing started on %s, so it was most likely shipped another way.', 'anchor-schema' ), $date ) ) . '</p>'
+			. '<p><a class="anchor-shipping-open" href="' . \esc_url( $url ) . '">' . \esc_html__( 'Create a label anyway', 'anchor-schema' ) . '</a></p>'
+			. '</div>';
+	}
+
 	/** @param \WP_Post|\WC_Order $post_or_order */
 	public function metabox( $post_or_order ): void {
 		$order = $post_or_order instanceof \WC_Order ? $post_or_order : \wc_get_order( $post_or_order->ID );
@@ -55,8 +65,14 @@ final class OrderPanel {
 		}
 	}
 
+	/** Query arg that opens the full panel on an order placed before label printing started. */
+	public const OPEN_ARG = 'show_label_form';
+
 	public function render_panel( \WC_Order $order ): string {
 		$rows       = $this->shipments->for_order( $order->get_id() );
+		if ( ! $rows && '' === (string) $order->get_meta( '_anchor_shipping_unrecorded' ) && Settings::order_predates_labels( $order ) && empty( $_GET[ self::OPEN_ARG ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display toggle only
+			return $this->render_predates_note( $order );
+		}
 		$active     = array_filter( $rows, static fn( $r ) => 'voided' !== $r['status'] );
 		$s          = Settings::all();
 		$pack       = $this->packer->pack_order( $order );

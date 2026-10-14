@@ -23,6 +23,7 @@ final class Settings {
 			'inbox'           => '',
 			'auto_label'      => false,
 			'console_page'    => 0,
+			'labels_since'    => '', // GMT 'Y-m-d H:i:s'; orders placed earlier are treated as shipped outside the module
 			'new_order_button' => true,
 			'complete_on_delivery' => true,
 			'ship_from'       => [ 'name' => '', 'company' => '', 'phone' => '', 'line1' => '', 'line2' => '', 'city' => '', 'state' => '', 'postcode' => '', 'country' => '' ],
@@ -45,6 +46,30 @@ final class Settings {
 		$all['console_page'] = (int) $all['console_page'];
 		$all['new_order_button'] = (bool) $all['new_order_button'];
 		return $all;
+	}
+
+	/** Unix time label printing started (0 = no cutoff): orders placed before it were shipped some other way. */
+	public static function labels_since(): int {
+		$since = (string) self::all()['labels_since'];
+		return '' === $since ? 0 : (int) strtotime( $since . ' UTC' );
+	}
+
+	/** Records the first time the module runs as the label cutoff, so an existing store's order history is not all "Needs label". */
+	public static function ensure_labels_since(): void {
+		$stored = \get_option( self::OPTION, [] );
+		if ( \wp_doing_ajax() || ( is_array( $stored ) && array_key_exists( 'labels_since', $stored ) ) ) {
+			return; // already established, including deliberately blank (= no cutoff)
+		}
+		$s                 = self::all();
+		$s['labels_since'] = \gmdate( 'Y-m-d H:i:s' );
+		self::save( $s );
+	}
+
+	/** Placed before label printing started, so presumed already shipped. */
+	public static function order_predates_labels( \WC_Order $order ): bool {
+		$since   = self::labels_since();
+		$created = $order->get_date_created();
+		return $since > 0 && $created && $created->getTimestamp() < $since;
 	}
 
 	public static function save( array $settings ): void {

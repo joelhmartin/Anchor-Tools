@@ -58,7 +58,7 @@ final class OrdersColumn {
 			$label = ShopManager::state_label( 'labelled' );
 		}
 		if ( '' === $label ) {
-			if ( ! $order->has_status( 'processing' ) || ! $this->labels->is_shippable( $order ) || $this->labels->is_labelled( $order ) ) {
+			if ( ! $this->labels->awaits_label( $order ) ) {
 				return '';
 			}
 			$label = \__( 'Needs label', 'anchor-schema' );

@@ -37,6 +37,14 @@ final class LabelService {
 		return $order->needs_shipping_address() && [] !== $order->get_shipping_methods();
 	}
 
+	/** Processing, shippable, unlabelled and placed after label printing started: what the Needs label tab and column mean. */
+	public function awaits_label( \WC_Order $order ): bool {
+		return $order->has_status( 'processing' )
+			&& $this->is_shippable( $order )
+			&& ! $this->is_labelled( $order )
+			&& ! Settings::order_predates_labels( $order );
+	}
+
 	public function is_labelled( \WC_Order $order ): bool {
 		return [] !== $this->shipments->active_for_order( $order->get_id() )
 			|| '' !== (string) $order->get_meta( self::UNRECORDED_META );

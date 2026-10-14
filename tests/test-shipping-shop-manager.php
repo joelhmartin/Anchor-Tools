@@ -209,8 +209,37 @@ class Test_Shipping_Shop_Manager extends Anchor_Shipping_TestCase {
 		Module::instance()->labels->create_for_order( $order, [ new \Anchor\Shipping\Domain\Parcel( 1, 10, 10, 10 ) ], 'manual' );
 		$html = $this->console()->render( [ 'order' => $order->get_id() ] );
 		$this->assertStringContainsString( esc_url( $order->get_edit_order_url() ), $html );
-		$this->assertStringContainsString( 'asm-print-btn', $html );
+		$this->assertStringContainsString( 'anchor-shipping-print', $html );
+		$this->assertStringContainsString( 'data-label-url=', $html, 'the preview frame names the label it shows, so Print can print it in place' );
 		$this->assertStringContainsString( 'To customer:', $html );
+	}
+
+	public function test_view_after_a_label_folds_the_form_and_reads_like_a_person_wrote_it() {
+		$this->configure_ups();
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		Module::instance()->labels->create_for_order( $order, [ new \Anchor\Shipping\Domain\Parcel( 1, 10, 10, 10 ) ], 'manual' );
+		$html = $this->console()->render( [ 'order' => $order->get_id() ] );
+		$this->assertStringContainsString( 'Label created', $html );
+		$this->assertStringNotContainsString( 'label_created', $html, 'no raw status slug' );
+		$this->assertStringContainsString( '<details class="anchor-shipping-more">', $html );
+		$this->assertStringContainsString( 'name="additional" value="1"', $html, 'the folded form always asks for an additional package' );
+		$this->assertStringNotContainsString( 'type="checkbox" name="additional"', $html );
+		$this->assertStringNotContainsString( 'Open latest label', $html, 'one Print button, no duplicate' );
+		$this->assertMatchesRegularExpression( '/class="asm-order-main".*class="asm-notes".*class="asm-order-side".*class="asm-label"/s', $html, 'notes sit in the main column, not under the label' );
+		$this->assertStringContainsString( 'asm-total-order_total', $html, 'full totals breakdown' );
+	}
+
+	public function test_view_before_a_label_shows_the_form_open() {
+		$this->configure_ups();
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$html  = $this->console()->render( [ 'order' => $order->get_id() ] );
+		$this->assertStringNotContainsString( 'anchor-shipping-more', $html );
+		$this->assertStringNotContainsString( 'name="additional"', $html );
+		$this->assertStringContainsString( 'anchor-shipping-submit', $html );
 	}
 
 	public function test_page_past_the_end_offers_a_way_back() {

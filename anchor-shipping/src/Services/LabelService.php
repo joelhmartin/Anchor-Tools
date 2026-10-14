@@ -110,7 +110,7 @@ final class LabelService {
 			$this->require_void_acknowledgement( $unrecorded, (string) ( $opts['unrecorded_voided'] ?? '' ) );
 		}
 		if ( empty( $opts['additional'] ) && [] !== $this->shipments->active_for_order( $order->get_id() ) ) {
-			throw new AlreadyLabelled( \__( 'This order already has a label. Void it first, or tick "additional package".', 'anchor-schema' ) );
+			throw new AlreadyLabelled( \__( 'This order already has a label. Void it first, or use "Create another label".', 'anchor-schema' ) );
 		}
 		if ( '' !== $unrecorded ) {
 			$this->clear_unrecorded( $order, $unrecorded );

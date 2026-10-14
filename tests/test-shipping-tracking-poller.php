@@ -395,4 +395,13 @@ class Test_Shipping_Tracking_Poller extends Anchor_Shipping_TestCase {
 		$this->assertSame( '2026-10-16', $this->r( $id )['expected_delivery'] );
 		$this->assertSame( 'Nashville, TN', $this->r( $id )['last_location'] );
 	}
+
+	public function test_a_scan_without_a_location_clears_the_old_one() {
+		$o  = $this->make_order( [], 'processing' );
+		$id = $this->row( $o->get_id(), [ 'last_location' => 'Nashville, TN' ] );
+		$n  = Module::instance()->shipments->find( $id )['tracking_number'];
+		$this->carrier->script[ $n ] = new TrackingResult( $n, 'in_transit', 'In transit', time() - 60 );
+		$this->poller->poll();
+		$this->assertSame( '', $this->r( $id )['last_location'] );
+	}
 }

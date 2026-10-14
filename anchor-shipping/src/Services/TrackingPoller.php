@@ -122,7 +122,10 @@ final class TrackingPoller {
 			return false;
 		}
 		$changed = $r->status !== $row['status'];
-		$fields  = [ 'last_polled_at' => $now, 'status_detail' => \mb_substr( $r->detail, 0, 255 ) ];
+		$fields  = [ 'last_polled_at' => $now, 'status_detail' => \mb_substr( $r->detail, 0, 255 ), 'expected_delivery' => '' !== $r->expected_date ? $r->expected_date : null ];
+		if ( '' !== $r->location ) {
+			$fields['last_location'] = \mb_substr( $r->location, 0, 128 );
+		}
 		if ( null !== $r->event_at ) {
 			$fields['last_event_at'] = gmdate( 'Y-m-d H:i:s', $r->event_at );
 		}

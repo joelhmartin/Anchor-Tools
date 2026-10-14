@@ -11,6 +11,7 @@ use Anchor\Shipping\Module;
 use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Services\LabelService;
 use Anchor\Shipping\Support\Settings;
+use Anchor\Shipping\Support\Template;
 use Anchor\Shipping\Support\TrackingLinks;
 use Anchor\Shipping\Support\Urls;
 
@@ -331,11 +332,6 @@ final class ShopManager {
 
 	/** Renders templates/console/<name>.php; shared by the console views and AJAX-returned fragments. */
 	public static function render_template( string $name, array $vars ): string {
-		\ob_start();
-		( static function ( string $file, array $vars ): void {
-			extract( $vars, EXTR_SKIP ); // phpcs:ignore WordPress.PHP.DontExtract
-			include $file;
-		} )( Module::dir() . '/templates/console/' . $name . '.php', $vars );
-		return (string) \ob_get_clean();
+		return Template::render( 'console/' . $name, $vars );
 	}
 }

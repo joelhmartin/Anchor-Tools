@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Anchor\Shipping\Frontend;
 
+use Anchor\Shipping\Module;
+use Anchor\Shipping\Support\Template;
 use Anchor\Shipping\Support\TrackingLinks;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -16,6 +18,13 @@ final class AccountTracking {
 		\add_action( 'woocommerce_order_details_after_order_table', [ $this, 'render' ] );
 		\add_filter( 'woocommerce_account_orders_columns', [ $this, 'add_column' ] );
 		\add_action( 'woocommerce_my_account_my_orders_column_' . self::COLUMN, [ $this, 'render_column' ] );
+		\add_action( 'wp_enqueue_scripts', [ $this, 'assets' ] );
+	}
+
+	public function assets(): void {
+		if ( \function_exists( 'is_account_page' ) && ( \is_account_page() || \is_order_received_page() ) ) {
+			\wp_enqueue_style( 'anchor-shipping-account', Module::url( 'assets/account.css' ), [], '1.0.0' );
+		}
 	}
 
 	public function render( $order ): void {
@@ -26,11 +35,7 @@ final class AccountTracking {
 		if ( ! $rows ) {
 			return;
 		}
-		echo '<section class="anchor-shipping-tracking"><h2>' . \esc_html__( 'Tracking', 'anchor-schema' ) . '</h2><ul>';
-		foreach ( $rows as $r ) {
-			echo '<li>' . \esc_html( $r['carrier'] ) . ' ' . self::link( $r ) . ( '' !== $r['status'] ? ' &mdash; ' . \esc_html( $r['status'] ) : '' ) . '</li>';
-		}
-		echo '</ul></section>';
+		echo Template::render( 'account/tracking', [ 'rows' => $rows ] ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in the template
 	}
 
 	/** Inserts the Tracking column after Status (or before Actions, or at the end). */
@@ -60,7 +65,10 @@ final class AccountTracking {
 		}
 		$cells = [];
 		foreach ( $rows as $r ) {
-			$cells[] = '<span class="anchor-shipping-tracking-cell">' . self::link( $r ) . ( '' !== $r['status'] ? ' <small>' . \esc_html( $r['status'] ) . '</small>' : '' ) . '</span>';
+			$expected = ( '' !== $r['expected'] && ! in_array( $r['status_key'], [ 'delivered', 'returned' ], true ) )
+				? ' <small>' . \esc_html( sprintf( /* translators: %s: expected delivery date */ \__( 'Expected %s', 'anchor-schema' ), \wp_date( 'M j', (int) strtotime( $r['expected'] . ' 12:00:00 UTC' ), new \DateTimeZone( 'UTC' ) ) ) ) . '</small>'
+				: '';
+			$cells[]  = '<span class="anchor-shipping-tracking-cell">' . self::link( $r ) . ( '' !== $r['status'] ? ' <small>' . \esc_html( $r['status'] ) . '</small>' : '' ) . $expected . '</span>';
 		}
 		echo implode( '<br>', $cells );
 	}

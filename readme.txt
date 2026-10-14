@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.37.4
+Stable tag: 3.37.5
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,10 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.37.5 =
+* Shipping: insurance/signature chosen (and paid for) at checkout are fixed on every label for the order, even after a settings change; each locked option says why.
+* Shipping: insurance fee follows UPS's declared-value shape (flat to $300, then per $100 of the whole value); new "fee for values $100.01–$300" setting.
 
 = 3.37.4 =
 * Shipping: customer tracking card on the order page (expected delivery, latest scan, progress steps); expected date in the My Account orders column.

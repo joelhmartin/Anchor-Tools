@@ -44,10 +44,21 @@ final class Protection {
 		return 'customer' === ( $s['mode'] ?? 'off' ) && '' !== (string) $fee;
 	}
 
-	/** rate × each started $100 above the first $100 (which UPS covers free). */
+	/**
+	 * UPS's declared-value shape: the first $100 is covered free; $100.01–$300 is one flat charge
+	 * (fee_to_300); above $300 it is fee_per_100 × every started $100 of the WHOLE value. A blank
+	 * fee_to_300 applies the per-$100 rule from $100.01 too.
+	 */
 	public static function insurance_fee( float $subtotal ): float {
-		$rate = (float) Settings::all()['insurance']['fee_per_100'];
-		return $subtotal <= 100 ? 0.0 : round( $rate * ceil( ( $subtotal - 100 ) / 100 ), 2 );
+		$s    = Settings::all()['insurance'];
+		$rate = (float) $s['fee_per_100'];
+		if ( $subtotal <= 100 ) {
+			return 0.0;
+		}
+		if ( $subtotal <= 300 && '' !== (string) ( $s['fee_to_300'] ?? '' ) ) {
+			return round( (float) $s['fee_to_300'], 2 );
+		}
+		return round( $rate * ceil( $subtotal / 100 ), 2 );
 	}
 
 	public static function signature_fee(): float {

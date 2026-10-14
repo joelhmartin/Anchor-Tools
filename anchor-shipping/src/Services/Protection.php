@@ -13,29 +13,44 @@ final class Protection {
 	public const META_INSURE    = '_anchor_shipping_insure';
 	public const META_SIGNATURE = '_anchor_shipping_signature';
 
+	private const META = [ 'insurance' => self::META_INSURE, 'signature' => self::META_SIGNATURE ];
+
+	/** Did the customer choose (and pay for) this option at checkout? Recorded on the order, so it outlives any later settings change. */
+	public static function paid_for( \WC_Order $order, string $option ): bool {
+		return 'yes' === $order->get_meta( self::META[ $option ] ?? '' );
+	}
+
 	/** @return array{declared_value: float, signature: bool} */
 	public static function for_order( \WC_Order $order, float $shippable_subtotal ): array {
-		$s       = Settings::all();
-		$insured = match ( $s['insurance']['mode'] ) {
-			'auto'     => $shippable_subtotal > (float) $s['insurance']['threshold'],
-			'customer' => 'yes' === $order->get_meta( self::META_INSURE ),
-			default    => false,
+		$applies = static function ( string $option ) use ( $order, $shippable_subtotal ): bool {
+			if ( self::paid_for( $order, $option ) ) {
+				return true; // paid for at checkout: honoured whatever the mode is now
+			}
+			$s = Settings::all()[ $option ];
+			return 'auto' === $s['mode'] && $shippable_subtotal > (float) $s['threshold'];
 		};
-		$sign    = match ( $s['signature']['mode'] ) {
-			'auto'     => $shippable_subtotal > (float) $s['signature']['threshold'],
-			'customer' => 'yes' === $order->get_meta( self::META_SIGNATURE ),
-			default    => false,
-		};
-		return [ 'declared_value' => $insured ? $shippable_subtotal : 0.0, 'signature' => $sign ];
+		return [ 'declared_value' => $applies( 'insurance' ) ? $shippable_subtotal : 0.0, 'signature' => $applies( 'signature' ) ];
 	}
 
 	/**
-	 * Is this option decided by the order rather than by staff at label time? True unless the mode is
-	 * 'off': 'customer' = what the customer chose (and paid for) at checkout, 'auto' = the threshold rule.
-	 * The label form then shows the decision read-only and label creation ignores anything posted.
+	 * Is this option decided by the order rather than by staff at label time? Yes when the customer paid
+	 * for it, or when the mode is not 'off' ('customer' = their checkout choice, 'auto' = the threshold
+	 * rule). The label form then shows it read-only and label creation ignores anything posted.
 	 */
-	public static function locked( string $option ): bool {
-		return 'off' !== ( Settings::all()[ $option ]['mode'] ?? 'off' );
+	public static function locked( string $option, ?\WC_Order $order = null ): bool {
+		return ( $order && self::paid_for( $order, $option ) ) || 'off' !== ( Settings::all()[ $option ]['mode'] ?? 'off' );
+	}
+
+	/** Why a locked option is what it is, for the label form; '' when staff choose. */
+	public static function lock_reason( string $option, \WC_Order $order ): string {
+		if ( self::paid_for( $order, $option ) ) {
+			return \__( 'paid for at checkout', 'anchor-schema' );
+		}
+		return match ( Settings::all()[ $option ]['mode'] ?? 'off' ) {
+			'customer' => \__( 'not chosen at checkout', 'anchor-schema' ),
+			'auto'     => \__( 'set by the order-value rule', 'anchor-schema' ),
+			default    => '',
+		};
 	}
 
 	public static function offered( string $option ): bool {

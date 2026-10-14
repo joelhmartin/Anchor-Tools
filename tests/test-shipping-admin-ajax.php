@@ -171,7 +171,8 @@ class Test_Shipping_Admin_Ajax extends Anchor_Shipping_TestCase {
 		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( $m->shipments, $m->packer, $m->carriers ) )->render_panel( wc_get_order( $order->get_id() ) );
 		$this->assertMatchesRegularExpression( '/name="insure" value="1"\s+checked=[^>]*disabled/', $panel );
 		$this->assertMatchesRegularExpression( '/name="signature" value="1"\s+disabled/', $panel );
-		$this->assertStringContainsString( 'Set by the customer at checkout', $panel );
+		$this->assertStringContainsString( 'Insure for order value <small class="anchor-shipping-meta">(paid for at checkout)', $panel );
+		$this->assertStringContainsString( 'Signature required <small class="anchor-shipping-meta">(not chosen at checkout)', $panel );
 	}
 
 	public function test_with_protection_off_staff_still_choose_per_label() {
@@ -181,5 +182,32 @@ class Test_Shipping_Admin_Ajax extends Anchor_Shipping_TestCase {
 		$opts  = $this->create_and_read_package_options( $order, [ 'signature' => '1' ] );
 		$this->assertArrayHasKey( 'DeliveryConfirmation', $opts );
 		$this->assertArrayNotHasKey( 'DeclaredValue', $opts );
+	}
+
+	public function test_a_paid_choice_survives_a_later_settings_change() {
+		$this->configure_ups( [ 'signature' => [ 'mode' => 'customer', 'fee' => '7.70' ] ] );
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$order->update_meta_data( \Anchor\Shipping\Services\Protection::META_SIGNATURE, 'yes' );
+		$order->save();
+
+		// The store later switches signatures to an auto rule this order does not meet, then off.
+		foreach ( [ [ 'mode' => 'auto', 'threshold' => 99999 ], [ 'mode' => 'off' ] ] as $sig ) {
+			$this->configure_ups( [ 'signature' => $sig ] );
+			delete_transient( 'anchor_shipping_ups_token_' . md5( 'sandbox|cid' ) ); // the helper queues a fresh token each time
+			$opts = $this->create_and_read_package_options( wc_get_order( $order->get_id() ), [ 'signature' => '' ] );
+			$this->assertArrayHasKey( 'DeliveryConfirmation', $opts, 'paid for at checkout: mode ' . $sig['mode'] );
+			Module::instance()->shipments->update( (int) Module::instance()->shipments->active_for_order( $order->get_id() )[0]['id'], [ 'status' => 'voided' ] );
+		}
+	}
+
+	public function test_mixed_modes_explain_each_option() {
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '0.95' ], 'signature' => [ 'mode' => 'auto', 'threshold' => 0 ] ] );
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$m     = Module::instance();
+		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( $m->shipments, $m->packer, $m->carriers ) )->render_panel( $order );
+		$this->assertStringContainsString( '(not chosen at checkout)', $panel );
+		$this->assertStringContainsString( '(set by the order-value rule)', $panel );
 	}
 }

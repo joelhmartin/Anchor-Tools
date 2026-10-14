@@ -102,10 +102,10 @@ final class Ajax {
 			'unrecorded_voided' => \sanitize_text_field( (string) ( $post['unrecorded_voided'] ?? '' ) ),
 		];
 		// A locked option is the order's (customer-chosen at checkout, or the auto rule): never what was posted.
-		if ( ! Protection::locked( 'insurance' ) ) {
+		if ( ! Protection::locked( 'insurance', $order ) ) {
 			$opts['declared_value'] = ! empty( $post['insure'] ) ? $subtotal : 0.0;
 		}
-		if ( ! Protection::locked( 'signature' ) ) {
+		if ( ! Protection::locked( 'signature', $order ) ) {
 			$opts['signature'] = ! empty( $post['signature'] );
 		}
 		try {

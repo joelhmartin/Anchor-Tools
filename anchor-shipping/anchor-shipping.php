@@ -56,6 +56,7 @@ class Module {
 		self::$instance = $this;
 		Migrations::maybe_migrate();
 		\add_action( 'admin_init', [ Migrations::class, 'maybe_migrate' ] );
+		\add_action( 'admin_init', [ Support\Settings::class, 'ensure_labels_since' ] );
 		$this->shipments = new ShipmentRepository();
 
 		if ( ! \class_exists( 'WooCommerce' ) ) {

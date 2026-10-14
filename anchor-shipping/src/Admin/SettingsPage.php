@@ -47,6 +47,7 @@ final class SettingsPage {
 		$out['complete_on_delivery'] = ! empty( $post['complete_on_delivery'] );
 		$out['new_order_button'] = ! empty( $post['new_order_button'] );
 		$out['console_page']    = isset( $post['console_page'] ) ? max( 0, (int) $post['console_page'] ) : (int) $current['console_page'];
+		$out['labels_since']    = self::labels_since_from_post( $post['labels_since'] ?? null, (string) $current['labels_since'] );
 
 		foreach ( array_keys( $current['ship_from'] ) as $k ) {
 			$out['ship_from'][ $k ] = $txt( $post['ship_from'][ $k ] ?? $current['ship_from'][ $k ] );
@@ -157,6 +158,8 @@ final class SettingsPage {
 						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[complete_on_delivery]' ) ); ?>" value="1" <?php \checked( $s['complete_on_delivery'] ); ?>> <?php \esc_html_e( 'When every package of a processing order shows as delivered, mark the order Completed.', 'anchor-schema' ); ?></label></td></tr>
 					<tr><th><?php \esc_html_e( 'Create label button in the New order email', 'anchor-schema' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[new_order_button]' ) ); ?>" value="1" <?php \checked( $s['new_order_button'] ); ?>> <?php \esc_html_e( 'Add a Create shipping label button to the WooCommerce New order email when the order ships. Shipping inbox addresses that already get that email are not sent a separate Ready to ship email.', 'anchor-schema' ); ?></label></td></tr>
+					<tr><th><label for="anchor-shipping-labels-since"><?php \esc_html_e( 'Labels for orders placed on or after', 'anchor-schema' ); ?></label></th>
+						<td><input type="date" id="anchor-shipping-labels-since" name="<?php echo \esc_attr( $name( '[labels_since]' ) ); ?>" value="<?php echo \esc_attr( '' === $s['labels_since'] ? '' : \get_date_from_gmt( $s['labels_since'], 'Y-m-d' ) ); ?>"><p class="description"><?php \esc_html_e( 'Older orders were shipped some other way: they stay out of Needs label, and their order screen offers a label only on request. Set automatically the day shipping is switched on; clear it to treat every order as needing a label.', 'anchor-schema' ); ?></p></td></tr>
 					<tr><th><?php \esc_html_e( 'Shipping console page', 'anchor-schema' ); ?></th>
 						<td><?php \wp_dropdown_pages( [ 'name' => $name( '[console_page]' ), 'selected' => (int) $s['console_page'], 'show_option_none' => \__( '— None (use the order edit screen) —', 'anchor-schema' ), 'option_none_value' => '0' ] ); ?><p class="description"><?php \esc_html_e( 'The page that shows the shipping console. Email buttons link here.', 'anchor-schema' ); ?></p></td></tr>
 					<tr><th><?php \esc_html_e( 'Shipping inbox', 'anchor-schema' ); ?></th>
@@ -233,5 +236,23 @@ final class SettingsPage {
 			</form>
 		</div>
 		<?php
+	}
+
+	/** Posted Y-m-d (site time) → GMT 'Y-m-d H:i:s'. An unchanged date keeps the stored time; blank clears the cutoff. */
+	private static function labels_since_from_post( $posted, string $current ): string {
+		if ( null === $posted ) {
+			return $current;
+		}
+		$posted = \sanitize_text_field( (string) $posted );
+		if ( '' === $posted ) {
+			return '';
+		}
+		if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $posted ) ) {
+			return $current;
+		}
+		if ( '' !== $current && \get_date_from_gmt( $current, 'Y-m-d' ) === $posted ) {
+			return $current;
+		}
+		return \get_gmt_from_date( $posted . ' 00:00:00' );
 	}
 }

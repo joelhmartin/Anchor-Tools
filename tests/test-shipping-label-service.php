@@ -181,6 +181,26 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ), 'still-processing order with no label needs a person (no email)' );
 	}
 
+	public function test_a_refused_void_leaves_the_carrier_reason_on_the_order_and_keeps_the_label() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		$ids = Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+
+		$this->queue_response( 400, [ 'response' => [ 'errors' => [ [ 'code' => '190117', 'message' => 'Void period has expired' ] ] ] ] );
+		try {
+			Module::instance()->labels->void_shipment( $ids[0] );
+			$this->fail( 'expected the refusal to surface' );
+		} catch ( \Anchor\Shipping\Domain\CarrierError $e ) {
+			$this->assertStringContainsString( 'Void period has expired', $e->getMessage() );
+		}
+		$notes = implode( "\n", wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
+		$this->assertStringContainsString( 'refused to void', $notes );
+		$this->assertStringContainsString( 'Void period has expired', $notes );
+		$this->assertNotSame( 'voided', Module::instance()->shipments->find( $ids[0] )['status'] );
+	}
+
 	public function test_voiding_the_last_label_of_a_non_processing_order_clears_the_state() {
 		$this->configure_ups();
 		$order = $this->make_order( [], 'processing' );

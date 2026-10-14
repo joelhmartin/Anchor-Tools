@@ -99,12 +99,12 @@ final class ShopManager {
 	public static function enqueue(): void {
 		OrderPanel::enqueue();
 		\wp_enqueue_style( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.css', [ 'anchor-shipping-admin' ], '1.0.0' );
-		\wp_enqueue_script( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.js', [ 'jquery', 'anchor-shipping-admin' ], '1.0.0', true );
+		\wp_enqueue_script( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.js', [ 'jquery', 'anchor-shipping-admin' ], '1.0.1', true );
 		\wp_localize_script( 'anchor-shipping-console', 'anchorShippingConsole', [
-			'confirmCancel' => \__( 'Cancel this order? Any labels will be voided.', 'anchor-schema' ),
-			'confirmDone'   => \__( 'Mark this order completed?', 'anchor-schema' ),
-			'confirmDoneOnHold' => \__( 'This order is on hold (payment may not be confirmed). Mark it completed anyway?', 'anchor-schema' ),
-			'confirmBulk'   => \__( 'Create %d labels? Each one is billed by the carrier.', 'anchor-schema' ),
+			'confirmCancel' => \__( 'Click again to cancel + void labels', 'anchor-schema' ),
+			'confirmDone'   => \__( 'Click again to complete', 'anchor-schema' ),
+			'confirmDoneOnHold' => \__( 'On hold — click again to complete', 'anchor-schema' ),
+			'confirmBulk'   => \__( 'Click again: %d labels, each billed', 'anchor-schema' ),
 			'working'       => \__( 'Creating labels, this can take a minute…', 'anchor-schema' ),
 		] );
 	}

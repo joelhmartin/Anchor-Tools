@@ -301,7 +301,16 @@ final class LabelService {
 		if ( ! $carrier || ! $carrier->supports( 'void' ) ) {
 			throw new CarrierError( 'unsupported', \__( 'This carrier cannot void labels here.', 'anchor-schema' ) );
 		}
-		$carrier->void_label( $row['shipment_id'] );
+		try {
+			$carrier->void_label( $row['shipment_id'] );
+		} catch ( CarrierError $e ) {
+			$order = \wc_get_order( (int) $row['order_id'] );
+			if ( $order ) {
+				/* translators: 1: carrier, 2: shipment id, 3: carrier message */
+				$order->add_order_note( sprintf( \__( '%1$s refused to void %2$s: %3$s', 'anchor-schema' ), $carrier->label(), $row['shipment_id'], $e->getMessage() ) );
+			}
+			throw $e;
+		}
 
 		$now = \current_time( 'mysql', true );
 		foreach ( $this->shipments->by_shipment_id( $row['carrier'], $row['shipment_id'] ) as $r ) {

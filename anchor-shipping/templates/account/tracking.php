@@ -37,17 +37,9 @@ $count   = count( $rows );
 		$expected = ( '' !== $r['expected'] && ! in_array( $key, [ 'delivered', 'returned' ], true ) ) ? strtotime( $r['expected'] . ' 12:00:00 UTC' ) : 0;
 		$detail   = trim( $r['detail'] );
 		$detail   = ( '' !== $detail && \strtoupper( $detail ) === $detail ) ? \ucfirst( \strtolower( $detail ) ) : $detail; // UPS often shouts: "DEPARTED FROM FACILITY"
-		$latest   = array_filter( [ $detail, $r['location'], $r['event_at'] ? $moment( $r['event_at'] ) : '' ] );
 		?>
 		<div class="ast-card ast-is-<?php echo \esc_attr( $key ); ?>">
-			<div class="ast-head">
-				<p class="ast-headline"><?php echo \esc_html( $headline ); ?></p>
-				<?php if ( $expected ) : ?>
-					<p class="ast-expected"><?php echo \esc_html( sprintf( /* translators: %s: expected delivery day */ \__( 'Expected %s', 'anchor-schema' ), \wp_date( 'l, F j', $expected, new \DateTimeZone( 'UTC' ) ) ) ); ?></p>
-				<?php elseif ( 'label_created' === $key ) : ?>
-					<p class="ast-expected"><?php \esc_html_e( 'The label is ready. Tracking updates once the carrier scans the package.', 'anchor-schema' ); ?></p>
-				<?php endif; ?>
-			</div>
+			<p class="ast-headline"><?php echo \esc_html( $headline ); ?></p>
 			<?php if ( ! $alert ) : ?>
 				<ol class="ast-steps">
 					<?php $i = 0; foreach ( $steps as $step => $label ) : ?>
@@ -55,17 +47,26 @@ $count   = count( $rows );
 					<?php ++$i; endforeach; ?>
 				</ol>
 			<?php endif; ?>
-			<?php if ( $latest && 'label_created' !== $key ) : ?>
-				<p class="ast-latest"><span class="ast-label"><?php \esc_html_e( 'Latest update', 'anchor-schema' ); ?></span> <?php echo \esc_html( implode( ' · ', $latest ) ); ?></p>
-			<?php endif; ?>
-			<p class="ast-number">
-				<span class="ast-label"><?php echo \esc_html( $r['carrier'] ); ?></span>
-				<?php if ( '' !== $r['url'] ) : ?>
-					<a href="<?php echo \esc_url( $r['url'] ); ?>" target="_blank" rel="noopener"><?php echo \esc_html( $r['number'] ); ?><span class="ast-sr"> <?php \esc_html_e( '(opens the carrier\'s tracking page)', 'anchor-schema' ); ?></span></a>
-				<?php else : ?>
-					<?php echo \esc_html( $r['number'] ); ?>
+			<dl class="ast-rows">
+				<?php if ( $expected ) : ?>
+					<div class="ast-row"><dt><?php \esc_html_e( 'Expected delivery', 'anchor-schema' ); ?></dt><dd><?php echo \esc_html( \wp_date( 'l, F j', $expected, new \DateTimeZone( 'UTC' ) ) ); ?></dd></div>
 				<?php endif; ?>
-			</p>
+				<?php if ( 'label_created' === $key ) : ?>
+					<div class="ast-row"><dt><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></dt><dd><?php \esc_html_e( 'Label created. Tracking updates once the carrier scans the package.', 'anchor-schema' ); ?></dd></div>
+				<?php elseif ( '' !== $detail || '' !== $r['location'] ) : ?>
+					<div class="ast-row"><dt><?php \esc_html_e( 'Latest update', 'anchor-schema' ); ?></dt><dd><?php echo \esc_html( implode( ' — ', array_filter( [ $detail, $r['location'] ] ) ) ); ?></dd></div>
+				<?php endif; ?>
+				<?php if ( $r['event_at'] && 'label_created' !== $key ) : ?>
+					<div class="ast-row"><dt><?php \esc_html_e( 'Updated', 'anchor-schema' ); ?></dt><dd><?php echo \esc_html( $moment( $r['event_at'] ) ); ?></dd></div>
+				<?php endif; ?>
+				<div class="ast-row"><dt><?php echo \esc_html( sprintf( /* translators: %s: carrier name */ \__( '%s tracking', 'anchor-schema' ), $r['carrier'] ) ); ?></dt><dd>
+					<?php if ( '' !== $r['url'] ) : ?>
+						<a href="<?php echo \esc_url( $r['url'] ); ?>" target="_blank" rel="noopener"><?php echo \esc_html( $r['number'] ); ?><span class="ast-sr"> <?php \esc_html_e( '(opens the carrier\'s tracking page)', 'anchor-schema' ); ?></span></a>
+					<?php else : ?>
+						<?php echo \esc_html( $r['number'] ); ?>
+					<?php endif; ?>
+				</dd></div>
+			</dl>
 		</div>
 	<?php endforeach; ?>
 </section>

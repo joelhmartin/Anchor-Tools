@@ -111,8 +111,8 @@ class Test_Shipping_Shipped_Email extends Anchor_Shipping_TestCase {
 		$row   = $this->add_row( $order, '1ZK877V90300000005' );
 		Module::instance()->shipments->update( (int) $row['id'], [ 'expected_delivery' => '2026-10-16', 'last_location' => 'Nashville, TN', 'status_detail' => 'DEPARTED FROM FACILITY', 'last_event_at' => '2026-10-13 08:08:00' ] );
 		$html = $this->card_for( $order );
-		$this->assertStringContainsString( 'Expected Friday, October 16', $html );
-		$this->assertStringContainsString( 'Departed from facility · Nashville, TN', $html );
+		$this->assertMatchesRegularExpression( '/Expected delivery<\/dt><dd>Friday, October 16</', $html );
+		$this->assertStringContainsString( 'Departed from facility — Nashville, TN', $html );
 		$this->assertMatchesRegularExpression( '/ast-step is-current"[^>]*><span>In transit/', $html );
 		$this->assertStringContainsString( 'ast-step is-done', $html );
 	}
@@ -129,6 +129,6 @@ class Test_Shipping_Shipped_Email extends Anchor_Shipping_TestCase {
 		Module::instance()->shipments->update( (int) $row['id'], [ 'delivered_at' => '2026-10-16 18:00:00', 'expected_delivery' => '2026-10-16' ] );
 		$html = $this->card_for( $done );
 		$this->assertStringContainsString( 'Delivered Friday, October 16', $html );
-		$this->assertStringNotContainsString( 'Expected', $html );
+		$this->assertStringNotContainsString( 'Expected delivery', $html );
 	}
 }

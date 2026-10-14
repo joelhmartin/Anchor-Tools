@@ -1,9 +1,7 @@
 /* Customer tracking card. Structural defaults only: colour and type come from the theme (currentColor throughout). */
 .anchor-shipping-tracking { margin: 2rem 0; }
-.anchor-shipping-tracking .ast-card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px; padding: 1.25rem 1.5rem; margin: 0 0 1rem; }
-.anchor-shipping-tracking .ast-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .25rem 1.5rem; padding-bottom: 1.5rem; } /* spacing lives here, not on the list: themes often reset ol margin/padding */
-.anchor-shipping-tracking .ast-headline { margin: 0; font-size: 1.25em; font-weight: 600; }
-.anchor-shipping-tracking .ast-expected { margin: 0; opacity: .75; }
+.anchor-shipping-tracking .ast-card { border: 1px solid rgba(127,127,127,.3); border-radius: 12px; padding: 1.25rem 1.5rem .5rem; margin: 0 0 1rem; }
+.anchor-shipping-tracking .ast-headline { margin: 0 0 1.5rem; font-size: 1.15em; font-weight: 600; } /* spacing lives here, not on the list: themes often reset ol margin/padding */
 .anchor-shipping-tracking .ast-steps { display: grid; grid-template-columns: repeat(4, 1fr); list-style: none; margin: 0; padding: 0; }
 .anchor-shipping-tracking .ast-step { position: relative; z-index: 0; padding-top: 1.1rem; font-size: .8em; text-align: center; opacity: .5; }
 .anchor-shipping-tracking .ast-step::before { content: ""; position: absolute; top: .3rem; left: 50%; right: -50%; height: 2px; background: currentColor; opacity: .25; }
@@ -13,13 +11,14 @@
 .anchor-shipping-tracking .ast-step.is-done::before { opacity: 1; }
 .anchor-shipping-tracking .ast-step.is-done::after, .anchor-shipping-tracking .ast-step.is-current::after { background: currentColor; }
 .anchor-shipping-tracking .ast-step.is-current span { font-weight: 600; }
-.anchor-shipping-tracking .ast-latest, .anchor-shipping-tracking .ast-number { margin: .75rem 0 0; font-size: .9em; }
-.anchor-shipping-tracking .ast-label { display: inline-block; min-width: 6.5rem; font-size: .8em; text-transform: uppercase; letter-spacing: .08em; opacity: .6; }
-.anchor-shipping-tracking .ast-is-exception .ast-headline, .anchor-shipping-tracking .ast-is-returned .ast-headline { color: #9b2c2c; }
-@media (max-width: 480px) {
-	.anchor-shipping-tracking .ast-card { padding: 1rem; }
-	.anchor-shipping-tracking .ast-step span { display: block; font-size: .85em; line-height: 1.2; }
-	.anchor-shipping-tracking .ast-label { display: block; min-width: 0; }
-}
+.anchor-shipping-tracking .ast-rows { margin: 1.25rem 0 0; padding: 0; }
+.anchor-shipping-tracking .ast-row { display: grid; grid-template-columns: minmax(8rem, 30%) 1fr; gap: 1rem; padding: .8rem 0; border-top: 1px solid rgba(127,127,127,.25); }
+.anchor-shipping-tracking .ast-row dt { margin: 0; font-size: .8em; text-transform: uppercase; letter-spacing: .08em; opacity: .65; align-self: center; }
+.anchor-shipping-tracking .ast-row dd { margin: 0; }
+.anchor-shipping-tracking .ast-is-exception .ast-headline, .anchor-shipping-tracking .ast-is-returned .ast-headline { color: #9b2c2c; margin-bottom: .5rem; }
 .anchor-shipping-tracking .ast-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-.anchor-shipping-tracking .ast-is-exception .ast-head, .anchor-shipping-tracking .ast-is-returned .ast-head { padding-bottom: 0; }
+@media (max-width: 480px) {
+	.anchor-shipping-tracking .ast-card { padding: 1rem 1rem .25rem; }
+	.anchor-shipping-tracking .ast-step span { display: block; font-size: .85em; line-height: 1.2; }
+	.anchor-shipping-tracking .ast-row { grid-template-columns: 1fr; gap: .2rem; }
+}

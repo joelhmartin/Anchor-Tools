@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.37.3
+Stable tag: 3.37.4
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,10 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.37.4 =
+* Shipping: customer tracking card on the order page (expected delivery, latest scan, progress steps); expected date in the My Account orders column.
+* Shipping: no browser dialogs — Void / Complete / Cancel / bulk confirm with a second click; refused voids are noted on the order.
 
 = 3.37.3 =
 * Shipping: labels only for orders placed on or after the date label printing started (new "Labels for orders placed on or after" setting, recorded on first use). Older orders leave Needs label and offer "Create a label anyway".

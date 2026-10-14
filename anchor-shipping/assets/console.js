@@ -10,7 +10,12 @@
 			return this.getAttribute('data-label-url') === e.currentTarget.getAttribute('href');
 		})[0];
 		if (!frame) { return; }
-		try { frame.contentWindow.focus(); frame.contentWindow.print(); e.preventDefault(); }
+		try {
+			// Until the label has loaded the frame still holds about:blank — open the file instead of printing nothing.
+			var loc = frame.contentWindow.location.href;
+			if (!loc || loc === 'about:blank' || frame.contentDocument.readyState !== 'complete') { return; }
+			frame.contentWindow.focus(); frame.contentWindow.print(); e.preventDefault();
+		}
 		catch (err) { /* cross-origin or not loaded: fall through to opening the link */ }
 	});
 

@@ -83,7 +83,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 		<?php echo $panel; // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in OrderPanel::render_panel() ?>
 		<?php if ( '' !== $label_url && $label_pdf ) : ?>
 			<?php // Preview only: the panel's Print button prints this frame (console.js). The fragment hides the browser's PDF toolbar. ?>
-			<iframe class="asm-label-frame" title="<?php \esc_attr_e( 'Latest shipping label', 'anchor-schema' ); ?>" src="<?php echo \esc_url( $label_url ); ?>#toolbar=0&amp;navpanes=0&amp;scrollbar=0&amp;view=Fit" data-label-url="<?php echo \esc_url( $label_url ); ?>" loading="lazy"></iframe>
+			<iframe class="asm-label-frame" title="<?php \esc_attr_e( 'Latest shipping label', 'anchor-schema' ); ?>" src="<?php echo \esc_url( $label_url ); ?>#toolbar=0&amp;navpanes=0&amp;scrollbar=0&amp;view=Fit" data-label-url="<?php echo \esc_url( $label_url ); ?>"></iframe>
 		<?php endif; ?>
 	</section>
 	</div>

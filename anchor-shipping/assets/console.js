@@ -13,7 +13,7 @@
 		var $btn = $(this), $box = $btn.closest('.asm-actions'), to = $btn.data('to');
 		if ($box.hasClass('is-busy')) { return; }
 		var msg = to === 'cancelled' ? txt.confirmCancel : ($box.data('status') === 'on-hold' ? txt.confirmDoneOnHold : txt.confirmDone);
-		if (!window.confirm(msg)) { return; }
+		if (!window.anchorShippingArm($btn, msg)) { return; }
 		$box.addClass('is-busy').find('.asm-status-error').text('');
 		$.post(cfg.ajax, { action: 'anchor_shipping_console_status', nonce: cfg.nonce, order_id: $box.data('order'), to: to })
 			.done(function (res) {
@@ -21,8 +21,7 @@
 				$box.removeClass('is-busy').find('.asm-status-error').text((res && res.data && res.data.message) || 'Something went wrong.');
 			})
 			.fail(function (xhr) {
-				var msg = xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message;
-				$box.removeClass('is-busy').find('.asm-status-error').text(msg || 'Request failed.');
+				$box.removeClass('is-busy').find('.asm-status-error').text(window.anchorShippingFailMessage(xhr));
 			});
 	});
 
@@ -129,7 +128,7 @@
 			$r.find('[data-field]').each(function () { row[$(this).data('field')] = $(this).val(); });
 			rows.push(row);
 		});
-		if (!window.confirm((txt.confirmBulk || 'Create %d labels? Each one is billed by the carrier.').replace('%d', rows.length))) { return; }
+		if (!window.anchorShippingArm($form.find('.asm-bulk-create'), (txt.confirmBulk || 'Click again: %d labels, each billed').replace('%d', rows.length))) { return; }
 		$form.addClass('is-busy');
 		runBulk($form, $msg, rows);
 	});

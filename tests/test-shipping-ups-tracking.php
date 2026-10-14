@@ -143,4 +143,30 @@ class Test_Shipping_Ups_Tracking extends Anchor_Shipping_TestCase {
 		$this->assertSame( 'label_created', $this->track_with_type( 'M' )->status );
 		$this->assertSame( 'unknown_type', $this->track_with_type( 'ZZ' )->status );
 	}
+
+	public function test_expected_date_prefers_rescheduled_and_location_is_title_cased() {
+		$this->configure_ups();
+		$fx = $this->fixture( 'ups-track-in-transit' );
+		$fx['trackResponse']['shipment'][0]['package'][0]['deliveryDate'] = [ [ 'type' => 'SDD', 'date' => '20261016' ], [ 'type' => 'RDD', 'date' => '20261017' ] ];
+		$this->queue_token();
+		$this->queue_response( 200, $fx );
+		$r = ( new UpsCarrier() )->track( [ self::NUMBER ] )[ self::NUMBER ];
+		$this->assertSame( '2026-10-17', $r->expected_date );
+		$this->assertSame( 'Tampa, FL', $r->location );
+
+		delete_transient( 'anchor_shipping_ups_token_' . md5( 'sandbox|cid' ) );
+		$fx['trackResponse']['shipment'][0]['package'][0]['deliveryDate'] = [ [ 'type' => 'SDD', 'date' => '20261016' ] ];
+		$this->queue_token();
+		$this->queue_response( 200, $fx );
+		$this->assertSame( '2026-10-16', ( new UpsCarrier() )->track( [ self::NUMBER ] )[ self::NUMBER ]->expected_date );
+	}
+
+	public function test_delivered_response_has_no_expected_date_and_foreign_location_keeps_country() {
+		$this->configure_ups();
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-track-cie-recorded' ) );
+		$r = ( new UpsCarrier() )->track( [ '1Z2B3J726821744826' ] )['1Z2B3J726821744826'];
+		$this->assertSame( '', $r->expected_date );
+		$this->assertSame( 'Grand Forks Rr2, CA', $r->location );
+	}
 }

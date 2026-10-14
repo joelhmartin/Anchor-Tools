@@ -14,7 +14,10 @@ final class TrackingLinks {
 
 	public function __construct( private ShipmentRepository $shipments, private CarrierRegistry $carriers ) {}
 
-	/** @return array<int, array{carrier: string, number: string, url: string, status: string}> */
+	/**
+	 * @return array<int, array{carrier: string, number: string, url: string, status: string, status_key: string, detail: string,
+	 *         location: string, event_at: ?int, expected: string, delivered_at: ?int}>
+	 */
 	public function for_order( int $order_id ): array {
 		$out = [];
 		foreach ( $this->shipments->active_for_order( $order_id ) as $row ) {
@@ -25,9 +28,19 @@ final class TrackingLinks {
 				'number'  => $number,
 				'url'     => ( $carrier && '' !== $number ) ? $carrier->tracking_url( $number ) : '',
 				'status'  => self::status_label( (string) $row['status'] ),
+				'status_key'   => (string) $row['status'],
+				'detail'       => (string) ( $row['status_detail'] ?? '' ),
+				'location'     => (string) ( $row['last_location'] ?? '' ),
+				'event_at'     => self::gmt_time( $row['last_event_at'] ?? null ),
+				'expected'     => (string) ( $row['expected_delivery'] ?? '' ),
+				'delivered_at' => self::gmt_time( $row['delivered_at'] ?? null ),
 			];
 		}
 		return $out;
+	}
+
+	private static function gmt_time( $value ): ?int {
+		return empty( $value ) ? null : (int) strtotime( $value . ' UTC' );
 	}
 
 	public static function status_label( string $status ): string {

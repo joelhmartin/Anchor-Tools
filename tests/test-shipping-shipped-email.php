@@ -99,4 +99,36 @@ class Test_Shipping_Shipped_Email extends Anchor_Shipping_TestCase {
 		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $order );
 		$this->assertSame( 1, substr_count( ob_get_clean(), '</span><br><span' ) );
 	}
+
+	private function card_for( WC_Order $order ): string {
+		ob_start();
+		do_action( 'woocommerce_order_details_after_order_table', $order );
+		return ob_get_clean();
+	}
+
+	public function test_tracking_card_shows_expected_date_latest_scan_and_current_step() {
+		$order = $this->make_order( [], 'processing' );
+		$row   = $this->add_row( $order, '1ZK877V90300000005' );
+		Module::instance()->shipments->update( (int) $row['id'], [ 'expected_delivery' => '2026-10-16', 'last_location' => 'Nashville, TN', 'status_detail' => 'DEPARTED FROM FACILITY', 'last_event_at' => '2026-10-13 08:08:00' ] );
+		$html = $this->card_for( $order );
+		$this->assertMatchesRegularExpression( '/Expected delivery<\/dt><dd>Friday, October 16</', $html );
+		$this->assertStringContainsString( 'Departed from facility — Nashville, TN', $html );
+		$this->assertMatchesRegularExpression( '/ast-step is-current"[^>]*><span>In transit/', $html );
+		$this->assertStringContainsString( 'ast-step is-done', $html );
+	}
+
+	public function test_tracking_card_wording_for_label_created_and_delivered() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000006', 'label_created' );
+		$html = $this->card_for( $order );
+		$this->assertStringContainsString( 'Preparing to ship', $html );
+		$this->assertStringNotContainsString( 'Latest update', $html );
+
+		$done = $this->make_order( [], 'processing' );
+		$row  = $this->add_row( $done, '1ZK877V90300000007', 'delivered' );
+		Module::instance()->shipments->update( (int) $row['id'], [ 'delivered_at' => '2026-10-16 18:00:00', 'expected_delivery' => '2026-10-16' ] );
+		$html = $this->card_for( $done );
+		$this->assertStringContainsString( 'Delivered Friday, October 16', $html );
+		$this->assertStringNotContainsString( 'Expected delivery', $html );
+	}
 }

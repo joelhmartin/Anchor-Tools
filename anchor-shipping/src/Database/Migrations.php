@@ -8,7 +8,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /** The shipments table, created or upgraded when the stored version is behind. */
 final class Migrations {
 
-	public const VERSION = '1';
+	public const VERSION = '2';
 	public const OPTION  = 'anchor_shipping_db_version';
 
 	public static function table(): string {
@@ -36,6 +36,8 @@ final class Migrations {
 				status_detail VARCHAR(255) NOT NULL DEFAULT '',
 				last_event_at DATETIME NULL,
 				delivered_at DATETIME NULL,
+				expected_delivery DATE NULL,
+				last_location VARCHAR(128) NOT NULL DEFAULT '',
 				cost DECIMAL(10,2) NULL,
 				currency CHAR(3) NOT NULL DEFAULT '',
 				declared_value DECIMAL(10,2) NOT NULL DEFAULT 0,

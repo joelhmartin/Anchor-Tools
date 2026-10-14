@@ -182,7 +182,32 @@ final class UpsCarrier implements CarrierInterface, AddressValidatingCarrier {
 		} else {
 			$status = $this->map_status( $type, $code, $desc );
 		}
-		return new TrackingResult( $number, $status, $desc, $latest_at );
+		return new TrackingResult( $number, $status, $desc, $latest_at, $this->expected_date( $pkg ), $this->activity_location( $latest ) );
+	}
+
+	/** Scheduled delivery date: a rescheduled date (RDD) wins over the original (SDD). Y-m-d, or '' when UPS gives none. */
+	private function expected_date( $pkg ): string {
+		$dates = is_array( $pkg ) && is_array( $pkg['deliveryDate'] ?? null ) ? $pkg['deliveryDate'] : [];
+		$found = [];
+		foreach ( $dates as $d ) {
+			if ( is_array( $d ) && preg_match( '/^(\d{4})(\d{2})(\d{2})$/', (string) ( $d['date'] ?? '' ), $m ) ) {
+				$found[ strtoupper( (string) ( $d['type'] ?? '' ) ) ] = "{$m[1]}-{$m[2]}-{$m[3]}";
+			}
+		}
+		return $found['RDD'] ?? $found['SDD'] ?? '';
+	}
+
+	/** "City, ST" (plus country outside the US) for an activity, title-cased from UPS's capitals. */
+	private function activity_location( $activity ): string {
+		$addr = is_array( $activity ) && is_array( $activity['location']['address'] ?? null ) ? $activity['location']['address'] : [];
+		$city = trim( (string) ( $addr['city'] ?? '' ) );
+		$city = '' === $city ? '' : \ucwords( \strtolower( $city ) );
+		$parts = array_filter( [ $city, strtoupper( trim( (string) ( $addr['stateProvince'] ?? '' ) ) ) ] );
+		$country = strtoupper( trim( (string) ( $addr['countryCode'] ?? '' ) ) );
+		if ( '' !== $country && 'US' !== $country && $parts ) {
+			$parts[] = $country;
+		}
+		return implode( ', ', $parts );
 	}
 
 	/** Package-level numeric status codes UPS returns without a type (used only when there is no activity to read a type from). */

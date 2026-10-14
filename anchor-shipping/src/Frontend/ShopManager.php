@@ -317,7 +317,7 @@ final class ShopManager {
 			'can_cancel'   => $order->has_status( [ 'pending', 'processing', 'on-hold' ] ),
 			'refundable'   => OrderRefund::refundable_amount( $order ),
 			// A paid order's Cancel keeps the money, so it says so; refunding is the separate button.
-			'paid'         => null !== $order->get_date_paid() || $order->is_paid(),
+			'paid'         => null !== $order->get_date_paid(),
 		] );
 	}
 

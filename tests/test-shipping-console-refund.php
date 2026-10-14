@@ -126,4 +126,59 @@ class Test_Shipping_Console_Refund extends Anchor_Shipping_TestCase {
 		$this->assertStringContainsString( 'Cancel order', $html );
 		$this->assertStringNotContainsString( 'Cancel without refund', $html );
 	}
+
+	public function test_on_hold_order_without_a_recorded_payment_is_not_refundable() {
+		$order = $this->paid_order();
+		$order->set_date_paid( null );
+		$order->set_status( 'on-hold' );
+		$order->save();
+		$order = wc_get_order( $order->get_id() );
+		$this->assertSame( 0.0, OrderRefund::refundable_amount( $order ) );
+		$html = $this->console()->render( [ 'order' => $order->get_id() ] );
+		$this->assertStringNotContainsString( 'data-to="refunded"', $html );
+		$this->assertStringNotContainsString( 'Cancel without refund', $html, 'no payment recorded, so cancel keeps no money' );
+		$this->expectException( RuntimeException::class );
+		OrderRefund::refund_in_full( $order, 'test' );
+	}
+
+	public function test_a_refund_already_in_progress_blocks_a_second_one() {
+		global $wpdb;
+		$order = $this->paid_order();
+		$wpdb->insert( $wpdb->options, [ 'option_name' => 'anchor_shipping_refund_lock_' . $order->get_id(), 'option_value' => (string) time(), 'autoload' => 'off' ] );
+		try {
+			OrderRefund::refund_in_full( $order, 'test' );
+			$this->fail( 'expected the lock to refuse' );
+		} catch ( RuntimeException $e ) {
+			$this->assertStringContainsString( 'already in progress', $e->getMessage() );
+		}
+		$this->assertSame( [], Anchor_Test_Refund_Gateway::$refunds, 'the gateway was never called' );
+	}
+
+	public function test_a_stale_lock_from_a_dead_request_is_taken_over_and_released() {
+		global $wpdb;
+		$order = $this->paid_order();
+		$name  = 'anchor_shipping_refund_lock_' . $order->get_id();
+		$wpdb->insert( $wpdb->options, [ 'option_name' => $name, 'option_value' => (string) ( time() - 600 ), 'autoload' => 'off' ] );
+		OrderRefund::refund_in_full( $order, 'test' );
+		$this->assertCount( 1, Anchor_Test_Refund_Gateway::$refunds );
+		$this->assertNull( $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $name ) ), 'lock released' );
+	}
+
+	public function test_negative_fee_keeps_refund_lines_in_step_with_the_amount() {
+		$order = $this->paid_order();
+		$fee   = new WC_Order_Item_Fee();
+		$fee->set_name( 'Courtesy discount' );
+		$fee->set_total( '-10' );
+		$order->add_item( $fee );
+		$order->calculate_totals( false );
+		$order->save();
+		$order  = wc_get_order( $order->get_id() );
+		$refund = OrderRefund::refund_in_full( $order, 'test' );
+		$lines  = 0.0;
+		foreach ( $refund->get_items( [ 'line_item', 'fee', 'shipping' ] ) as $item ) {
+			$lines += (float) $item->get_total();
+		}
+		$this->assertEqualsWithDelta( -1 * (float) $refund->get_amount(), $lines, 0.001, 'refund lines add up to the money refunded' );
+		$this->assertEqualsWithDelta( (float) $order->get_total(), (float) $refund->get_amount(), 0.001 );
+	}
 }

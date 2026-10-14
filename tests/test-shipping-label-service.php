@@ -256,6 +256,8 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$this->assertTrue( Protection::offered( 'insurance' ) );
 		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '' ] ] );
 		$this->assertFalse( Protection::offered( 'insurance' ), 'hidden until a fee is set' );
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '', 'fee_to_300' => '2.85' ] ] );
+		$this->assertFalse( Protection::offered( 'insurance' ), 'a flat fee alone would leave values over $300 free' );
 	}
 
 	public function test_explicit_protection_opts_override_and_reach_the_carrier() {

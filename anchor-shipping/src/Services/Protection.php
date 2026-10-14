@@ -53,6 +53,7 @@ final class Protection {
 		};
 	}
 
+	/** Offered at checkout when its fee is set. For insurance that is fee_per_100: it prices everything above $300, so a flat fee alone is not enough. */
 	public static function offered( string $option ): bool {
 		$s   = Settings::all()[ $option ] ?? [];
 		$fee = 'insurance' === $option ? ( $s['fee_per_100'] ?? '' ) : ( $s['fee'] ?? '' );

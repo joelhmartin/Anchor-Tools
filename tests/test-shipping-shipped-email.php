@@ -68,4 +68,35 @@ class Test_Shipping_Shipped_Email extends Anchor_Shipping_TestCase {
 		do_action( 'woocommerce_order_details_after_order_table', $order );
 		$this->assertSame( '', ob_get_clean() );
 	}
+
+	public function test_account_orders_list_gets_a_tracking_column_after_status() {
+		$cols = apply_filters( 'woocommerce_account_orders_columns', [ 'order-number' => 'Order', 'order-status' => 'Status', 'order-total' => 'Total', 'order-actions' => 'Actions' ] );
+		$this->assertSame( [ 'order-number', 'order-status', 'anchor-shipping-tracking', 'order-total', 'order-actions' ], array_keys( $cols ) );
+	}
+
+	public function test_account_orders_tracking_column_links_active_rows_and_dashes_when_none() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000002' );
+		$this->add_row( $order, '1ZVOIDED2', 'voided' );
+		ob_start();
+		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $order );
+		$html = ob_get_clean();
+		$this->assertStringContainsString( 'tracknum=1ZK877V90300000002', $html );
+		$this->assertStringContainsString( 'In transit', $html );
+		$this->assertStringNotContainsString( '1ZVOIDED2', $html );
+
+		$bare = $this->make_order( [], 'processing' );
+		ob_start();
+		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $bare );
+		$this->assertSame( '&mdash;', ob_get_clean() );
+	}
+
+	public function test_account_orders_tracking_column_separates_multiple_packages() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000003' );
+		$this->add_row( $order, '1ZK877V90300000004' );
+		ob_start();
+		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $order );
+		$this->assertSame( 1, substr_count( ob_get_clean(), '</span><br><span' ) );
+	}
 }

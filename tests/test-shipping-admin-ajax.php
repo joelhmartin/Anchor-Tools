@@ -141,4 +141,45 @@ class Test_Shipping_Admin_Ajax extends Anchor_Shipping_TestCase {
 		$this->expectException( \Anchor\Shipping\Domain\AlreadyLabelled::class );
 		Module::instance()->labels->create_for_order( $order, [ new \Anchor\Shipping\Domain\Parcel( 1, 10, 10, 10 ) ], 'auto', [ 'additional' => true ] );
 	}
+
+	private function create_and_read_package_options( WC_Order $order, array $post ): array {
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		$this->ajax()->handle_create( [ 'order_id' => $order->get_id(), 'box' => 'small', 'weight' => '1' ] + $post );
+		foreach ( array_reverse( $this->requests ) as $req ) {
+			$body = json_decode( (string) ( $req['args']['body'] ?? '' ), true );
+			if ( isset( $body['ShipmentRequest'] ) ) {
+				return (array) ( $body['ShipmentRequest']['Shipment']['Package'][0]['PackageServiceOptions'] ?? [] );
+			}
+		}
+		$this->fail( 'no ShipmentRequest was sent: ' . implode( ', ', array_column( $this->requests, 'url' ) ) );
+	}
+
+	public function test_customer_chosen_protection_overrides_whatever_staff_post() {
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '1.25' ], 'signature' => [ 'mode' => 'customer', 'fee' => '7.70' ] ] );
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$order->update_meta_data( \Anchor\Shipping\Services\Protection::META_INSURE, 'yes' );
+		$order->update_meta_data( \Anchor\Shipping\Services\Protection::META_SIGNATURE, '' );
+		$order->save();
+
+		$opts = $this->create_and_read_package_options( $order, [ 'insure' => '', 'signature' => '1' ] );
+		$this->assertArrayHasKey( 'DeclaredValue', $opts, 'the customer paid for insurance' );
+		$this->assertArrayNotHasKey( 'DeliveryConfirmation', $opts, 'the customer did not choose a signature' );
+
+		$m     = Module::instance();
+		$panel = ( new \Anchor\Shipping\Admin\OrderPanel( $m->shipments, $m->packer, $m->carriers ) )->render_panel( wc_get_order( $order->get_id() ) );
+		$this->assertMatchesRegularExpression( '/name="insure" value="1"\s+checked=[^>]*disabled/', $panel );
+		$this->assertMatchesRegularExpression( '/name="signature" value="1"\s+disabled/', $panel );
+		$this->assertStringContainsString( 'Set by the customer at checkout', $panel );
+	}
+
+	public function test_with_protection_off_staff_still_choose_per_label() {
+		$this->configure_ups();
+		$this->as_role( 'shop_manager' );
+		$order = $this->make_order( [], 'processing' );
+		$opts  = $this->create_and_read_package_options( $order, [ 'signature' => '1' ] );
+		$this->assertArrayHasKey( 'DeliveryConfirmation', $opts );
+		$this->assertArrayNotHasKey( 'DeclaredValue', $opts );
+	}
 }

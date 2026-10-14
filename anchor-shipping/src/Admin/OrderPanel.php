@@ -136,8 +136,13 @@ final class OrderPanel {
 					<?php echo \esc_html( (string) \get_option( 'woocommerce_dimension_unit' ) ); ?>
 				</p>
 				<p><label><?php \esc_html_e( 'Package weight', 'anchor-schema' ); ?> <input type="text" size="5" name="weight" value="<?php echo \esc_attr( isset( $pack->suggestion['weight'] ) ? (string) $pack->suggestion['weight'] : '' ); ?>"> <?php echo \esc_html( (string) \get_option( 'woocommerce_weight_unit' ) ); ?></label></p>
-				<p><label><input type="checkbox" name="insure" value="1" <?php \checked( $protection['declared_value'] > 0 ); ?>> <?php \esc_html_e( 'Insure for order value', 'anchor-schema' ); ?></label><br>
-				<label><input type="checkbox" name="signature" value="1" <?php \checked( $protection['signature'] ); ?>> <?php \esc_html_e( 'Signature required', 'anchor-schema' ); ?></label></p>
+				<p class="anchor-shipping-protection-opts">
+					<label><input type="checkbox" name="insure" value="1" <?php \checked( $protection['declared_value'] > 0 ); ?><?php \disabled( Protection::locked( 'insurance' ) ); ?>> <?php \esc_html_e( 'Insure for order value', 'anchor-schema' ); ?></label><br>
+					<label><input type="checkbox" name="signature" value="1" <?php \checked( $protection['signature'] ); ?><?php \disabled( Protection::locked( 'signature' ) ); ?>> <?php \esc_html_e( 'Signature required', 'anchor-schema' ); ?></label>
+					<?php if ( Protection::locked( 'insurance' ) || Protection::locked( 'signature' ) ) : ?>
+						<br><small class="anchor-shipping-meta"><?php echo \esc_html( in_array( 'customer', [ $s['insurance']['mode'], $s['signature']['mode'] ], true ) ? \__( 'Set by the customer at checkout, so it cannot be changed here.', 'anchor-schema' ) : \__( 'Set by the order-value rule in the shipping settings.', 'anchor-schema' ) ); ?></small>
+					<?php endif; ?>
+				</p>
 				<p><button type="button" class="button button-primary anchor-shipping-submit"><?php \esc_html_e( 'Create label', 'anchor-schema' ); ?></button></p>
 				<p class="anchor-shipping-error" role="alert"></p>
 			</div>

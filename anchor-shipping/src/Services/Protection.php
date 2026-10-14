@@ -29,6 +29,15 @@ final class Protection {
 		return [ 'declared_value' => $insured ? $shippable_subtotal : 0.0, 'signature' => $sign ];
 	}
 
+	/**
+	 * Is this option decided by the order rather than by staff at label time? True unless the mode is
+	 * 'off': 'customer' = what the customer chose (and paid for) at checkout, 'auto' = the threshold rule.
+	 * The label form then shows the decision read-only and label creation ignores anything posted.
+	 */
+	public static function locked( string $option ): bool {
+		return 'off' !== ( Settings::all()[ $option ]['mode'] ?? 'off' );
+	}
+
 	public static function offered( string $option ): bool {
 		$s   = Settings::all()[ $option ] ?? [];
 		$fee = 'insurance' === $option ? ( $s['fee_per_100'] ?? '' ) : ( $s['fee'] ?? '' );

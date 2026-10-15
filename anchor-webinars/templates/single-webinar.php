@@ -22,17 +22,17 @@ $module = \Anchor\Webinars\Module::instance();
             <?php echo $module->render_access_gate( get_the_ID() ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — markup built internally. ?>
         <?php else : ?>
             <?php
-            $vimeo_id   = get_post_meta( get_the_ID(), '_anchor_webinar_vimeo_id', true );
+            $has_video  = $module && $module->video_source( get_the_ID() );
             $has_player = $module ? $module->content_has_player_container( get_the_ID() ) : false;
             ?>
-            <?php if ( $vimeo_id && ! $has_player ) : ?>
-                <?php echo $module ? $module->render_player( get_the_ID(), $vimeo_id ) : ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — markup built internally. ?>
-            <?php elseif ( ! $vimeo_id && has_post_thumbnail() ) : ?>
+            <?php if ( $has_video && ! $has_player ) : ?>
+                <?php echo $module->render_player( get_the_ID() ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — markup built internally. ?>
+            <?php elseif ( ! $has_video && has_post_thumbnail() ) : ?>
                 <div class="anchor-webinar-featured-img">
                     <?php the_post_thumbnail( 'large' ); ?>
                 </div>
-            <?php elseif ( ! $vimeo_id ) : ?>
-                <p><?php echo esc_html__( 'Vimeo video ID is missing for this webinar.', 'anchor-schema' ); ?></p>
+            <?php elseif ( ! $has_video ) : ?>
+                <p><?php echo esc_html__( 'No video is set for this webinar.', 'anchor-schema' ); ?></p>
             <?php endif; ?>
 
             <div class="anchor-webinar-description">

@@ -3,12 +3,14 @@ namespace Anchor\Webinars;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
+require_once __DIR__ . '/registrants.php';
+
 class Module {
     const CPT = 'anchor_webinar';
     const OPTION_KEY = 'anchor_webinars_settings';
     const NONCE = 'anchor_webinar_nonce';
     const LOG_TABLE = 'anchor_webinar_logs';
-    const DB_VERSION = '1.0.0';
+    const DB_VERSION = '1.1.0';
 
     private static $instance = null;
     private $filling_content = false;
@@ -56,6 +58,10 @@ class Module {
         \add_action( 'template_redirect', [ $this, 'maybe_nocache_gated' ] );
 
         \add_action( 'wp_ajax_anchor_webinar_log', [ $this, 'handle_watch_log' ] );
+        // Anonymous viewers are logged only against a registrant key (see Registrants).
+        \add_action( 'wp_ajax_nopriv_anchor_webinar_log', [ $this, 'handle_watch_log' ] );
+
+        Registrants::instance( $this );
 
         \add_action( 'init', [ $this, 'maybe_create_table' ] );
     }
@@ -102,12 +108,23 @@ class Module {
     public function render_metabox( $post ) {
         \wp_nonce_field( self::NONCE, self::NONCE );
         $vimeo_id = \get_post_meta( $post->ID, '_anchor_webinar_vimeo_id', true );
+        $youtube_id = \get_post_meta( $post->ID, '_anchor_webinar_youtube_id', true );
         $webinar_date = \get_post_meta( $post->ID, '_anchor_webinar_date', true );
         ?>
         <div class="anchor-webinar-meta">
             <p>
                 <label for="anchor_webinar_vimeo_id"><strong><?php echo \esc_html__( 'Vimeo Video ID', 'anchor-schema' ); ?></strong></label><br />
-                <input type="text" id="anchor_webinar_vimeo_id" name="anchor_webinar_vimeo_id" value="<?php echo \esc_attr( $vimeo_id ); ?>" class="regular-text" required />
+                <input type="text" id="anchor_webinar_vimeo_id" name="anchor_webinar_vimeo_id" value="<?php echo \esc_attr( $vimeo_id ); ?>" class="regular-text" />
+            </p>
+            <p>
+                <label for="anchor_webinar_youtube_id"><strong><?php echo \esc_html__( 'YouTube URL or Video ID', 'anchor-schema' ); ?></strong></label><br />
+                <input type="text" id="anchor_webinar_youtube_id" name="anchor_webinar_youtube_id" value="<?php echo \esc_attr( $youtube_id ); ?>" class="regular-text" />
+                <span class="description"><?php echo \esc_html__( 'Used when no Vimeo ID is set. Watch time is tracked for both.', 'anchor-schema' ); ?></span>
+            </p>
+            <p>
+                <label><input type="checkbox" name="anchor_webinar_form_access" value="1" <?php \checked( \get_post_meta( $post->ID, '_anchor_webinar_form_access', true ), '1' ); ?> />
+                <strong><?php echo \esc_html__( 'Form registrants can watch', 'anchor-schema' ); ?></strong></label><br />
+                <span class="description"><?php echo \esc_html__( 'Lets an Anchor Forms registration (webhook) unlock this webinar without an account, via [anchor_webinar_registered]. Leave off for member-only webinars.', 'anchor-schema' ); ?></span>
             </p>
             <p>
                 <label for="anchor_webinar_date"><strong><?php echo \esc_html__( 'Webinar Date', 'anchor-schema' ); ?></strong></label><br />
@@ -155,6 +172,8 @@ class Module {
         $webinar_date = \sanitize_text_field( $_POST['anchor_webinar_date'] ?? '' );
 
         \update_post_meta( $post_id, '_anchor_webinar_vimeo_id', $vimeo_id );
+        \update_post_meta( $post_id, '_anchor_webinar_form_access', empty( $_POST['anchor_webinar_form_access'] ) ? '0' : '1' );
+        \update_post_meta( $post_id, '_anchor_webinar_youtube_id', self::parse_youtube_id( \wp_unslash( $_POST['anchor_webinar_youtube_id'] ?? '' ) ) );
         \update_post_meta( $post_id, '_anchor_webinar_date', $webinar_date );
 
         $access = \sanitize_text_field( \wp_unslash( $_POST['anchor_webinar_access'] ?? 'public' ) );
@@ -914,6 +933,8 @@ class Module {
         ] );
 
         echo '<div class="wrap"><h1>' . \esc_html__( 'Webinar Analytics', 'anchor-schema' ) . '</h1>';
+        Registrants::instance()->render_report( $webinar_filter );
+        echo '<h2>' . \esc_html__( 'Watch sessions', 'anchor-schema' ) . '</h2>';
         echo '<form method="get" style="margin-bottom:12px;">';
         echo '<input type="hidden" name="post_type" value="' . \esc_attr( self::CPT ) . '" />';
         echo '<input type="hidden" name="page" value="anchor-webinar-analytics" />';
@@ -936,22 +957,31 @@ class Module {
         echo '<thead><tr>';
         echo '<th>' . \esc_html__( 'User', 'anchor-schema' ) . '</th>';
         echo '<th>' . \esc_html__( 'Webinar', 'anchor-schema' ) . '</th>';
-        echo '<th>' . \esc_html__( 'Time Watched (seconds)', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Time Watched', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Watched %', 'anchor-schema' ) . '</th>';
         echo '<th>' . \esc_html__( 'Date', 'anchor-schema' ) . '</th>';
         echo '</tr></thead><tbody>';
 
         if ( empty( $logs ) ) {
-            echo '<tr><td colspan="4">' . \esc_html__( 'No watch logs found.', 'anchor-schema' ) . '</td></tr>';
+            echo '<tr><td colspan="5">' . \esc_html__( 'No watch logs found.', 'anchor-schema' ) . '</td></tr>';
         } else {
             foreach ( $logs as $log ) {
-                $user = \get_user_by( 'id', $log->user_id );
-                $user_label = $user ? $user->display_name : \__( 'Unknown', 'anchor-schema' );
+                $user = $log->user_id ? \get_user_by( 'id', $log->user_id ) : null;
+                $reg  = ! empty( $log->registrant_key ) ? Registrants::instance()->get( $log->registrant_key ) : null;
+                if ( $user ) {
+                    $user_label = $user->display_name;
+                } elseif ( $reg ) {
+                    $user_label = \trim( $reg->first_name . ' ' . $reg->last_name ) . ' <' . $reg->email . '>';
+                } else {
+                    $user_label = \__( 'Unknown', 'anchor-schema' );
+                }
                 $webinar_title = \get_the_title( $log->webinar_id );
                 printf(
-                    '<tr><td>%1$s</td><td>%2$s</td><td>%3$d</td><td>%4$s</td></tr>',
+                    '<tr><td>%1$s</td><td>%2$s</td><td>%3$s</td><td>%4$s</td><td>%5$s</td></tr>',
                     \esc_html( $user_label ),
                     \esc_html( $webinar_title ),
-                    (int) $log->seconds_watched,
+                    \esc_html( Registrants::format_duration( (int) $log->seconds_watched ) ),
+                    \esc_html( Registrants::percent( (int) $log->seconds_watched, (int) ( $log->duration_seconds ?? 0 ) ) ),
                     \esc_html( $log->viewed_at )
                 );
             }
@@ -1020,12 +1050,38 @@ class Module {
             return;
         }
 
-        $vimeo_id = \get_post_meta( $post_id, '_anchor_webinar_vimeo_id', true );
-        if ( ! $vimeo_id ) {
+        $source = $this->video_source( $post_id );
+        if ( ! $source ) {
             return;
         }
 
-        $this->enqueue_player_assets();
+        $this->enqueue_player_assets( $source['type'] );
+    }
+
+    /**
+     * The webinar's video: Vimeo when a Vimeo ID is set (the original source), else YouTube.
+     *
+     * @return array{type:string,id:string}|null
+     */
+    public function video_source( $post_id ) {
+        $vimeo = (string) \get_post_meta( $post_id, '_anchor_webinar_vimeo_id', true );
+        if ( $vimeo !== '' ) {
+            return [ 'type' => 'vimeo', 'id' => $vimeo ];
+        }
+        $youtube = (string) \get_post_meta( $post_id, '_anchor_webinar_youtube_id', true );
+        if ( $youtube !== '' ) {
+            return [ 'type' => 'youtube', 'id' => $youtube ];
+        }
+        return null;
+    }
+
+    /** "https://youtu.be/ID", "watch?v=ID", "/embed/ID", "/shorts/ID" or a bare ID -> the 11-char ID ('' if none). */
+    public static function parse_youtube_id( $value ) {
+        $value = \trim( (string) $value );
+        if ( \preg_match( '~(?:youtu\.be/|[?&]v=|/embed/|/shorts/|/live/)([A-Za-z0-9_-]{11})~', $value, $m ) ) {
+            return $m[1];
+        }
+        return \preg_match( '~^[A-Za-z0-9_-]{11}$~', $value ) ? $value : '';
     }
 
     /**
@@ -1034,14 +1090,21 @@ class Module {
      * Safe to call late (from a shortcode inside the_content) — both scripts are
      * footer scripts, and WordPress prints late-enqueued styles in the footer too.
      */
-    public function enqueue_player_assets() {
+    public function enqueue_player_assets( $type = 'vimeo' ) {
+        // The provider SDK is per player type, and is made a dependency of player.js so it
+        // always prints first — even when a second player type is added later on the page.
+        $sdk = $type === 'youtube' ? 'youtube-iframe-api' : 'vimeo-player';
+        \wp_enqueue_script( $sdk, $type === 'youtube' ? 'https://www.youtube.com/iframe_api' : 'https://player.vimeo.com/api/player.js', [], null, true );
         if ( \wp_script_is( 'anchor-webinar-player', 'enqueued' ) ) {
+            $player = \wp_scripts()->registered['anchor-webinar-player'] ?? null;
+            if ( $player && ! \in_array( $sdk, $player->deps, true ) ) {
+                $player->deps[] = $sdk;
+            }
             return;
         }
 
-        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.4.0' );
-        \wp_enqueue_script( 'vimeo-player', 'https://player.vimeo.com/api/player.js', [], null, true );
-        \wp_enqueue_script( 'anchor-webinar-player', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/player.js' ), [ 'vimeo-player' ], '2.0.0', true );
+        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.5.0' );
+        \wp_enqueue_script( 'anchor-webinar-player', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/player.js' ), [ $sdk ], '3.0.0', true );
         \wp_localize_script( 'anchor-webinar-player', 'ANCHOR_WEBINAR', $this->player_config() );
     }
 
@@ -1059,10 +1122,10 @@ class Module {
 
         if ( \is_singular( self::CPT ) ) {
             $queried_id = \get_queried_object_id();
-            $vimeo_id   = $queried_id ? \get_post_meta( $queried_id, '_anchor_webinar_vimeo_id', true ) : '';
-            if ( $vimeo_id && $this->can_user_access( $queried_id ) ) {
+            $source     = $queried_id ? $this->video_source( $queried_id ) : null;
+            if ( $source && $this->can_user_access( $queried_id ) ) {
                 $config['webinarId'] = $queried_id;
-                $config['vimeoId']   = $vimeo_id;
+                $config[ $source['type'] === 'youtube' ? 'youtubeId' : 'vimeoId' ] = $source['id'];
             }
         }
 
@@ -1074,24 +1137,28 @@ class Module {
      * template, [anchor_webinar] shortcode, builder layout — goes through here,
      * so watch tracking can never be attached to one path and missing from another.
      */
-    public function render_player( $post_id, $vimeo_id = '' ) {
+    public function render_player( $post_id, $vimeo_id = '', $registrant_key = '' ) {
         $post_id = (int) $post_id;
         if ( ! $post_id ) {
             return '';
         }
-        if ( $vimeo_id === '' ) {
-            $vimeo_id = \get_post_meta( $post_id, '_anchor_webinar_vimeo_id', true );
-        }
-        if ( ! $vimeo_id ) {
+        $source = $vimeo_id !== '' ? [ 'type' => 'vimeo', 'id' => $vimeo_id ] : $this->video_source( $post_id );
+        if ( ! $source ) {
             return '';
         }
 
-        $this->enqueue_player_assets();
+        $this->enqueue_player_assets( $source['type'] );
 
+        // The YouTube API replaces the target element with its iframe, so it gets an inner
+        // node; the outer div keeps the ratio box and the data attributes.
+        $inner = $source['type'] === 'youtube' ? '<div class="anchor-webinar-player__yt"></div>' : '';
         return \sprintf(
-            '<div class="anchor-webinar-player" data-anchor-webinar-player data-webinar-id="%d" data-vimeo-id="%s"></div>',
+            '<div class="anchor-webinar-player" data-anchor-webinar-player data-webinar-id="%1$d" data-%2$s-id="%3$s"%4$s>%5$s</div>',
             $post_id,
-            \esc_attr( $vimeo_id )
+            $source['type'],
+            \esc_attr( $source['id'] ),
+            $registrant_key !== '' ? ' data-registrant="' . \esc_attr( $registrant_key ) . '"' : '',
+            $inner
         );
     }
 
@@ -1127,17 +1194,16 @@ class Module {
             return $this->locked_notice();
         }
 
-        $vimeo_id     = \get_post_meta( $post->ID, '_anchor_webinar_vimeo_id', true );
         $webinar_date = \get_post_meta( $post->ID, '_anchor_webinar_date', true );
 
-        if ( ! $vimeo_id ) {
+        if ( ! $this->video_source( $post->ID ) ) {
             return '';
         }
 
         \ob_start();
         ?>
         <div class="anchor-webinar-block">
-            <?php echo $this->render_player( $post->ID, $vimeo_id ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — markup built internally. ?>
+            <?php echo $this->render_player( $post->ID ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — markup built internally. ?>
             <?php if ( $webinar_date ) : ?>
                 <p class="anchor-webinar-block__date"><?php echo \esc_html( \date_i18n( 'F j, Y', \strtotime( $webinar_date ) ) ); ?></p>
             <?php endif; ?>
@@ -1162,25 +1228,49 @@ class Module {
         return \plugin_dir_path( __FILE__ ) . 'templates/' . $file;
     }
 
+    /**
+     * Watch-time beacon from player.js. Two kinds of viewer:
+     *  - logged-in users: nonce + access check, logged against their user id (as before);
+     *  - anonymous registrants: logged against the registrant key from their personal link
+     *    (Registrants), only for a webinar they registered for or a public one. No nonce —
+     *    those pages are edge-cached, so a nonce would go stale; the unguessable key plus a
+     *    per-IP rate limit is the control, and the worst a forger can do is add watch rows.
+     */
     public function handle_watch_log() {
-        if ( ! \check_ajax_referer( 'anchor_webinar_log', 'nonce', false ) ) {
-            \wp_send_json_error( [ 'message' => 'invalid_nonce' ] );
-        }
-        if ( ! \is_user_logged_in() ) {
-            \wp_send_json_error( [ 'message' => 'not_logged_in' ] );
-        }
-
-        $user_id = \get_current_user_id();
         $webinar_id = (int) ( $_POST['webinar_id'] ?? 0 );
-        $seconds = (int) ( $_POST['seconds'] ?? 0 );
-        $session = \sanitize_text_field( $_POST['session'] ?? '' );
+        $seconds    = (int) ( $_POST['seconds'] ?? 0 );
+        $duration   = \max( 0, (int) ( $_POST['duration'] ?? 0 ) );
+        $session    = \substr( \sanitize_text_field( \wp_unslash( $_POST['session'] ?? '' ) ), 0, 100 );
+        $registrant = Registrants::clean_key( \wp_unslash( $_POST['registrant'] ?? '' ) );
 
-        if ( ! $webinar_id || $seconds <= 0 || ! $session ) {
+        if ( ! $webinar_id || $seconds <= 0 || ! $session || \get_post_type( $webinar_id ) !== self::CPT ) {
             \wp_send_json_error( [ 'message' => 'invalid_data' ] );
         }
+        if ( $duration > 0 ) {
+            $seconds = \min( $seconds, $duration + 60 );
+        }
 
-        if ( ! $this->can_user_access( $webinar_id, $user_id ) ) {
-            \wp_send_json_error( [ 'message' => 'no_access' ] );
+        if ( \is_user_logged_in() ) {
+            if ( ! \check_ajax_referer( 'anchor_webinar_log', 'nonce', false ) ) {
+                \wp_send_json_error( [ 'message' => 'invalid_nonce' ] );
+            }
+            $user_id = \get_current_user_id();
+            if ( ! $this->can_user_access( $webinar_id, $user_id ) && ! Registrants::instance()->is_registered( $registrant, $webinar_id ) ) {
+                \wp_send_json_error( [ 'message' => 'no_access' ] );
+            }
+        } else {
+            if ( $registrant === '' ) {
+                \wp_send_json_error( [ 'message' => 'not_logged_in' ] );
+            }
+            if ( $this->rate_limited( 'log', 240, 10 * MINUTE_IN_SECONDS ) ) {
+                \wp_send_json_error( [ 'message' => 'rate_limited' ] );
+            }
+            if ( \get_post_status( $webinar_id ) !== 'publish' ) {
+                \wp_send_json_error( [ 'message' => 'no_access' ] );
+            }
+            // Not required to be stored yet: a REVIEW-held submission only reaches us on release,
+            // and the row joins its registrant whenever that lands. A forged key only adds rows.
+            $user_id = 0;
         }
 
         global $wpdb;
@@ -1188,11 +1278,13 @@ class Module {
 
         $wpdb->query(
             $wpdb->prepare(
-                "INSERT INTO {$table} (user_id, webinar_id, seconds_watched, viewed_at, session_key) VALUES (%d, %d, %d, %s, %s)
-                ON DUPLICATE KEY UPDATE seconds_watched = VALUES(seconds_watched), viewed_at = VALUES(viewed_at)",
+                "INSERT INTO {$table} (user_id, webinar_id, seconds_watched, duration_seconds, registrant_key, viewed_at, session_key) VALUES (%d, %d, %d, %d, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE seconds_watched = GREATEST(seconds_watched, VALUES(seconds_watched)), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), viewed_at = VALUES(viewed_at)",
                 $user_id,
                 $webinar_id,
                 $seconds,
+                $duration,
+                $registrant,
                 \gmdate( 'Y-m-d H:i:s' ),
                 $session
             )
@@ -1272,16 +1364,20 @@ class Module {
             user_id BIGINT UNSIGNED NOT NULL,
             webinar_id BIGINT UNSIGNED NOT NULL,
             seconds_watched INT UNSIGNED NOT NULL DEFAULT 0,
+            duration_seconds INT UNSIGNED NOT NULL DEFAULT 0,
+            registrant_key VARCHAR(64) NOT NULL DEFAULT '',
             viewed_at DATETIME NOT NULL,
             session_key VARCHAR(100) NOT NULL,
             PRIMARY KEY  (id),
             KEY webinar_id (webinar_id),
             KEY user_id (user_id),
+            KEY registrant_key (registrant_key),
             UNIQUE KEY session_key (session_key)
         ) {$charset};";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         \dbDelta( $sql );
+        \dbDelta( Registrants::schema_sql( $wpdb->prefix, $charset ) );
         \update_option( 'anchor_webinar_db_version', self::DB_VERSION );
     }
 

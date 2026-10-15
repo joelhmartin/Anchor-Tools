@@ -28,6 +28,10 @@
     var title = container.closest('[data-webinar-title]');
     title = title ? title.getAttribute('data-webinar-title') : document.title;
     var lastTime = null, watched = 0, duration = 0, playing = false, finalSent = false;
+    var started = false, completed = false;
+    // Largest gap between two progress samples still counted as played time. Bigger
+    // jumps are seeks. Vimeo's timeupdate fires ~4x/s; the YouTube poll is 1s.
+    var maxStep = container.getAttribute('data-youtube-id') ? 2.5 : 10;
     var milestones = { 25:false, 50:false, 75:false };
 
     function push(event, extra){
@@ -61,17 +65,23 @@
     }
 
     window.addEventListener('pagehide', function(){ send(true); });
+    // Restored from the back/forward cache: the page is live again, so keep reporting.
+    window.addEventListener('pageshow', function(e){ if(e.persisted){ finalSent = false; } });
 
     return {
       setDuration: function(d){ if(d > 0){ duration = d; } },
-      play: function(){ if(!playing && watched === 0){ push('webinar_start', {}); } playing = true; },
+      play: function(){ if(!started){ started = true; push('webinar_start', {}); } playing = true; },
       pause: function(){ playing = false; lastTime = null; send(false); },
-      ended: function(){ playing = false; lastTime = null; push('webinar_complete', { webinar_percent: 100 }); send(false); },
+      ended: function(){
+        playing = false; lastTime = null;
+        if(!completed){ completed = true; push('webinar_complete', { webinar_percent: 100 }); }
+        send(false);
+      },
       tick: function(seconds){
         if(!playing){ lastTime = seconds; return; }
         if(lastTime !== null){
           var delta = seconds - lastTime;
-          if(delta > 0 && delta < 10){ watched += delta; checkMilestones(); }
+          if(delta > 0 && delta < maxStep){ watched += delta; checkMilestones(); }
         }
         lastTime = seconds;
       }
@@ -117,17 +127,29 @@
       }
     });
   }
+  function drainYouTube(){
+    if(!(window.YT && window.YT.Player)){ return false; }
+    ytQueue.splice(0).forEach(function(a){ startYouTube(a[0], a[1], a[2]); });
+    return true;
+  }
   // The IFrame API calls this global once loaded; keep any handler another script set.
   var prevReady = window.onYouTubeIframeAPIReady;
   window.onYouTubeIframeAPIReady = function(){
     if(typeof prevReady === 'function'){ prevReady(); }
-    ytQueue.splice(0).forEach(function(a){ startYouTube(a[0], a[1], a[2]); });
+    drainYouTube();
   };
+  // ...and don't depend on it: another script may overwrite the global after us, or the
+  // API may have finished loading before this file ran. Poll briefly as a fallback.
+  var ytPolls = 0;
+  var ytPoll = setInterval(function(){
+    if((!ytQueue.length && ytPolls > 0) || drainYouTube() || ++ytPolls > 50){ clearInterval(ytPoll); }
+  }, 200);
 
   Array.prototype.forEach.call(nodes, function(container){
     var webinarId = container.getAttribute('data-webinar-id') || cfg.webinarId;
-    var youtubeId = container.getAttribute('data-youtube-id');
-    var vimeoId   = container.getAttribute('data-vimeo-id') || (youtubeId ? '' : cfg.vimeoId);
+    var hasOwn    = container.hasAttribute('data-youtube-id') || container.hasAttribute('data-vimeo-id');
+    var youtubeId = container.getAttribute('data-youtube-id') || (hasOwn ? '' : cfg.youtubeId);
+    var vimeoId   = container.getAttribute('data-vimeo-id') || (hasOwn || youtubeId ? '' : cfg.vimeoId);
     if(!webinarId || (!vimeoId && !youtubeId)){ return; }
 
     // A page can carry both a rendered container and the legacy in-content div

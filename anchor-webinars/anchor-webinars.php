@@ -122,6 +122,11 @@ class Module {
                 <span class="description"><?php echo \esc_html__( 'Used when no Vimeo ID is set. Watch time is tracked for both.', 'anchor-schema' ); ?></span>
             </p>
             <p>
+                <label><input type="checkbox" name="anchor_webinar_form_access" value="1" <?php \checked( \get_post_meta( $post->ID, '_anchor_webinar_form_access', true ), '1' ); ?> />
+                <strong><?php echo \esc_html__( 'Form registrants can watch', 'anchor-schema' ); ?></strong></label><br />
+                <span class="description"><?php echo \esc_html__( 'Lets an Anchor Forms registration (webhook) unlock this webinar without an account, via [anchor_webinar_registered]. Leave off for member-only webinars.', 'anchor-schema' ); ?></span>
+            </p>
+            <p>
                 <label for="anchor_webinar_date"><strong><?php echo \esc_html__( 'Webinar Date', 'anchor-schema' ); ?></strong></label><br />
                 <input type="date" id="anchor_webinar_date" name="anchor_webinar_date" value="<?php echo \esc_attr( $webinar_date ); ?>" />
             </p>
@@ -167,6 +172,7 @@ class Module {
         $webinar_date = \sanitize_text_field( $_POST['anchor_webinar_date'] ?? '' );
 
         \update_post_meta( $post_id, '_anchor_webinar_vimeo_id', $vimeo_id );
+        \update_post_meta( $post_id, '_anchor_webinar_form_access', empty( $_POST['anchor_webinar_form_access'] ) ? '0' : '1' );
         \update_post_meta( $post_id, '_anchor_webinar_youtube_id', self::parse_youtube_id( \wp_unslash( $_POST['anchor_webinar_youtube_id'] ?? '' ) ) );
         \update_post_meta( $post_id, '_anchor_webinar_date', $webinar_date );
 
@@ -1085,18 +1091,20 @@ class Module {
      * footer scripts, and WordPress prints late-enqueued styles in the footer too.
      */
     public function enqueue_player_assets( $type = 'vimeo' ) {
-        // The provider SDK is per player type; player.js boots whichever SDKs loaded.
-        if ( $type === 'youtube' ) {
-            \wp_enqueue_script( 'youtube-iframe-api', 'https://www.youtube.com/iframe_api', [], null, true );
-        } else {
-            \wp_enqueue_script( 'vimeo-player', 'https://player.vimeo.com/api/player.js', [], null, true );
-        }
+        // The provider SDK is per player type, and is made a dependency of player.js so it
+        // always prints first — even when a second player type is added later on the page.
+        $sdk = $type === 'youtube' ? 'youtube-iframe-api' : 'vimeo-player';
+        \wp_enqueue_script( $sdk, $type === 'youtube' ? 'https://www.youtube.com/iframe_api' : 'https://player.vimeo.com/api/player.js', [], null, true );
         if ( \wp_script_is( 'anchor-webinar-player', 'enqueued' ) ) {
+            $player = \wp_scripts()->registered['anchor-webinar-player'] ?? null;
+            if ( $player && ! \in_array( $sdk, $player->deps, true ) ) {
+                $player->deps[] = $sdk;
+            }
             return;
         }
 
         \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.5.0' );
-        \wp_enqueue_script( 'anchor-webinar-player', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/player.js' ), [], '3.0.0', true );
+        \wp_enqueue_script( 'anchor-webinar-player', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/player.js' ), [ $sdk ], '3.0.0', true );
         \wp_localize_script( 'anchor-webinar-player', 'ANCHOR_WEBINAR', $this->player_config() );
     }
 
@@ -1114,10 +1122,10 @@ class Module {
 
         if ( \is_singular( self::CPT ) ) {
             $queried_id = \get_queried_object_id();
-            $vimeo_id   = $queried_id ? \get_post_meta( $queried_id, '_anchor_webinar_vimeo_id', true ) : '';
-            if ( $vimeo_id && $this->can_user_access( $queried_id ) ) {
+            $source     = $queried_id ? $this->video_source( $queried_id ) : null;
+            if ( $source && $this->can_user_access( $queried_id ) ) {
                 $config['webinarId'] = $queried_id;
-                $config['vimeoId']   = $vimeo_id;
+                $config[ $source['type'] === 'youtube' ? 'youtubeId' : 'vimeoId' ] = $source['id'];
             }
         }
 
@@ -1257,10 +1265,11 @@ class Module {
             if ( $this->rate_limited( 'log', 240, 10 * MINUTE_IN_SECONDS ) ) {
                 \wp_send_json_error( [ 'message' => 'rate_limited' ] );
             }
-            $public = \get_post_meta( $webinar_id, '_anchor_webinar_access', true );
-            if ( ! Registrants::instance()->is_registered( $registrant, $webinar_id ) && ! ( $public === '' || $public === 'public' ) ) {
+            if ( \get_post_status( $webinar_id ) !== 'publish' ) {
                 \wp_send_json_error( [ 'message' => 'no_access' ] );
             }
+            // Not required to be stored yet: a REVIEW-held submission only reaches us on release,
+            // and the row joins its registrant whenever that lands. A forged key only adds rows.
             $user_id = 0;
         }
 
@@ -1270,7 +1279,7 @@ class Module {
         $wpdb->query(
             $wpdb->prepare(
                 "INSERT INTO {$table} (user_id, webinar_id, seconds_watched, duration_seconds, registrant_key, viewed_at, session_key) VALUES (%d, %d, %d, %d, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE seconds_watched = GREATEST(seconds_watched, VALUES(seconds_watched)), duration_seconds = VALUES(duration_seconds), viewed_at = VALUES(viewed_at)",
+                ON DUPLICATE KEY UPDATE seconds_watched = GREATEST(seconds_watched, VALUES(seconds_watched)), duration_seconds = GREATEST(duration_seconds, VALUES(duration_seconds)), viewed_at = VALUES(viewed_at)",
                 $user_id,
                 $webinar_id,
                 $seconds,

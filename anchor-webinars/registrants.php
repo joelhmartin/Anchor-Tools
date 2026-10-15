@@ -40,6 +40,7 @@ class Registrants {
     private function __construct( $module ) {
         $this->module = $module;
         \add_action( 'rest_api_init', [ $this, 'register_route' ] );
+        \add_action( 'template_redirect', [ $this, 'nocache_personal_links' ] );
         \add_shortcode( 'anchor_webinar_registered', [ $this, 'render_registered' ] );
         \add_action( 'admin_init', [ $this, 'register_settings_section' ], 20 );
     }
@@ -95,6 +96,24 @@ class Registrants {
         return \rest_url( 'anchor-webinars/v1/registrations' );
     }
 
+    /**
+     * A personal ?r= link must never be edge-cached: its first render can precede the webhook,
+     * and the autoresponder links to the same URL. Headers have gone out by shortcode time, so
+     * this runs on template_redirect for any singular page carrying the shortcode.
+     */
+    public function nocache_personal_links() {
+        if ( empty( $_GET['r'] ) || ! \is_singular() ) {
+            return;
+        }
+        $post = \get_queried_object();
+        if ( $post instanceof \WP_Post && \has_shortcode( $post->post_content, 'anchor_webinar_registered' ) ) {
+            if ( ! \defined( 'DONOTCACHEPAGE' ) ) {
+                \define( 'DONOTCACHEPAGE', true );
+            }
+            \nocache_headers();
+        }
+    }
+
     /* ── Webhook receiver ─────────────────────────────────────────────── */
 
     public function register_route() {
@@ -124,7 +143,11 @@ class Registrants {
             return new \WP_REST_Response( [ 'error' => 'invalid_payload' ], 400 );
         }
         $fields = \is_array( $data['fields'] ?? null ) ? $data['fields'] : [];
-        $label  = \sanitize_text_field( (string) ( $fields['webinar'] ?? '' ) );
+        // Multi-value answers arrive as arrays; the columns below hold text.
+        $text = static function ( $v ) {
+            return \is_array( $v ) ? \implode( ', ', \array_map( 'strval', $v ) ) : (string) $v;
+        };
+        $label  = \sanitize_text_field( $text( $fields['webinar'] ?? '' ) );
         $webinar_id = $this->match_webinar( $label );
 
         global $wpdb;
@@ -135,10 +158,10 @@ class Registrants {
             $key,
             $webinar_id,
             $label,
-            \sanitize_text_field( (string) ( $fields['first_name'] ?? '' ) ),
-            \sanitize_text_field( (string) ( $fields['last_name'] ?? '' ) ),
-            \sanitize_email( (string) ( $fields['email'] ?? '' ) ),
-            \sanitize_text_field( (string) ( $fields['practice_name'] ?? $fields['practice'] ?? '' ) ),
+            \sanitize_text_field( $text( $fields['first_name'] ?? '' ) ),
+            \sanitize_text_field( $text( $fields['last_name'] ?? '' ) ),
+            \sanitize_email( $text( $fields['email'] ?? '' ) ),
+            \sanitize_text_field( $text( $fields['practice_name'] ?? $fields['practice'] ?? '' ) ),
             \wp_json_encode( [
                 'fields'       => $fields,
                 'attribution'  => \is_array( $data['attribution'] ?? null ) ? $data['attribution'] : [],
@@ -148,8 +171,12 @@ class Registrants {
             \gmdate( 'Y-m-d H:i:s' )
         ) );
 
-        /** Fires after a form registrant is stored (e.g. to push to a CRM). */
-        \do_action( 'anchor_webinar_registrant_saved', $key, $webinar_id, $fields, $data );
+        // rows_affected: 1 = new row, 2 = updated, 0 = identical replay. Only a NEW registrant
+        // fires the hook, so a replayed/retried webhook can't double-push to a CRM.
+        if ( 1 === (int) $wpdb->rows_affected ) {
+            /** Fires once per new form registrant (e.g. to push to a CRM). */
+            \do_action( 'anchor_webinar_registrant_saved', $key, $webinar_id, $fields, $data );
+        }
 
         return new \WP_REST_Response( [ 'ok' => true, 'webinar_id' => $webinar_id, 'matched' => $webinar_id > 0 ], 200 );
     }
@@ -158,6 +185,10 @@ class Registrants {
      * Webinar post for a submitted label. Matches the webinar's title (case/punctuation-insensitive,
      * so "Let’s" == "Let's"), or its optional `_anchor_webinar_form_label` meta when the form's
      * option text differs from the page title.
+     *
+     * Only webinars that opted in (`_anchor_webinar_form_access`, "Form registrants can watch") or
+     * are public can match: a submitted select value is not validated against the form's options,
+     * so matching any title would let an edited form value unlock a member-only webinar.
      */
     public function match_webinar( $label ) {
         $needle = \sanitize_title( \html_entity_decode( (string) $label, ENT_QUOTES ) );
@@ -171,6 +202,10 @@ class Registrants {
             'fields'      => 'ids',
         ] );
         foreach ( $posts as $id ) {
+            $access = (string) \get_post_meta( $id, '_anchor_webinar_access', true );
+            if ( '1' !== \get_post_meta( $id, '_anchor_webinar_form_access', true ) && ! ( $access === '' || $access === 'public' ) ) {
+                continue;
+            }
             $candidates = [ \get_the_title( $id ), (string) \get_post_meta( $id, '_anchor_webinar_form_label', true ) ];
             foreach ( $candidates as $c ) {
                 if ( $c !== '' && \sanitize_title( \html_entity_decode( $c, ENT_QUOTES ) ) === $needle ) {
@@ -215,12 +250,17 @@ class Registrants {
         $reg  = $this->get( $key );
 
         $webinar_id = $reg && $reg->webinar_id ? (int) $reg->webinar_id : 0;
+        // Fresh from the form, the webhook may land a moment after the redirect: an unstored but
+        // well-formed key plus the webinar title is accepted for that first view. This is a
+        // convenience gate, not security — the video host link is shareable anyway.
+        $pending = false;
         if ( ! $webinar_id ) {
             $webinar_id = $this->match_webinar( \sanitize_text_field( \wp_unslash( $_GET['webinar'] ?? '' ) ) );
+            $pending    = $webinar_id && $key !== '' && ! $reg;
         }
 
         $access  = $webinar_id ? \get_post_meta( $webinar_id, '_anchor_webinar_access', true ) : '';
-        $allowed = $webinar_id && ( $access === '' || $access === 'public' || $this->is_registered( $key, $webinar_id ) || $this->module->can_user_access( $webinar_id ) );
+        $allowed = $webinar_id && ( $access === '' || $access === 'public' || $pending || $this->is_registered( $key, $webinar_id ) || $this->module->can_user_access( $webinar_id ) );
         if ( ! $allowed || ! $this->module->video_source( $webinar_id ) ) {
             return \do_shortcode( (string) $content );
         }

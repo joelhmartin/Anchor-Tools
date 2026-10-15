@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.37.7
+Stable tag: 3.37.8
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,10 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.37.8 =
+* Webinars: YouTube videos (URL or ID) alongside Vimeo, with watch-time and watched-% tracking for both.
+* Webinars: form registrations without accounts. An Anchor Forms webhook (signed) registers the visitor; [anchor_webinar_registered] shows their webinar from a personal ?r= link; Analytics lists registrants with time watched, % watched and UTM source. Per webinar opt-in: "Form registrants can watch".
 
 = 3.37.7 =
 * Shipping: Shop Manager can refund a paid order in full through its payment gateway (money back, items restocked, labels voided); on paid orders Cancel reads "Cancel without refund".

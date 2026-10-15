@@ -6,6 +6,7 @@ namespace Anchor\Shipping\Frontend;
 use Anchor\Shipping\Admin\Ajax;
 use Anchor\Shipping\Module;
 use Anchor\Shipping\Services\BulkLabels;
+use Anchor\Shipping\Services\OrderRefund;
 use Anchor\Shipping\Support\Urls;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -17,6 +18,7 @@ final class ConsoleAjax {
 	private const TRANSITIONS = [
 		'completed' => [ 'processing', 'on-hold' ],
 		'cancelled' => [ 'pending', 'processing', 'on-hold' ],
+		'refunded'  => OrderRefund::FROM,
 	];
 
 	/** Orders labelled per request: each is a carrier round-trip, so a longer run is chunked by the JS to stay inside PHP/proxy timeouts. */
@@ -158,8 +160,13 @@ final class ConsoleAjax {
 		if ( ! $order->has_status( self::TRANSITIONS[ $to ] ) ) {
 			throw new \RuntimeException( \__( 'This order cannot be moved to that status from where it is now.', 'anchor-schema' ) );
 		}
-		// update_status() fires woocommerce_order_status_cancelled, which is what voids the labels.
-		$order->update_status( $to, \__( 'Changed from the shipping console.', 'anchor-schema' ), true );
+		if ( 'refunded' === $to ) {
+			// Money back through the gateway; Woo then marks the order Refunded, which voids the labels.
+			OrderRefund::refund_in_full( $order, \__( 'Refunded in full from the shipping console.', 'anchor-schema' ) );
+		} else {
+			// update_status() fires woocommerce_order_status_cancelled, which is what voids the labels.
+			$order->update_status( $to, \__( 'Changed from the shipping console.', 'anchor-schema' ), true );
+		}
 		$status = \wc_get_order( $order->get_id() )->get_status();
 		return [ 'status' => $status, 'label' => \wc_get_order_status_name( $status ) ];
 	}

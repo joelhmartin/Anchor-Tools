@@ -10,10 +10,12 @@ use Anchor\Shipping\Database\ShipmentRepository;
 use Anchor\Shipping\Module;
 use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Services\LabelService;
+use Anchor\Shipping\Services\OrderRefund;
 use Anchor\Shipping\Support\Settings;
 use Anchor\Shipping\Support\Template;
 use Anchor\Shipping\Support\TrackingLinks;
 use Anchor\Shipping\Support\Urls;
+
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -99,9 +101,10 @@ final class ShopManager {
 	public static function enqueue(): void {
 		OrderPanel::enqueue();
 		\wp_enqueue_style( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.css', [ 'anchor-shipping-admin' ], '1.0.1' );
-		\wp_enqueue_script( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.js', [ 'jquery', 'anchor-shipping-admin' ], '1.0.3', true );
+		\wp_enqueue_script( 'anchor-shipping-console', \ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/console.js', [ 'jquery', 'anchor-shipping-admin' ], '1.0.4', true );
 		\wp_localize_script( 'anchor-shipping-console', 'anchorShippingConsole', [
 			'confirmCancel' => \__( 'Click again to cancel + void labels', 'anchor-schema' ),
+			'confirmCancelPaid' => \__( 'No refund — click again to cancel', 'anchor-schema' ),
 			'confirmDone'   => \__( 'Click again to complete', 'anchor-schema' ),
 			'confirmDoneOnHold' => \__( 'On hold — click again to complete', 'anchor-schema' ),
 			'confirmBulk'   => \__( 'Click again: %d labels, each billed', 'anchor-schema' ),
@@ -312,6 +315,9 @@ final class ShopManager {
 			'label_pdf' => $latest && 'ZPL' !== $latest['label_format'],
 			'can_complete' => $order->has_status( [ 'processing', 'on-hold' ] ),
 			'can_cancel'   => $order->has_status( [ 'pending', 'processing', 'on-hold' ] ),
+			'refundable'   => OrderRefund::refundable_amount( $order ),
+			// A paid order's Cancel keeps the money, so it says so; refunding is the separate button.
+			'paid'         => null !== $order->get_date_paid(),
 		] );
 	}
 

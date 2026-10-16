@@ -13704,6 +13704,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Whether the event's own date meta computes a start. The one definition
+     * of "this event has a usable start": Event_Schema's single-event node
+     * returns nothing without it, and the app feed lists only events that pass.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function has_usable_start( $event_id ) {
+        $ts = $this->compute_timestamps( $this->get_meta( (int) $event_id ) );
+        return (int) $ts['start'] > 0;
+    }
+
+    /**
      * Public wrapper around calculate_timestamps() (spec Phase 2, Task 2.1) so
      * the Occurrences engine can derive a child occurrence's start_ts/end_ts
      * using the exact same timezone/all-day logic as the classic per-event

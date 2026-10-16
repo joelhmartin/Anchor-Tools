@@ -263,4 +263,21 @@ class Test_Events_Feed_Rest extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $data['total'] );
 		$this->assertSame( 1, $this->get( '/categories' )->get_data()['categories'][0]['count'] );
 	}
+
+	public function test_stale_start_ts_without_a_computable_start_is_not_counted() {
+		$term = self::factory()->term->create( [ 'taxonomy' => 'event_category', 'slug' => 'courses', 'name' => 'Courses' ] );
+		wp_set_object_terms( $this->upcoming( 'Real', 3 ), [ $term ], 'event_category' );
+		$stale = $this->upcoming( 'Stale', 4 );
+		// Persisted timestamps still say "in range", but the date meta no longer computes a start.
+		update_post_meta( $stale, '_anchor_event_start_date', '' );
+		update_post_meta( $stale, '_anchor_event_start_time', '' );
+		$this->assertGreaterThan( 0, (int) get_post_meta( $stale, '_anchor_event_start_ts', true ), 'premise' );
+		wp_set_object_terms( $stale, [ $term ], 'event_category' );
+		$this->module()->clear_caches();
+
+		$data = $this->get( '/events' )->get_data();
+		$this->assertNotContains( $stale, wp_list_pluck( $data['events'], 'id' ) );
+		$this->assertSame( 1, $data['total'] );
+		$this->assertSame( 1, $this->get( '/categories' )->get_data()['categories'][0]['count'] );
+	}
 }

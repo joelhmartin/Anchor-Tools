@@ -664,7 +664,7 @@ Selection: published events whose time **overlaps** `[from, to]` (a multi-day co
 
 **Hide from archive does not apply to the feed.** It is a website-listing switch only, so a Centre-only event ticked "Hide from archive" (to keep it off the site's listings) still reaches the app for users who meet its Prerequisites. Who sees an event is decided only by Prerequisites; the website's month calendar and listings are unchanged. Password-protected events are never served, and neither are children of a password-protected group parent.
 
-Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible** events (those with a start date); rows are built for the requested page only. If an event on the page still has no usable schema node it is skipped, so a page can very rarely hold one row fewer than `per_page`.
+Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible** events (those whose date meta computes a start, `Module::has_usable_start()`, the same test the schema node uses); rows are built for the requested page only. If an event on the page still has no usable schema node it is skipped, so a page can very rarely hold one row fewer than `per_page`.
 
 `/categories` lists the `event_category` terms on events the caller could see in the default 12-month window (limited to the App categories setting when set), so a signed-out caller never learns that restricted-only categories exist. `/me` reports `sees_restricted` = the caller meets the Prerequisites of at least one restricted event in the next 24 months.
 

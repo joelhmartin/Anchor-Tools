@@ -60,13 +60,14 @@ class Feed {
             if ( $term_ids && ! array_intersect( $term_ids, \wp_list_pluck( $this->category_terms( $id ), 'term_id' ) ) ) {
                 continue;
             }
-            // The one "this id yields a row" check: row() needs a start, and the
-            // range query and ordering both run on start_ts. /events pages,
-            // /categories and /me all count from this list.
-            $start = (int) \get_post_meta( $id, $this->module->meta_key( 'start_ts' ), true );
-            if ( $start <= 0 ) {
+            // The one "this id yields a row" check, shared with Event_Schema's
+            // single-event node (Module::has_usable_start). /events paging,
+            // /categories and /me all count from this list. row() keeps its
+            // null check as a safety net for anything the node rejects later.
+            if ( ! $this->module->has_usable_start( $id ) ) {
                 continue;
             }
+            $start = (int) \get_post_meta( $id, $this->module->meta_key( 'start_ts' ), true );
             $rows[] = [ $start, $id ];
         }
         usort( $rows, static function ( $a, $b ) {

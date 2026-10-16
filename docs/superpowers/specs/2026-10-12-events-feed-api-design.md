@@ -51,7 +51,7 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
 - Rows are published events whose time overlaps `[from, to]`. Overlap means `start_ts < end of to` and `end_ts >= start of from`, so a multi-day course that started yesterday still appears.
 - Soft-closed dates (`occurrence_closed`) are removed with the same predicate the website's listings use. `hide_from_archive` is a website-listing switch only and does **not** exclude an event from the feed (product decision: Centre-only events hidden from the site must still reach qualifying app users); who sees an event is decided only by Prerequisites. `range_query_args( …, $include_hidden = true )` asks for exactly this; `build_hide_clause()` composes the same closed-date predicate for the site's listings.
 - Password-protected events are removed, as are children of a password-protected group parent (children don't inherit the password).
-- `total` counts eligible events (those with a start date); rows are built for the requested page only.
+- `total` counts eligible events (those whose date meta computes a start: `Module::has_usable_start()`, shared with the schema node); rows are built for the requested page only.
 - Group parents are removed explicitly (`Occurrences::is_group_parent()`, plus an `offering`/`recurring` event not yet reconciled). The hide rule does not cover them.
 - A group child's categories are its **parent's** `event_category` terms, because reconcile does not copy that taxonomy to children. One helper answers "this row's categories" for both filtering and output.
 - Rows are ordered by `start_ts` ascending, with id as the tiebreak.
@@ -127,7 +127,7 @@ Returns `{ "categories": [ { "slug", "name", "count" } ] }`. These are the `even
 
 | Need | Existing owner |
 |---|---|
-| "Events in a time range" query | The meta query inside `render_calendar_month()` (`start_ts` range + `build_hide_clause()` + `build_visibility_clause()`, through `get_cached_ids()`). **Extract it into one shared range-query method.** The month calendar and the feed both call it, and the calendar's output must not change. The feed uses the overlap form of the range; the calendar keeps its current form. |
+| "Events in a time range" query | The meta query inside `render_calendar_month()` (`start_ts` range + `build_hide_clause()` + `build_visibility_clause()`, through `get_cached_ids()`). **Extract it into one shared range-query method.** The month calendar and the feed both call it, and the calendar's output must not change. The feed uses the overlap form of the range and `$include_hidden = true` (keeps `hide_from_archive` events, still drops soft-closed dates); the calendar keeps its current form and `build_hide_clause()`. |
 | Row data (title, dates, place, offers, image, url) | `Event_Schema::for_event()`, the schema.org node the site already prints for Google. Rows are mapped from it, so the app, the website and Google agree. |
 | Registration mode | `Module::registration_mode()` and `Module::uses_external_signup()` |
 | Registration status | `Module::bookability()` and `Module::is_bookable()` |

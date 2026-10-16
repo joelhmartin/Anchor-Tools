@@ -226,12 +226,12 @@ class Event_Schema {
      * @return array
      */
     private function build_single_node( $event_id ) {
-        $meta = $this->module->get_meta( $event_id );
-        $ts   = $this->module->compute_timestamps( $meta );
-
-        if ( (int) $ts['start'] <= 0 ) {
+        if ( ! $this->module->has_usable_start( $event_id ) ) {
             return [];
         }
+
+        $meta = $this->module->get_meta( $event_id );
+        $ts   = $this->module->compute_timestamps( $meta );
 
         $node = $this->assemble_node( $event_id, $meta, (int) $ts['start'], (int) $ts['end'] );
 

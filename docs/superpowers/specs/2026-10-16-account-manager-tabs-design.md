@@ -101,6 +101,41 @@ certificates were issued**. Changing who is enrolled stays in wp-admin.
   not "CE and stuff".
 - The certificate column links to the existing public certificate page (`Certificate::url()`).
 
+## Settled after the builder check (my calls unless marked)
+
+- **Permission rule (owner: admins only).** The whole panel is gated on `manage_options`. Inside it,
+  each tab still applies its module's own capability, so a tab an admin somehow lacks is omitted.
+  Editors and Shop Managers do not see the panel even though `edit_posts` / `manage_woocommerce`
+  would let them into the Stores / Events managers on their own.
+- **No access = no output.** For a logged-out visitor or a non-admin the panel shortcode prints
+  nothing, not a login prompt or "no permission" notice, and an omitted tab never prints one either.
+  The Course Manager shortcode on its own prints nothing for users without `edit_courses`.
+- **Tab persistence.** Server-side `?tab=files|events|courses|stores`, rendering only the active
+  panel. Do NOT edit the event or store managers' redirect code. Instead, when no `tab` arg is present,
+  infer the tab from the module's own query args: `event_action` / `event_id` → events;
+  `anchor_store_notice` / `anchor_store_id` / `anchor_store_error` → stores; the Course Manager's own
+  args → courses; otherwise files. Tab links preserve no other module's args, so switching tabs
+  resets that module's sub-screen. Verify the store manager's post-save redirect lands back on the
+  page (its `redirect_post_location` filters); if it lands somewhere else entirely, that is a bug to
+  report, not to fix in this work.
+- **Saving.** Extract the settings-writing loop of `CourseEditor::save()` into one public static
+  method (for example `CourseEditor::save_settings( int $course_id, array $input ): void`). Both the
+  wp-admin metabox and the front-end form call it. The front end does its own nonce plus
+  `current_user_can( edit_courses cap, $course_id )` check and does NOT call `wp_update_post()` (no
+  revision, no unrelated `save_post` listeners). The shared method writes only keys present in
+  `$input`, with one exception: the front-end form always posts `certificate_enabled` (hidden 0 +
+  checkbox 1), so unchecking works and fields the form omits are never wiped. wp-admin behaviour must
+  be unchanged; cover it with a test before and after the extraction.
+- **Field mapping.** Credit expiry is `ce_expires_days`, enrolment expiry is `expiration_days`. Every
+  field mirrors wp-admin exactly: same keys, same free-text inputs (`ce_type` and
+  `certificate_template` stay free text, never a select, never pre-filled), and same sanitizing.
+- **Course list.** All `anchor_course` posts except trash, newest first, each with its status shown
+  (Published / Draft / Private), because drafted courses may still need their CE details fixed. No
+  site-specific hiding (TMJ's `_tmj_hide_from_lists` is a theme concern, not the plugin's).
+- **PACE anti-goal scope.** It restricts read-only displays: the learner table, list rows and any
+  summary or header. The edit form may group credits, type and provider together as wp-admin does,
+  because labelled inputs are not a credit claim.
+
 ## Left to the builder
 
 - Shortcode names, file layout, and whether tab switching is client-side (all panels rendered, one

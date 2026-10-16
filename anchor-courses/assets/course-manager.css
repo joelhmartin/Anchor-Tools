@@ -8,3 +8,6 @@
 .acm-field input[type="text"], .acm-field input[type="number"] { width: 100%; max-width: 420px; }
 .acm-check label { font-weight: normal; }
 .acm-notice { padding: 10px 14px; background: #edf7ed; border-left: 4px solid #46b450; }
+.acm-learners { margin-top: 32px; }
+.acm-learners .acm-table { font-size: 14px; }
+.acm-pagination a { margin-left: 10px; }

@@ -4,7 +4,10 @@ declare(strict_types=1);
 namespace Anchor\Courses\Frontend;
 
 use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Admin\LearnerReports;
 use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Content\Curriculum;
+use Anchor\Courses\Database\EnrollmentRepository;
 use Anchor\Courses\Module;
 use Anchor\Courses\Support\Capabilities;
 
@@ -19,6 +22,8 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * the post row itself.
  */
 final class CourseManager {
+
+	private const PER_PAGE = 50;
 
 	public const NONCE = 'anchor_course_manager';
 
@@ -72,6 +77,24 @@ final class CourseManager {
 				'course' => \get_post( $id ),
 				'values' => $values,
 				'saved'  => isset( $_GET['acm_saved'] ), // phpcs:ignore WordPress.Security.NonceVerification
+			]
+		) . $this->learners( $id );
+	}
+
+	/** Read-only learner table; empty unless the user may see reports. */
+	private function learners( int $course_id ): string {
+		if ( ! \current_user_can( Capabilities::cap( 'reports' ) ) ) {
+			return '';
+		}
+		$page = isset( $_GET['acm_page'] ) ? \max( 1, \absint( \wp_unslash( $_GET['acm_page'] ) ) ) : 1; // phpcs:ignore WordPress.Security.NonceVerification
+		return Templates::render(
+			'course-manager/learners',
+			[
+				'rows'           => LearnerReports::rows( $course_id, self::PER_PAGE, ( $page - 1 ) * self::PER_PAGE ),
+				'total'          => EnrollmentRepository::count_for_course( $course_id ),
+				'page'           => $page,
+				'per_page'       => self::PER_PAGE,
+				'has_curriculum' => [] !== Curriculum::required_items( $course_id ),
 			]
 		);
 	}

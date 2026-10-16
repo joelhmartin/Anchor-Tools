@@ -6,7 +6,12 @@
  */
 
 use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Admin\LearnerReports;
+use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Frontend\CourseManager;
+use Anchor\Courses\Services\CompletionService;
+use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Services\ProgressService;
 
 /** Thrown from wp_redirect so the handler's exit() never runs. */
 class Anchor_Courses_Manager_Redirected extends \Exception {}
@@ -136,5 +141,120 @@ class Test_Courses_Course_Manager extends Anchor_Courses_TestCase {
 		$html               = do_shortcode( '[anchor_course_manager]' );
 		$this->assertStringContainsString( 'Listed One', $html );
 		$this->assertStringNotContainsString( '<form', $html );
+	}
+
+	/** A free-progression course with one lesson, so a learner can finish it. */
+	private function course_with_lesson( array $meta = [] ): array {
+		$course = $this->make_course( $meta + [ 'progression_mode' => 'free', 'ce_credits' => '2', 'certificate_enabled' => 1 ], 'Laser Safety' );
+		$lesson = $this->make_lesson();
+		Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+		return [ $course, $lesson ];
+	}
+
+	private function complete_learner( int $user, int $course, int $lesson ): void {
+		\Anchor\Courses\Support\Roles::grant_access( $user, $course, 'manual' );
+		$enrollments = new EnrollmentService();
+		$progress    = new ProgressService( $enrollments );
+		$completion  = new CompletionService( $enrollments, $progress );
+		$progress->set_completion_service( $completion );
+		$progress->complete_lesson( $user, $course, $lesson );
+		$completion->complete( $user, $course );
+	}
+
+	/** The learners section of the edit screen for $course. */
+	private function learners_html( int $course ): string {
+		$_GET['acm_course'] = (string) $course;
+		$html               = do_shortcode( '[anchor_course_manager]' );
+		$this->assertSame( 1, preg_match( '#<section class="acm-learners".*?</section>#s', $html, $m ), 'learners section present' );
+		return $m[0];
+	}
+
+	public function test_learners_table_lists_enrolled_and_completed() {
+		[ $course, $lesson ] = $this->course_with_lesson();
+		$a = $this->make_learner( [ 'user_email' => 'ada-learner@example.com' ] );
+		$b = $this->make_learner( [ 'user_email' => 'bob-learner@example.com' ] );
+		$svc = new EnrollmentService();
+		$svc->enroll( $a, $course );
+		$svc->enroll( $b, $course );
+		$this->complete_learner( $a, $course, $lesson );
+
+		$html = $this->learners_html( $course );
+		$this->assertStringContainsString( 'ada-learner@example.com', $html );
+		$this->assertStringContainsString( 'bob-learner@example.com', $html );
+		$done = LearnerReports::rows( $course );
+		$completed = array_values( array_filter( $done, static fn( $r ) => 'completed' === $r['status'] ) )[0];
+		$this->assertStringContainsString( date_i18n( get_option( 'date_format' ), strtotime( $completed['completed_at'] ) ), $html );
+		$this->assertStringContainsString( number_format_i18n( 2.0, 1 ), $html );
+	}
+
+	public function test_certificate_links_to_certificate_page() {
+		[ $course, $lesson ] = $this->course_with_lesson();
+		$a = $this->make_learner();
+		( new EnrollmentService() )->enroll( $a, $course );
+		$this->complete_learner( $a, $course, $lesson );
+
+		$row  = LearnerReports::rows( $course )[0];
+		$html = $this->learners_html( $course );
+		$this->assertNotSame( '', $row['certificate_number'] );
+		$this->assertStringContainsString( '<a href="' . esc_url( $row['certificate_url'] ) . '">' . esc_html( $row['certificate_number'] ) . '</a>', $html );
+	}
+
+	public function test_no_actions_in_learner_table() {
+		[ $course, $lesson ] = $this->course_with_lesson();
+		$a = $this->make_learner();
+		( new EnrollmentService() )->enroll( $a, $course );
+		$this->complete_learner( $a, $course, $lesson );
+
+		$html = $this->learners_html( $course );
+		$this->assertStringContainsString( '<table', $html );
+		$this->assertStringNotContainsString( '<form', $html );
+		foreach ( [ 'Revoke', 'Reset progress', 'Mark complete' ] as $label ) {
+			$this->assertStringNotContainsString( $label, $html );
+		}
+	}
+
+	public function test_no_provider_or_type_beside_credits() {
+		[ $course, $lesson ] = $this->course_with_lesson( [ 'ce_type' => 'AGD PACE', 'ce_provider_name' => 'Acme' ] );
+		$a = $this->make_learner();
+		( new EnrollmentService() )->enroll( $a, $course );
+		$this->complete_learner( $a, $course, $lesson );
+
+		$html = $this->learners_html( $course );
+		$this->assertStringContainsString( number_format_i18n( 2.0, 1 ), $html );
+		$this->assertStringNotContainsString( 'AGD PACE', $html );
+		$this->assertStringNotContainsString( 'Acme', $html );
+	}
+
+	public function test_learners_paginate_at_50() {
+		[ $course ] = $this->course_with_lesson();
+		$svc = new EnrollmentService();
+		for ( $i = 0; $i < 51; $i++ ) {
+			$svc->enroll( $this->make_learner(), $course );
+		}
+
+		$page1 = $this->learners_html( $course );
+		$this->assertSame( 50, substr_count( $page1, '<tr class="acm-learner">' ) );
+		$this->assertStringContainsString( 'Showing 1–50 of 51', $page1 );
+		$this->assertStringContainsString( 'acm_page=2', $page1 );
+
+		$_GET['acm_page'] = '2';
+		$page2 = $this->learners_html( $course );
+		$this->assertSame( 1, substr_count( $page2, '<tr class="acm-learner">' ) );
+		$this->assertStringContainsString( 'Showing 51–51 of 51', $page2 );
+	}
+
+	public function test_learners_hidden_without_reports_cap() {
+		[ $course ] = $this->course_with_lesson();
+		( new EnrollmentService() )->enroll( $this->make_learner(), $course );
+		$cap = \Anchor\Courses\Support\Capabilities::cap( 'reports' );
+		add_filter( 'user_has_cap', $f = static function ( $caps ) use ( $cap ) { unset( $caps[ $cap ] ); return $caps; } );
+		if ( \current_user_can( $cap ) ) {
+			remove_filter( 'user_has_cap', $f );
+			$this->markTestSkipped( 'reports cap not removable here' );
+		}
+		$_GET['acm_course'] = (string) $course;
+		$html = do_shortcode( '[anchor_course_manager]' );
+		remove_filter( 'user_has_cap', $f );
+		$this->assertStringNotContainsString( 'acm-learners', $html );
 	}
 }

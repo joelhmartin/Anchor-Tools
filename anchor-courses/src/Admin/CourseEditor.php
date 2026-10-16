@@ -403,7 +403,8 @@ final class CourseEditor {
 				return $n > 0 ? \max( 1, \min( 100, $n ) ) : $defaults['completion_percentage'];
 
 			case 'certificate_enabled':
-				return '' === $value ? 0 : 1;
+				// '0' is what the front-end form's hidden input posts for an unticked box.
+				return \in_array( $value, [ '', '0', 0, false, null ], true ) ? 0 : 1;
 
 			case 'available_from':
 			case 'available_until':

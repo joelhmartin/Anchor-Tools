@@ -1,5 +1,8 @@
 # Admin Manager Tabs + Front-end Course Manager Implementation Plan
 
+> **Scope change (2026-10-16, owner):** Tasks 1–3 shipped. Task 4 (plugin tab panel) was cancelled; tabs live in the TMJ theme instead. Tasks 5–6 are replaced by the PR and the theme work.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give administrators one tabbed panel (Files · Events · Courses · Stores) for My Account, including a new front-end Course Manager that edits a course's CE/certificate/availability settings and shows its learners read-only.

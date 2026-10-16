@@ -1,5 +1,8 @@
 # Admin manager tabs on My Account, and a front-end Course Manager
 
+> **Scope change (2026-10-16, owner):** only the Course Manager (`[anchor_course_manager]`) is built in Anchor Tools. The tabbed panel is NOT a plugin feature: the TMJ theme builds its own tabs on My Account. Everything below about the panel, `[anchor_manager_panel]` and Task 4 is superseded.
+
+
 Date: 2026-10-16 · First consumer: TMJ & Sleep Therapy Centre International (tmjtherapycentre.com)
 
 ## Intent

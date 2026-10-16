@@ -109,6 +109,15 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$this->assertStringStartsWith( 'Bold word', $row['summary'] );
 	}
 
+	public function test_encoded_tags_are_not_resurrected_as_markup() {
+		$id = $this->event( [ 'title' => '&lt;b&gt;Text&lt;/b&gt; &amp; more' ] );
+		wp_update_post( [ 'ID' => $id, 'post_excerpt' => '&lt;b&gt;Bold&lt;/b&gt; summary' ] );
+		$row = $this->module()->feed->row( $id );
+		$this->assertStringNotContainsString( '<', $row['title'] );
+		$this->assertStringNotContainsString( '<', $row['summary'] );
+		$this->assertSame( 'Bold summary', $row['summary'] );
+	}
+
 	public function test_registration_mode_and_status_vocabulary() {
 		$free = $this->event( [ 'registration_mode' => 'free' ] );
 		$row  = $this->module()->feed->row( $free );

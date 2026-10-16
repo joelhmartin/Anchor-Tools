@@ -14030,9 +14030,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param int  $start_ts Range start (inclusive).
      * @param int  $end_ts   Range end.
      * @param bool $overlap  False = start_ts BETWEEN [start, end]; true = overlaps.
+     * @param bool $include_hidden True = hide_from_archive events are kept (it is a
+     *                       website-listing switch); soft-closed dates are still dropped.
      * @return array
      */
-    public function range_query_args( $start_ts, $end_ts, $overlap = false ) {
+    public function range_query_args( $start_ts, $end_ts, $overlap = false, $include_hidden = false ) {
         $start_ts = (int) $start_ts;
         $end_ts   = (int) $end_ts;
         if ( $overlap ) {
@@ -14062,7 +14064,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'post_type' => self::CPT,
             'posts_per_page' => -1,
             'post_status' => 'publish',
-            'meta_query' => [ $range, $this->build_hide_clause() ],
+            'meta_query' => [ $range, $include_hidden ? $this->not_closed_clause() : $this->build_hide_clause() ],
             'orderby' => 'meta_value_num',
             'meta_key' => $this->meta_key( 'start_ts' ),
             'order' => 'ASC',
@@ -14074,8 +14076,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * @return int[]
      */
-    public function event_ids_in_range( $start_ts, $end_ts, $overlap = false ) {
-        return array_map( 'intval', (array) $this->get_cached_ids( $this->range_query_args( $start_ts, $end_ts, $overlap ) ) );
+    public function event_ids_in_range( $start_ts, $end_ts, $overlap = false, $include_hidden = false ) {
+        return array_map( 'intval', (array) $this->get_cached_ids( $this->range_query_args( $start_ts, $end_ts, $overlap, $include_hidden ) ) );
     }
 
     private function render_calendar_month( $atts, $force_month = '' ) {
@@ -14392,17 +14394,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return [
             'relation' => 'AND',
             $hidden,
+            $this->not_closed_clause(),
+        ];
+    }
+
+    /**
+     * The soft-closed half of build_hide_clause(), on its own, for the one
+     * surface that lists hide_from_archive events but never a cancelled date
+     * (the member app feed, via range_query_args( …, $include_hidden )).
+     * Not a second predicate to apply beside build_hide_clause(): that method
+     * composes this one, so the shape lives in one place.
+     *
+     * @return array meta_query clause.
+     */
+    private function not_closed_clause() {
+        return [
+            'relation' => 'OR',
             [
-                'relation' => 'OR',
-                [
-                    'key' => $this->meta_key( 'occurrence_closed' ),
-                    'compare' => 'NOT EXISTS',
-                ],
-                [
-                    'key' => $this->meta_key( 'occurrence_closed' ),
-                    'value' => '1',
-                    'compare' => '!=',
-                ],
+                'key' => $this->meta_key( 'occurrence_closed' ),
+                'compare' => 'NOT EXISTS',
+            ],
+            [
+                'key' => $this->meta_key( 'occurrence_closed' ),
+                'value' => '1',
+                'compare' => '!=',
             ],
         ];
     }

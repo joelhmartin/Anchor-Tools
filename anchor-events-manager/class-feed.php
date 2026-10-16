@@ -41,7 +41,7 @@ class Feed {
     public function visible_ids( $from_ts, $to_ts, array $term_ids ) {
         $term_ids = array_map( 'intval', $term_ids );
         $rows     = [];
-        $in_range = $this->module->event_ids_in_range( $from_ts, $to_ts, true );
+        $in_range = $this->module->event_ids_in_range( $from_ts, $to_ts, true, true );
         if ( $in_range ) {
             // One query each instead of one per event in the loop below.
             \_prime_post_caches( $in_range, false, false );
@@ -51,8 +51,7 @@ class Feed {
             if ( $this->is_container( $id ) ) {
                 continue;
             }
-            // The schema description reads post_content whatever the password says.
-            if ( \get_post_field( 'post_password', $id ) !== '' ) {
+            if ( $this->is_password_protected( $id ) ) {
                 continue;
             }
             if ( ! $this->module->entitlements->meets_prerequisites( $id, 0 ) ) {
@@ -61,12 +60,32 @@ class Feed {
             if ( $term_ids && ! array_intersect( $term_ids, \wp_list_pluck( $this->category_terms( $id ), 'term_id' ) ) ) {
                 continue;
             }
-            $rows[] = [ (int) \get_post_meta( $id, $this->module->meta_key( 'start_ts' ), true ), $id ];
+            // The one "this id yields a row" check: row() needs a start, and the
+            // range query and ordering both run on start_ts. /events pages,
+            // /categories and /me all count from this list.
+            $start = (int) \get_post_meta( $id, $this->module->meta_key( 'start_ts' ), true );
+            if ( $start <= 0 ) {
+                continue;
+            }
+            $rows[] = [ $start, $id ];
         }
         usort( $rows, static function ( $a, $b ) {
             return [ $a[0], $a[1] ] <=> [ $b[0], $b[1] ];
         } );
         return array_column( $rows, 1 );
+    }
+
+    /**
+     * Password on the event, or on a group child's parent (children are not
+     * given the parent's password). The schema description reads post_content
+     * whatever the password says, so these never reach the feed.
+     */
+    private function is_password_protected( $id ) {
+        if ( \get_post_field( 'post_password', $id ) !== '' ) {
+            return true;
+        }
+        $parent = (int) $this->module->occurrences->parent_of( $id );
+        return $parent > 0 && \get_post_field( 'post_password', $parent ) !== '';
     }
 
     /**
@@ -227,7 +246,7 @@ class Feed {
     }
 
     private function plain( $text ) {
-        return trim( \html_entity_decode( \wp_strip_all_tags( (string) $text ), \ENT_QUOTES, 'UTF-8' ) );
+        return trim( \wp_strip_all_tags( \html_entity_decode( (string) $text, \ENT_QUOTES, 'UTF-8' ) ) );
     }
 
     private function summary( $text ) {
@@ -302,14 +321,15 @@ class Feed {
             return $terms;
         }
 
-        $rows     = $this->rows( $this->visible_ids( $range[0], $range[1], $terms ) );
+        $ids      = $this->visible_ids( $range[0], $range[1], $terms );
         $per_page = (int) $request['per_page'];
         $page     = (int) $request['page'];
-        $total    = count( $rows );
+        $total    = count( $ids );
         $pages    = (int) ceil( $total / $per_page );
 
+        // Rows (schema node, bookability) are built for the requested page only.
         $response = $this->respond( $request, [
-            'events'      => array_slice( $rows, ( $page - 1 ) * $per_page, $per_page ),
+            'events'      => $this->rows( array_slice( $ids, ( $page - 1 ) * $per_page, $per_page ) ),
             'page'        => $page,
             'per_page'    => $per_page,
             'total'       => $total,
@@ -361,7 +381,7 @@ class Feed {
         return $this->respond( $request, [ 'name' => (string) $user->display_name, 'sees_restricted' => $sees ] );
     }
 
-    /** Rows for IDs, skipping any event whose schema node is unusable. */
+    /** Rows for IDs, skipping any event whose schema node turns out unusable (rare). */
     private function rows( array $ids ) {
         $rows = [];
         foreach ( $ids as $id ) {

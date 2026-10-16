@@ -660,7 +660,11 @@ A read-only feed for the member phone app, namespace `anchor-events/v1` (`Module
 | `page` | 1 | integer >= 1 |
 | `per_page` | 50 | 1-100; above 100 is WP's own `400 rest_invalid_param` |
 
-Selection: published events whose time **overlaps** `[from, to]` (a multi-day course that started yesterday still appears), minus listing-excluded posts, minus group parents and unreconciled `offering`/`recurring` containers (the rows are the dates), minus events the caller's Prerequisites don't allow. Ordered by start, id as tiebreak. A group child's `categories` are its parent's, since reconcile doesn't copy `event_category` to children. An event with no usable schema node is skipped silently.
+Selection: published events whose time **overlaps** `[from, to]` (a multi-day course that started yesterday still appears), minus soft-closed dates (`occurrence_closed`), minus group parents and unreconciled `offering`/`recurring` containers (the rows are the dates), minus events the caller's Prerequisites don't allow. Ordered by start, id as tiebreak. A group child's `categories` are its parent's, since reconcile doesn't copy `event_category` to children. An event with no usable schema node is skipped silently.
+
+**Hide from archive does not apply to the feed.** It is a website-listing switch only, so a Centre-only event ticked "Hide from archive" (to keep it off the site's listings) still reaches the app for users who meet its Prerequisites. Who sees an event is decided only by Prerequisites; the website's month calendar and listings are unchanged. Password-protected events are never served, and neither are children of a password-protected group parent.
+
+Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible** events (those with a start date); rows are built for the requested page only. If an event on the page still has no usable schema node it is skipped, so a page can very rarely hold one row fewer than `per_page`.
 
 `/categories` lists the `event_category` terms on events the caller could see in the default 12-month window (limited to the App categories setting when set), so a signed-out caller never learns that restricted-only categories exist. `/me` reports `sees_restricted` = the caller meets the Prerequisites of at least one restricted event in the next 24 months.
 
@@ -741,7 +745,7 @@ Every 200 carries a weak `ETag` (a hash of the body, not the cache generation, s
 
 ### Reuse
 
-Keep one implementation of each job. The range query is `Module::range_query_args()` (the month calendar and the feed both call it; the feed passes the overlap form). Row data is `Event_Schema::for_event()`, so the app, the site and Google agree. Registration state is `Module::bookability()`. Who may see a restricted event is `Entitlements::meets_prerequisites()`. Don't add a parallel calculation of any of these to the feed.
+Keep one implementation of each job. The range query is `Module::range_query_args()` (the month calendar and the feed both call it; the feed passes the overlap form and `$include_hidden`, which keeps `hide_from_archive` events but still drops soft-closed dates). Row data is `Event_Schema::for_event()`, so the app, the site and Google agree. Registration state is `Module::bookability()`. Who may see a restricted event is `Entitlements::meets_prerequisites()`. Don't add a parallel calculation of any of these to the feed.
 
 ---
 

@@ -49,7 +49,9 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
 **Selection**
 
 - Rows are published events whose time overlaps `[from, to]`. Overlap means `start_ts < end of to` and `end_ts >= start of from`, so a multi-day course that started yesterday still appears.
-- Listing-excluded posts are removed with the same hide rule the website's listings use (`build_hide_clause()`).
+- Soft-closed dates (`occurrence_closed`) are removed with the same predicate the website's listings use. `hide_from_archive` is a website-listing switch only and does **not** exclude an event from the feed (product decision: Centre-only events hidden from the site must still reach qualifying app users); who sees an event is decided only by Prerequisites. `range_query_args( …, $include_hidden = true )` asks for exactly this; `build_hide_clause()` composes the same closed-date predicate for the site's listings.
+- Password-protected events are removed, as are children of a password-protected group parent (children don't inherit the password).
+- `total` counts eligible events (those with a start date); rows are built for the requested page only.
 - Group parents are removed explicitly (`Occurrences::is_group_parent()`, plus an `offering`/`recurring` event not yet reconciled). The hide rule does not cover them.
 - A group child's categories are its **parent's** `event_category` terms, because reconcile does not copy that taxonomy to children. One helper answers "this row's categories" for both filtering and output.
 - Rows are ordered by `start_ts` ascending, with id as the tiebreak.

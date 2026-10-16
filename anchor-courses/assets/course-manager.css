@@ -1,0 +1,13 @@
+.acm { max-width: 760px; }
+.acm-table { width: 100%; border-collapse: collapse; }
+.acm-table th, .acm-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e4e7; }
+.acm fieldset { margin: 0 0 20px; padding: 12px 16px; border: 1px solid #e2e4e7; border-radius: 4px; }
+.acm legend { font-weight: 600; padding: 0 6px; }
+.acm-field { margin: 0 0 12px; }
+.acm-field label { display: block; font-weight: 600; margin-bottom: 4px; }
+.acm-field input[type="text"], .acm-field input[type="number"] { width: 100%; max-width: 420px; }
+.acm-check label { font-weight: normal; }
+.acm-notice { padding: 10px 14px; background: #edf7ed; border-left: 4px solid #46b450; }
+.acm-learners { margin-top: 32px; }
+.acm-learners .acm-table { font-size: 14px; }
+.acm-pagination a { margin-left: 10px; }

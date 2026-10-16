@@ -439,7 +439,10 @@ class Feed {
     /**
      * 200 with private caching + a body-hash ETag, or 304 when the client
      * already has it. Body hash, not the cache generation: a seat sale moves
-     * registration.status without bumping the generation.
+     * registration.status without bumping the generation. This is the one
+     * place the feed's cache headers are set (200 and 304 alike). `Vary:
+     * Authorization` because the public and signed-in URLs are identical and
+     * differ only by that header, so any HTTP cache must key on it.
      */
     private function respond( \WP_REST_Request $request, array $data ) {
         $etag     = 'W/"' . md5( (string) wp_json_encode( $data ) ) . '"';
@@ -449,6 +452,11 @@ class Feed {
             : new \WP_REST_Response( $data, 200 );
         $response->header( 'ETag', $etag );
         $response->header( 'Cache-Control', 'private, max-age=300' );
+        $vary = array_filter( array_map( 'trim', explode( ',', (string) ( $response->get_headers()['Vary'] ?? '' ) ) ) );
+        if ( ! in_array( 'authorization', array_map( 'strtolower', $vary ), true ) ) {
+            $vary[] = 'Authorization';
+        }
+        $response->header( 'Vary', implode( ', ', $vary ) );
         return $response;
     }
 }

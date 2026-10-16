@@ -155,6 +155,26 @@ class Test_Events_Feed_Rest extends Anchor_Events_TestCase {
 		$this->assertNotSame( $etag, $after->get_headers()['ETag'] );
 	}
 
+	/** Public and signed-in URLs are identical; only Authorization differs, so caches must key on it. */
+	public function test_vary_authorization_on_every_feed_response_including_304() {
+		$this->upcoming( 'Cached', 3 );
+		foreach ( [ '/events', '/categories' ] as $route ) {
+			$res = $this->get( $route );
+			$this->assertSame( 200, $res->get_status() );
+			$this->assertSame( 'Authorization', $res->get_headers()['Vary'], $route );
+		}
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$me = $this->get( '/me' );
+		$this->assertSame( 200, $me->get_status() );
+		$this->assertSame( 'Authorization', $me->get_headers()['Vary'] );
+
+		$etag = $this->get( '/events' )->get_headers()['ETag'];
+		$again = $this->get( '/events', [], [ 'If-None-Match' => $etag ] );
+		$this->assertSame( 304, $again->get_status() );
+		$this->assertSame( 'Authorization', $again->get_headers()['Vary'] );
+	}
+
 	public function test_categories_hide_categories_with_only_gated_events_from_public() {
 		$open   = self::factory()->term->create( [ 'taxonomy' => 'event_category', 'slug' => 'courses', 'name' => 'Courses' ] );
 		$secret = self::factory()->term->create( [ 'taxonomy' => 'event_category', 'slug' => 'centre-only', 'name' => 'Centre only' ] );

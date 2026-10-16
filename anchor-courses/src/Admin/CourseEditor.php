@@ -338,13 +338,24 @@ final class CourseEditor {
 			? \wp_unslash( $_POST['anchor_course'] ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
 			: [];
 
+		// An unposted checkbox means "off", so certificate_enabled always writes.
+		self::save_settings( $post_id, $input + [ 'certificate_enabled' => '' ] );
+	}
+
+	/**
+	 * Write course settings. The one writer shared by the wp-admin metabox and
+	 * the front-end Course Manager. Only keys of defaults() present in $input
+	 * are written; each value goes through sanitize_value(). Does no auth -
+	 * callers authorize.
+	 *
+	 * @param array<string,mixed> $input Already unslashed.
+	 */
+	public static function save_settings( int $course_id, array $input ): void {
 		foreach ( \array_keys( self::defaults() ) as $key ) {
-			// An unposted checkbox means "off", so certificate_enabled always writes.
-			$raw = $input[ $key ] ?? ( 'certificate_enabled' === $key ? '' : null );
-			if ( null === $raw ) {
+			if ( ! \array_key_exists( $key, $input ) ) {
 				continue;
 			}
-			\update_post_meta( $post_id, CoursePostType::meta_key( $key ), self::sanitize_value( $key, $raw, $post_id ) );
+			\update_post_meta( $course_id, CoursePostType::meta_key( $key ), self::sanitize_value( $key, $input[ $key ], $course_id ) );
 		}
 	}
 

@@ -20,6 +20,29 @@ class Test_Courses_Course_Editor extends Anchor_Courses_TestCase {
 		$_POST = [];
 	}
 
+	public function test_save_settings_writes_only_present_keys() {
+		$id = $this->make_course( [ 'instructor' => 'Dr A', 'ce_credits' => '4' ] );
+
+		CourseEditor::save_settings( $id, [ 'ce_credits' => '6' ] );
+
+		// post meta round-trips scalars as strings; setting() casts back to the typed default.
+		$this->assertEquals( CourseEditor::sanitize_value( 'ce_credits', '6', $id ), CourseEditor::setting( $id, 'ce_credits' ) );
+		$this->assertSame( 'Dr A', CourseEditor::setting( $id, 'instructor' ) );
+	}
+
+	public function test_save_settings_sanitizes_like_wp_admin() {
+		$id = $this->make_course();
+
+		foreach ( [ 'ce_expires_days' => '-3', 'available_from' => '<b>2026-01-01</b>' ] as $key => $raw ) {
+			CourseEditor::save_settings( $id, [ $key => $raw ] );
+			$this->assertSame(
+				(string) CourseEditor::sanitize_value( $key, $raw, $id ),
+				get_post_meta( $id, CoursePostType::meta_key( $key ), true ),
+				$key
+			);
+		}
+	}
+
 	public function test_defaults_match_the_design_spec() {
 		$d = CourseEditor::defaults();
 		$this->assertSame( 'sequential', $d['progression_mode'] );

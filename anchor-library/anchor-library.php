@@ -17,4 +17,7 @@ if ( ! \defined( 'ANCHOR_LIBRARY_DIR' ) ) {
 }
 
 // Ported helper classes, kept as-is (global, unprefixed-namespace) so their behaviour and tests carry over unchanged.
-require_once ANCHOR_LIBRARY_DIR . 'includes/class-afm-range.php';
+foreach ( [ 'range', 'coverage', 'watch-math', 'media-progress', 'permission-policy', 'permission-index', 'vimeo', 'copy-namer', 'upload-types', 'user-import', 'user-admin' ] as $anchor_library_helper ) {
+	require_once ANCHOR_LIBRARY_DIR . 'includes/class-afm-' . $anchor_library_helper . '.php';
+}
+unset( $anchor_library_helper );

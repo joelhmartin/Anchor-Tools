@@ -338,6 +338,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-shipping/anchor-shipping.php',
                 'class'       => '\\Anchor\\Shipping\\Module',
             ],
+            'library' => [
+                'label'       => __( 'Anchor Library', 'anchor-schema' ),
+                'description' => __( 'Private member documents, videos and links with folder permissions (the Anchor Private File Manager, built in) and a read-only REST API for the member app. Deactivate the old plugin first.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-library/anchor-library.php',
+                'class'       => '\\Anchor\\Library\\Module',
+            ],
         ];
     }
 }

@@ -120,6 +120,26 @@ class Storage {
 	}
 
 	/**
+	 * Claim a stored filename in $dir that no other file uses, by creating it exclusively (fopen 'x').
+	 * wp_unique_filename() alone only checks, so two requests could pick the same name and the second write would
+	 * replace the first file's bytes (AFM-05). The caller then writes over its own empty placeholder, and must
+	 * unlink it if that write fails.
+	 *
+	 * @return string|false The claimed name, or false after 20 collisions.
+	 */
+	public static function reserve_stored_name( string $dir, string $name ) {
+		for ( $i = 0; $i < 20; $i++ ) {
+			$candidate = \wp_unique_filename( $dir, $name );
+			$handle    = @\fopen( \trailingslashit( $dir ) . $candidate, 'x' );
+			if ( $handle ) {
+				\fclose( $handle );
+				return $candidate;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Absolute path of a stored file.
 	 *
 	 * @param object $file Row of {prefix}anchor_fm_files (folder_id, stored_name).
@@ -195,8 +215,9 @@ class Storage {
 	 * @param string $mime        Content-Type.
 	 * @param string $disposition 'inline' or 'attachment' (anything else is an attachment).
 	 * @param string $name        Download file name.
+	 * @param bool   $discard_buffers Passed to write_range(); only tests that capture the body pass false.
 	 */
-	public static function stream( string $path, string $mime, string $disposition, string $name ): void {
+	public static function stream( string $path, string $mime, string $disposition, string $name, bool $discard_buffers = true ): void {
 		$disp = 'inline' === $disposition ? 'inline' : 'attachment';
 		$size = (int) \filesize( $path );
 		$plan = self::plan( isset( $_SERVER['HTTP_RANGE'] ) ? (string) $_SERVER['HTTP_RANGE'] : '', $size ); // phpcs:ignore WordPress.Security
@@ -213,9 +234,9 @@ class Storage {
 			\status_header( $plan['status'] );
 		}
 		if ( $plan['length'] > 0 ) {
-			self::write_range( $path, $plan['start'], $plan['end'] );
+			self::write_range( $path, $plan['start'], $plan['end'], $discard_buffers );
 		}
-		exit;
+		Http::halt();
 	}
 
 	/**

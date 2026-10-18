@@ -242,6 +242,29 @@ class Repository {
 		return \array_reverse( $crumbs );
 	}
 
+	/** Whether $possible_ancestor_id is somewhere above $folder_id (bounded and cycle-safe). */
+	public static function is_descendant( int $folder_id, int $possible_ancestor_id ): bool {
+		if ( $folder_id <= 0 || $possible_ancestor_id <= 0 ) {
+			return false;
+		}
+		$current = self::folder_row( $folder_id );
+		$seen    = [];
+		$depth   = 0;
+		while ( $current && $depth < 100 ) {
+			++$depth;
+			$cid = (int) $current->id;
+			if ( isset( $seen[ $cid ] ) ) {
+				break;
+			}
+			$seen[ $cid ] = true;
+			if ( (int) $current->parent_id === $possible_ancestor_id ) {
+				return true;
+			}
+			$current = ! empty( $current->parent_id ) ? self::folder_row( (int) $current->parent_id ) : null;
+		}
+		return false;
+	}
+
 	/** "A › B › C" for a folder id; empty for the root. */
 	public static function folder_path_string( int $folder_id ): string {
 		return $folder_id <= 0 ? '' : \implode( ' › ', \array_column( self::breadcrumbs( $folder_id ), 'name' ) );

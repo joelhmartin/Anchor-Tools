@@ -26,6 +26,11 @@ class Schema {
 	public const OPT_PD_FOLDER_ID          = 'anchor_fm_pd_folder_id';
 	public const OPT_REQUEST_ACCESS_EMAIL  = 'anchor_fm_request_access_email';
 	public const OPT_PORTAL_LOGO           = 'anchor_fm_portal_logo';
+	public const OPT_VIMEO_TOKEN           = 'anchor_fm_vimeo_token';
+	/** Keys of the roles created from the Users tab: the only ones it may rename or delete. */
+	public const OPT_PORTAL_ROLES          = 'anchor_fm_portal_roles';
+	/** Last result of StorageGuard::check(). */
+	public const OPT_STORAGE_CHECK         = 'anchor_fm_storage_check';
 
 	public const CRON_PRUNE_RESUME  = 'anchor_fm_prune_resume';
 	public const CRON_STORAGE_CHECK = 'anchor_fm_storage_check';

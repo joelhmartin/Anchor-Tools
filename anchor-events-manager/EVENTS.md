@@ -731,10 +731,10 @@ Settings > Anchor Tools > Events, **Member app URL schemes**: comma or space sep
 
 | Error code | When |
 |---|---|
-| `anchor_events_app_scheme` | `success_url` or `reject_url` uses a non-`https` scheme that isn't in the list |
+| `anchor_events_app_scheme` | `success_url` or `reject_url` uses any scheme (including `https`) that isn't in the list |
 | `anchor_events_app_admin` | `success_url` uses a listed scheme and the signed-in user has the `administrator` role |
 
-`https` redirect URLs stay allowed (other integrations), and so does anything while the setting is empty. Core runs `auth_redirect()` before this screen, so the user is always known by then (a signed-out visitor is sent to the login form first). Existing application passwords are never touched. This is a consent-screen gate, not a security boundary: core validates the URLs only when the screen renders (the REST call that mints the password does not), and an administrator can still create an application password from their profile. Note that, with the setting on, a plain `http://` redirect (including core's loopback exception) is also refused.
+While the setting is on, only the listed app schemes may receive a password through the consent screen: a third-party `https` callback is refused too, because that is how a phishing link would collect one. The no-callback flow (password shown on screen) and creating one from the profile still work. Everything is allowed while the setting is empty. Core runs `auth_redirect()` before this screen, so the user is always known by then (a signed-out visitor is sent to the login form first). Existing application passwords are never touched. This is a consent-screen gate, not a security boundary: core validates the URLs only when the screen renders (the REST call that mints the password does not), and an administrator can still create an application password from their profile. Note that, with the setting on, a plain `http://` redirect (including core's loopback exception) is also refused.
 
 ### App categories setting
 

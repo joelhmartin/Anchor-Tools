@@ -4,8 +4,9 @@
  *
  * The phone app signs in through core's wp-admin/authorize-application.php with
  * a custom-scheme success_url. When the "Member app URL schemes" setting is
- * non-empty this class (a) refuses custom-scheme redirects that aren't the
- * member app's, and (b) keeps administrator accounts from authorizing the
+ * non-empty this class (a) refuses any redirect (custom scheme or https) that
+ * isn't the member app's, so a third party can't phish a password through the
+ * consent screen, and (b) keeps administrator accounts from authorizing the
  * member app. Empty setting = no behaviour change at all.
  *
  * It only adds errors to core's authorize-request validation. It never filters
@@ -81,7 +82,7 @@ class App_Auth {
         $success_scheme = self::scheme_of( $request['success_url'] ?? '' );
         $schemes        = [ $success_scheme, self::scheme_of( $request['reject_url'] ?? '' ) ];
         foreach ( $schemes as $scheme ) {
-            if ( '' !== $scheme && 'https' !== $scheme && ! \in_array( $scheme, $allowed, true ) ) {
+            if ( '' !== $scheme && ! \in_array( $scheme, $allowed, true ) ) {
                 $error->add( 'anchor_events_app_scheme', __( "This app isn't allowed to sign in to this site.", 'anchor-schema' ) );
                 return;
             }

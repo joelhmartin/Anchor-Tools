@@ -66,13 +66,20 @@ class Test_Events_Feed_App_Auth extends Anchor_Events_TestCase {
 
 	public function test_unknown_scheme_in_reject_url_only_is_refused() {
 		$this->set_schemes( 'tmjcentres' );
-		$error = $this->run_filter( [ 'success_url' => 'https://example.com/ok', 'reject_url' => 'evilapp://no' ], $this->centre() );
+		$error = $this->run_filter( [ 'success_url' => 'tmjcentres://auth', 'reject_url' => 'evilapp://no' ], $this->centre() );
 		$this->assertSame( [ 'anchor_events_app_scheme' ], $error->get_error_codes() );
 	}
 
-	public function test_https_is_ok_even_for_admin() {
+	// A third-party https callback is how a phishing link would collect a password through the consent screen.
+	public function test_https_callback_is_refused_when_schemes_are_set() {
 		$this->set_schemes( 'tmjcentres' );
-		$error = $this->run_filter( [ 'success_url' => 'https://example.com/cb', 'reject_url' => 'https://example.com/cb?success=false' ], $this->admin() );
+		$error = $this->run_filter( [ 'success_url' => 'https://example.com/cb', 'reject_url' => 'https://example.com/cb?success=false' ], $this->centre() );
+		$this->assertSame( [ 'anchor_events_app_scheme' ], $error->get_error_codes() );
+	}
+
+	public function test_https_callback_is_ok_when_setting_is_empty() {
+		$this->set_schemes( '' );
+		$error = $this->run_filter( [ 'success_url' => 'https://example.com/cb' ], $this->admin() );
 		$this->assertFalse( $error->has_errors() );
 	}
 

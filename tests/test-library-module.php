@@ -69,7 +69,26 @@ class Anchor_Library_Module_Test extends WP_UnitTestCase {
 	}
 
 	public function test_boots_without_legacy() {
-		$this->markTestIncomplete( 'Needs the Portal shortcodes from Task 4 (and a process without the legacy stand-in class).' );
+		// The legacy stand-in class may already exist in this process (it cannot be undeclared), so the guard's
+		// answer is overridden through its filter; the default answer is the class_exists check asserted above.
+		$this->assertSame( class_exists( 'Anchor_Private_File_Manager', false ), \Anchor\Library\Module::legacy_active() );
+		add_filter( 'anchor_library_legacy_active', '__return_false' );
+		$this->assertFalse( \Anchor\Library\Module::legacy_active() );
+
+		remove_shortcode( 'anchor_file_manager' );
+		wp_clear_scheduled_hook( 'anchor_fm_prune_resume' );
+		wp_clear_scheduled_hook( 'anchor_fm_storage_check' );
+		\Anchor\Library\Module::boot();
+
+		$this->assertTrue( shortcode_exists( 'anchor_file_manager' ) );
+		$this->assertNotFalse( has_action( 'wp_ajax_anchor_fm_list' ) );
+		$this->assertNotFalse( has_action( 'anchor_fm_prune_resume' ) );
+		$this->assertNotFalse( has_action( 'anchor_fm_storage_check' ) );
+		$this->assertNotFalse( wp_next_scheduled( 'anchor_fm_prune_resume' ) );
+		$this->assertFalse( has_action( 'admin_notices', [ \Anchor\Library\Module::class, 'render_legacy_notice' ] ) );
+		wp_clear_scheduled_hook( 'anchor_fm_prune_resume' );
+		wp_clear_scheduled_hook( 'anchor_fm_storage_check' );
+		delete_option( 'anchor_fm_db_version' );
 	}
 
 	/**

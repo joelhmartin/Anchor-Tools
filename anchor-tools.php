@@ -468,6 +468,32 @@ if ( ! function_exists( 'anchor_tools_agreements_clear_cleanup' ) ) {
 }
 
 /**
+ * Library: unschedule the prune/storage-check events when the module is switched off (literal hook names, so no module
+ * code is needed while it is off) and on plugin deactivation. The module re-schedules them on the next load once on.
+ * Note: if the old Anchor Private File Manager plugin is the active owner at that moment it re-creates its own on its
+ * next load, so a rollback to the plugin needs no manual step.
+ */
+if ( ! function_exists( 'anchor_tools_library_clear_events' ) ) {
+    function anchor_tools_library_clear_events() {
+        wp_clear_scheduled_hook( 'anchor_fm_prune_resume' );
+        wp_clear_scheduled_hook( 'anchor_fm_storage_check' );
+    }
+
+    /**
+     * @param mixed $old_value Previous settings.
+     * @param mixed $value     New settings.
+     */
+    function anchor_tools_library_maybe_clear_events( $old_value, $value ) {
+        if ( ! empty( $old_value['modules']['library'] ) && empty( $value['modules']['library'] ) ) {
+            anchor_tools_library_clear_events();
+        }
+    }
+
+    add_action( 'update_option_' . Anchor_Schema_Admin::OPTION_KEY, 'anchor_tools_library_maybe_clear_events', 10, 2 );
+    register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, 'anchor_tools_library_clear_events' );
+}
+
+/**
  * Shipping: unschedule the tracking poll when the module is switched off (literal hook/group names, so no module
  * code is needed while it is off) and on plugin deactivation. The module re-creates it on the next admin visit once on.
  */

@@ -90,3 +90,4 @@ require __DIR__ . '/class-anchor-events-testcase.php';
 require __DIR__ . '/class-anchor-courses-testcase.php';
 require __DIR__ . '/class-anchor-announcements-testcase.php';
 require __DIR__ . '/class-anchor-shipping-testcase.php';
+require __DIR__ . '/class-anchor-library-testcase.php';

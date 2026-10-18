@@ -37,7 +37,9 @@ class Module {
 			\add_action( 'admin_notices', [ self::class, 'render_legacy_notice' ] );
 			return;
 		}
-		// Components are wired here as they are ported.
+		Schema::maybe_upgrade();
+		Schema::schedule_events();
+		// Further components are wired here as they are ported.
 	}
 
 	public static function render_legacy_notice(): void {

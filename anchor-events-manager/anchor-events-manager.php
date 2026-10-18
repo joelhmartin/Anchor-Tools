@@ -322,6 +322,9 @@ class Module {
     /** @var Entitlements|null Event roles + access (spec §4; always loaded). */
     public $entitlements = null;
 
+    /** @var App_Auth|null Application Passwords hardening for the member app. */
+    public $app_auth;
+
     /** @var Feed|null Read-only REST feed for the member app (spec 2026-10-12-events-feed-api; always loaded). */
     public $feed = null;
 
@@ -430,6 +433,7 @@ class Module {
         // WooCommerce dependency.
         require_once $dir . 'class-entitlements.php';
         require_once $dir . 'class-feed.php';
+        require_once $dir . 'class-app-auth.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -454,6 +458,9 @@ class Module {
 
         // Member-app feed: selection + row mapping over the above (no hooks yet).
         $this->feed = new Feed( $this );
+        // Application Passwords hardening for the member app: hooks core's authorize-request
+        // validation, and does nothing until "Member app URL schemes" is set.
+        $this->app_auth = new App_Auth( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
@@ -11817,6 +11824,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             echo '</fieldset><p class="description">' . esc_html__( 'Categories the member app shows. Leave empty to show all.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings', 'anchor_events_main' );
 
+        \add_settings_field( 'app_schemes', __( 'Member app URL schemes', 'anchor-schema' ), function() {
+            printf(
+                '<input type="text" class="regular-text" name="%1$s[app_schemes]" value="%2$s" placeholder="tmjcentres" /><p class="description">%3$s</p>',
+                esc_attr( self::OPTION_KEY ),
+                esc_attr( (string) $this->get_settings()['app_schemes'] ),
+                esc_html__( 'Custom URL schemes the member app signs in with (comma or space separated). When set, Application Passwords sign-in refuses other custom schemes and refuses administrator accounts for the app. Leave empty to change nothing.', 'anchor-schema' )
+            );
+        }, 'anchor_events_settings', 'anchor_events_main' );
+
         \add_settings_section( 'anchor_events_email_sender', __( 'Email Sender', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'From / Reply-To / BCC identity applied to all event emails. Leave blank to use WordPress defaults.', 'anchor-schema' ) . '</p>';
             echo '<p class="description">' . esc_html__( 'This only sets the email headers — actual delivery still relies on your site\'s mail service (e.g. Mailgun, WP Mail SMTP). The From address should be on a domain that service is authorized to send for (SPF/DKIM), or mail may be marked as spam. Some SMTP/Mailgun plugins force their own From address and will override this; Reply-To is usually respected.', 'anchor-schema' ) . '</p>';
@@ -12230,6 +12246,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // Member-app feed default filter (feed spec "App categories setting").
             // Term IDs, not slugs, so renaming a category doesn't silently drop it.
             'app_categories' => Feed::existing_category_ids( (array) ( $input['app_categories'] ?? [] ) ),
+            // Member-app sign-in hardening: lowercase scheme allowlist, '' = off.
+            'app_schemes' => App_Auth::sanitize( $input['app_schemes'] ?? '' ),
             'registration_internal' => ! empty( $input['registration_internal'] ),
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),
@@ -16796,6 +16814,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'archive_hide_past' => true,
             'template_source' => 'theme',
             'app_categories' => [],
+            'app_schemes' => '',
             'registration_internal' => true,
             'admin_email' => '',
             'notify_admin' => true,

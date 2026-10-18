@@ -23,8 +23,10 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 			Schema::create_tables();
 		}
 		add_filter( 'anchor_library_legacy_active', '__return_false' );
+		\Anchor\Library\Portal::reset();
 		Module::boot();
 		add_filter( 'pre_wp_mail', '__return_true' );
+		$GLOBALS['wp_scripts'] = new WP_Scripts(); // the portal enqueues once per process, like per request
 	}
 
 	public function tear_down() {
@@ -32,12 +34,30 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		wp_clear_scheduled_hook( Schema::CRON_STORAGE_CHECK );
 		$_FILES = [];
 		parent::tear_down();
+		// Booting installs the schema (DDL), and DDL commits: the Product Docs folder row it seeds would otherwise
+		// outlive every test. The deletes, like the option deletes below, are committed by the next test's START.
+		global $wpdb;
+		foreach ( Schema::TABLES as $name ) {
+			$wpdb->query( 'DELETE FROM ' . Schema::table( $name ) ); // phpcs:ignore
+		}
 		foreach ( [ 'anchor_fm_db_version', 'anchor_fm_pd_folder_id', 'anchor_fm_storage_check', 'anchor_fm_portal_roles' ] as $option ) {
 			delete_option( $option );
 		}
 	}
 
 	// ---- helpers --------------------------------------------------------------------------------------------
+
+	/**
+	 * The recursive folder delete wraps its writes in START TRANSACTION / COMMIT, which would commit the test's own
+	 * transaction and leak rows into later tests. While a handler runs they are rewritten as savepoints.
+	 */
+	public function savepoints( $sql ) {
+		return preg_replace(
+			[ '/^\s*START TRANSACTION\s*$/i', '/^\s*COMMIT\s*$/i', '/^\s*ROLLBACK\s*$/i' ],
+			[ 'SAVEPOINT afm_test', 'RELEASE SAVEPOINT afm_test', 'ROLLBACK TO SAVEPOINT afm_test' ],
+			$sql
+		);
+	}
 
 	private function call( string $action, array $post = [], string $role = 'administrator' ): array {
 		if ( $role ) {
@@ -46,6 +66,7 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		$_POST    = array_merge( [ 'nonce' => wp_create_nonce( 'anchor_fm_nonce' ) ], $post );
 		$_REQUEST = $_POST;
 		$this->_last_response = '';
+		add_filter( 'query', [ $this, 'savepoints' ] );
 		try {
 			$this->_handleAjax( $action );
 		} catch ( WPAjaxDieContinueException $e ) {
@@ -53,6 +74,7 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		} catch ( WPAjaxDieStopException $e ) {
 			unset( $e );
 		}
+		remove_filter( 'query', [ $this, 'savepoints' ] );
 		return (array) json_decode( $this->_last_response, true );
 	}
 

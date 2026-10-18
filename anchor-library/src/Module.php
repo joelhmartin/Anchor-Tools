@@ -21,10 +21,11 @@ class Module {
 
 	/**
 	 * Whether the Anchor Private File Manager plugin is loaded. The autoloader is not consulted: the plugin
-	 * defines the class itself, and an autoload attempt could only slow the check down.
+	 * defines the class itself, and an autoload attempt could only slow the check down. Filterable
+	 * (`anchor_library_legacy_active`) so a test process, where a stand-in class cannot be undeclared, can answer.
 	 */
 	public static function legacy_active(): bool {
-		return \class_exists( self::LEGACY_CLASS, false );
+		return (bool) \apply_filters( 'anchor_library_legacy_active', \class_exists( self::LEGACY_CLASS, false ) );
 	}
 
 	/**
@@ -37,9 +38,19 @@ class Module {
 			\add_action( 'admin_notices', [ self::class, 'render_legacy_notice' ] );
 			return;
 		}
+		self::register_hooks();
 		Schema::maybe_upgrade();
 		Schema::schedule_events();
-		// Further components are wired here as they are ported.
+	}
+
+	/** Every hook the plugin registered in its constructor (see tests/fixtures/library-hooks.txt). */
+	private static function register_hooks(): void {
+		Portal::register();
+		Settings::register();
+		StorageMonitor::register();
+		Users::register();
+		Ajax\Registry::register();
+		\add_action( Schema::CRON_PRUNE_RESUME, [ Ajax\Media::class, 'cron_prune_resume' ] );
 	}
 
 	public static function render_legacy_notice(): void {

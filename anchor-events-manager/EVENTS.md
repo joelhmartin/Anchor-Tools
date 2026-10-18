@@ -723,7 +723,18 @@ An `external` event ignores the native states: it is `closed` when `bookability(
 
 ### Auth and visibility
 
-Application Passwords sent as HTTP Basic over HTTPS; core resolves the user before the route runs. A bad or revoked key is a core `401` before the route. Signed out sees only events with no Prerequisites; signed in also sees events whose Prerequisites they meet (`Entitlements::meets_prerequisites()`, the same check the site's registration uses, so no role names are hard-coded). The feed carries no rosters, registrant or seat counts, attendee data or private meta. Some security plugins turn Application Passwords off; check `wp_is_application_passwords_available()` on the target site.
+Application Passwords sent as HTTP Basic over HTTPS; core resolves the user before the route runs. A bad or revoked key is a core `401` before the route. Signed out sees only events with no Prerequisites; signed in also sees events whose Prerequisites they meet (`Entitlements::meets_prerequisites()`, the same check the site's registration uses, so no role names are hard-coded). The feed carries no rosters, registrant or seat counts, attendee data or private meta. Application Passwords must be **available** on the site for the app to sign in. Core enables them on HTTPS sites; some security plugins turn them off (Wordfence Login Security has a "Disable WordPress application passwords" option), so check `wp_is_application_passwords_available()` on the target site. Nothing in this module filters availability.
+
+### Member app URL schemes setting
+
+Settings > Anchor Tools > Events, **Member app URL schemes**: comma or space separated custom URL schemes the app uses for its sign-in `success_url` (e.g. `tmjcentres`). Sanitized to lowercase `[a-z][a-z0-9+.-]*` (invalid tokens dropped, duplicates removed) and stored as a string under `app_schemes` in `anchor_events_settings`. **Empty (the default) changes nothing.** When set, `class-app-auth.php` hooks core's `wp_authorize_application_password_request_errors` action (raised by `wp_is_authorize_application_password_request_valid()` on the `wp-admin/authorize-application.php` screen) and adds:
+
+| Error code | When |
+|---|---|
+| `anchor_events_app_scheme` | `success_url` or `reject_url` uses a non-`https` scheme that isn't in the list |
+| `anchor_events_app_admin` | `success_url` uses a listed scheme and the signed-in user has the `administrator` role |
+
+`https` redirect URLs stay allowed (other integrations), and so does anything while the setting is empty. Core runs `auth_redirect()` before this screen, so the user is always known by then (a signed-out visitor is sent to the login form first). Existing application passwords are never touched. This is a consent-screen gate, not a security boundary: core validates the URLs only when the screen renders (the REST call that mints the password does not), and an administrator can still create an application password from their profile. Note that, with the setting on, a plain `http://` redirect (including core's loopback exception) is also refused.
 
 ### App categories setting
 

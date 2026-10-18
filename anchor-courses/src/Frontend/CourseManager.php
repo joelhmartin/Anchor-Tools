@@ -41,6 +41,23 @@ final class CourseManager {
 	public function __construct() {
 		\add_shortcode( 'anchor_course_manager', [ $this, 'render' ] );
 		\add_action( 'template_redirect', [ $this, 'handle_save' ] );
+		\add_action( 'wp_enqueue_scripts', [ $this, 'maybe_enqueue' ] );
+	}
+
+	/**
+	 * Queue the stylesheet in <head> on pages that will render the manager. render() still
+	 * enqueues as a fallback, but by then wp_head has run, so the sheet would only print in
+	 * the footer (a flash of unstyled tables). Detection is has_shortcode() on the queried
+	 * post; a host that nests the shortcode inside its own (a theme tab bar) answers through
+	 * the `anchor_course_manager_load_assets` filter.
+	 */
+	public function maybe_enqueue(): void {
+		$post = \is_singular() ? \get_post() : null;
+		$load = $post instanceof \WP_Post && \has_shortcode( $post->post_content, 'anchor_course_manager' );
+		if ( \apply_filters( 'anchor_course_manager_load_assets', $load, $post )
+			&& \current_user_can( Capabilities::cap( 'edit_courses' ) ) ) {
+			$this->enqueue();
+		}
 	}
 
 	/** The course being edited, or 0 for the list (absent, wrong type or trashed). */
@@ -86,12 +103,16 @@ final class CourseManager {
 		if ( ! \current_user_can( Capabilities::cap( 'reports' ) ) ) {
 			return '';
 		}
-		$page = isset( $_GET['acm_page'] ) ? \max( 1, \absint( \wp_unslash( $_GET['acm_page'] ) ) ) : 1; // phpcs:ignore WordPress.Security.NonceVerification
+		$total = EnrollmentRepository::count_for_course( $course_id );
+		$last  = \max( 1, (int) \ceil( $total / self::PER_PAGE ) );
+		$page  = isset( $_GET['acm_page'] ) ? \absint( \wp_unslash( $_GET['acm_page'] ) ) : 1; // phpcs:ignore WordPress.Security.NonceVerification
+		// Clamp to the real range: an absurd acm_page would otherwise overflow the offset to a float.
+		$page  = \min( \max( 1, $page ), $last );
 		return Templates::render(
 			'course-manager/learners',
 			[
 				'rows'           => LearnerReports::rows( $course_id, self::PER_PAGE, ( $page - 1 ) * self::PER_PAGE ),
-				'total'          => EnrollmentRepository::count_for_course( $course_id ),
+				'total'          => $total,
 				'page'           => $page,
 				'per_page'       => self::PER_PAGE,
 				'has_curriculum' => [] !== Curriculum::required_items( $course_id ),
@@ -126,7 +147,7 @@ final class CourseManager {
 		return \get_posts(
 			[
 				'post_type'      => CoursePostType::CPT,
-				'post_status'    => [ 'publish', 'draft', 'private', 'pending' ],
+				'post_status'    => [ 'publish', 'future', 'draft', 'private', 'pending' ],
 				'orderby'        => 'date',
 				'order'          => 'DESC',
 				'posts_per_page' => -1,

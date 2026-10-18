@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 $status_labels = [
 	'publish' => __( 'Published', 'anchor-schema' ),
+	'future'  => __( 'Scheduled', 'anchor-schema' ),
 	'draft'   => __( 'Draft', 'anchor-schema' ),
 	'private' => __( 'Private', 'anchor-schema' ),
 	'pending' => __( 'Pending', 'anchor-schema' ),

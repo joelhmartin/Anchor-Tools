@@ -257,4 +257,45 @@ class Test_Courses_Course_Manager extends Anchor_Courses_TestCase {
 		remove_filter( 'user_has_cap', $f );
 		$this->assertStringNotContainsString( 'acm-learners', $html );
 	}
+
+	public function test_list_includes_scheduled_courses() {
+		$id = $this->make_course( [], 'Future Delta' );
+		global $wpdb;
+		$wpdb->update( $wpdb->posts, [ 'post_status' => 'future' ], [ 'ID' => $id ] );
+		clean_post_cache( $id );
+		$this->assertSame( 'future', get_post_status( $id ) );
+		$html = do_shortcode( '[anchor_course_manager]' );
+		$this->assertStringContainsString( 'Future Delta', $html );
+		$this->assertStringContainsString( 'Scheduled', $html );
+	}
+
+	public function test_huge_page_number_is_clamped_to_last_page() {
+		[ $course ] = $this->course_with_lesson();
+		( new EnrollmentService() )->enroll( $this->make_learner(), $course );
+		$_GET['acm_page'] = (string) PHP_INT_MAX;
+		$html = $this->learners_html( $course );
+		$this->assertSame( 1, substr_count( $html, '<tr class="acm-learner">' ) );
+		$this->assertStringContainsString( 'Showing 1–1 of 1', $html );
+	}
+
+	public function test_stylesheet_queued_in_head_when_page_has_shortcode() {
+		wp_dequeue_style( 'anchor-course-manager' );
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_content' => '[anchor_course_manager]' ] );
+		$this->go_to( get_permalink( $page ) );
+		( new CourseManager() )->maybe_enqueue();
+		$this->assertTrue( wp_style_is( 'anchor-course-manager', 'enqueued' ) );
+	}
+
+	public function test_stylesheet_not_queued_elsewhere_unless_filtered() {
+		wp_dequeue_style( 'anchor-course-manager' );
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_content' => 'nothing here' ] );
+		$this->go_to( get_permalink( $page ) );
+		( new CourseManager() )->maybe_enqueue();
+		$this->assertFalse( wp_style_is( 'anchor-course-manager', 'enqueued' ) );
+
+		add_filter( 'anchor_course_manager_load_assets', '__return_true' );
+		( new CourseManager() )->maybe_enqueue();
+		remove_filter( 'anchor_course_manager_load_assets', '__return_true' );
+		$this->assertTrue( wp_style_is( 'anchor-course-manager', 'enqueued' ) );
+	}
 }

@@ -42,12 +42,19 @@ class Anchor_Library_Module_Test extends WP_UnitTestCase {
 		}
 		remove_all_actions( 'admin_notices' );
 		remove_shortcode( 'anchor_file_manager' );
+		wp_clear_scheduled_hook( 'anchor_fm_prune_resume' );
+		wp_clear_scheduled_hook( 'anchor_fm_storage_check' );
+		update_option( 'anchor_fm_db_version', '2.14.0' ); // what a live plugin site holds
 
 		$this->assertTrue( \Anchor\Library\Module::legacy_active() );
 		\Anchor\Library\Module::boot();
 
 		$this->assertFalse( shortcode_exists( 'anchor_file_manager' ), 'module must not register the portal shortcode' );
 		$this->assertNotFalse( has_action( 'admin_notices', [ \Anchor\Library\Module::class, 'render_legacy_notice' ] ) );
+		$this->assertSame( '2.14.0', get_option( 'anchor_fm_db_version' ), 'the plugin owns the schema: no upgrade ran' );
+		$this->assertFalse( wp_next_scheduled( 'anchor_fm_prune_resume' ), 'no cron scheduled while the plugin is active' );
+		$this->assertFalse( wp_next_scheduled( 'anchor_fm_storage_check' ) );
+		delete_option( 'anchor_fm_db_version' );
 
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
 		ob_start();
@@ -63,5 +70,41 @@ class Anchor_Library_Module_Test extends WP_UnitTestCase {
 
 	public function test_boots_without_legacy() {
 		$this->markTestIncomplete( 'Needs the Portal shortcodes from Task 4 (and a process without the legacy stand-in class).' );
+	}
+
+	/**
+	 * The old plugin declares the same global helper classes from its own path. Loading the module bootstrap after
+	 * that must reuse them, not fatal with "Cannot redeclare class". A class cannot be undeclared, so this runs in a
+	 * fresh PHP process: the plugin's copies (byte-identical files at another path) first, the bootstrap second.
+	 */
+	public function test_bootstrap_reuses_helper_classes_the_legacy_plugin_already_declared() {
+		$tmp = sys_get_temp_dir() . '/anchor-library-legacy-' . getmypid() . '-' . wp_rand();
+		mkdir( $tmp );
+		foreach ( glob( ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-library/includes/class-afm-*.php' ) as $file ) {
+			copy( $file, $tmp . '/' . basename( $file ) );
+		}
+		$script = '$_SERVER["REQUEST_METHOD"]="GET"; define("ABSPATH","/x/"); define("ANCHOR_TOOLS_PLUGIN_DIR",' . var_export( ANCHOR_TOOLS_PLUGIN_DIR, true ) . ');'
+			. 'foreach (glob(' . var_export( $tmp, true ) . '."/class-afm-*.php") as $f) { require $f; }'
+			. 'require ANCHOR_TOOLS_PLUGIN_DIR."anchor-library/anchor-library.php";'
+			. 'echo "OK ", (new ReflectionClass("Anchor_FM_Range"))->getFileName() === ' . var_export( realpath( $tmp ) . '/class-afm-range.php', true ) . ' ? "reused" : "replaced";';
+		exec( escapeshellarg( PHP_BINARY ) . ' -d display_errors=1 -r ' . escapeshellarg( $script ) . ' 2>&1', $out, $code );
+		exec( 'rm -rf ' . escapeshellarg( $tmp ) );
+		$this->assertSame( 0, $code, implode( "\n", $out ) );
+		$this->assertSame( 'OK reused', trim( implode( "\n", $out ) ) );
+	}
+
+	public function test_switching_the_module_off_clears_both_cron_hooks() {
+		$settings = (array) get_option( Anchor_Schema_Admin::OPTION_KEY, [] );
+		$settings['modules']['library'] = 1;
+		update_option( Anchor_Schema_Admin::OPTION_KEY, $settings, false );
+		wp_schedule_event( time() + 3600, 'daily', 'anchor_fm_prune_resume' );
+		wp_schedule_event( time() + 3600, 'daily', 'anchor_fm_storage_check' );
+		$this->assertNotFalse( wp_next_scheduled( 'anchor_fm_prune_resume' ) );
+
+		$settings['modules']['library'] = 0;
+		update_option( Anchor_Schema_Admin::OPTION_KEY, $settings, false );
+		$this->assertFalse( wp_next_scheduled( 'anchor_fm_prune_resume' ) );
+		$this->assertFalse( wp_next_scheduled( 'anchor_fm_storage_check' ) );
+		delete_option( Anchor_Schema_Admin::OPTION_KEY );
 	}
 }

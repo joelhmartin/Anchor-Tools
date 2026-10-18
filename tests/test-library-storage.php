@@ -107,6 +107,24 @@ class Anchor_Library_Storage_Test extends Anchor_Library_TestCase {
 		$this->assertSame( 200, Storage::plan( 'garbage', 5000 )['status'], 'unparseable Range falls back to the whole file' );
 	}
 
+	public function test_plan_edge_cases() {
+		$this->assertSame( 416, Storage::plan( 'bytes=-0', 5000 )['status'], 'a zero-length suffix is unsatisfiable' );
+		$this->assertSame( 200, Storage::plan( 'bytes=0-9,20-29', 5000 )['status'], 'multi-range is served whole' );
+		$this->assertSame( 200, Storage::plan( 'bytes=50-10', 5000 )['status'], 'end before start is ignored' );
+		$past = Storage::plan( 'bytes=4000-99999', 5000 );
+		$this->assertSame( [ 206, 4000, 4999, 1000 ], [ $past['status'], $past['start'], $past['end'], $past['length'] ], 'end past EOF is clamped' );
+		$this->assertSame( 'bytes 4000-4999/5000', $past['headers']['Content-Range'] );
+	}
+
+	public function test_anchor_fm_range_parse_directly() {
+		$this->assertNull( Anchor_FM_Range::parse( '', 5000 ) );
+		$this->assertNull( Anchor_FM_Range::parse( 'bytes=0-1', 0 ), 'empty file: serve whole' );
+		$this->assertSame( [ 'satisfiable' => true, 'start' => 500, 'end' => 999 ], Anchor_FM_Range::parse( 'bytes=500-999', 5000 ) );
+		$this->assertSame( [ 'satisfiable' => true, 'start' => 4500, 'end' => 4999 ], Anchor_FM_Range::parse( 'bytes=-500', 5000 ) );
+		$this->assertFalse( Anchor_FM_Range::parse( 'bytes=9000-', 5000 )['satisfiable'] );
+		$this->assertNull( Anchor_FM_Range::parse( 'items=0-5', 5000 ) );
+	}
+
 	public function test_write_range_streams_exactly_the_window_across_chunk_boundaries() {
 		$path = $this->uploads . '/blob.bin';
 		$data = random_bytes( 700000 ); // > 2 chunks of 256 KB.

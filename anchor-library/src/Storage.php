@@ -208,6 +208,61 @@ class Storage {
 	}
 
 	/**
+	 * Whether stream() should drop WordPress's output buffers before writing the body.
+	 *
+	 * The `anchor_library_stream_discard_buffers` filter is a TEST SEAM, not an extension point: tests return false
+	 * so PHPUnit can capture the body. Nothing in production should hook it, and it may change without notice.
+	 */
+	public static function discard_buffers(): bool {
+		return (bool) \apply_filters( 'anchor_library_stream_discard_buffers', true );
+	}
+
+	/** MIME types that may render inline in the browser from the REST route; everything else downloads. */
+	private const SAFE_INLINE = [ 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'text/plain', 'text/csv' ];
+
+	/** CSP for an inline REST response: no script, no network, no framing, own-origin media only. */
+	public const INLINE_CSP = "sandbox; default-src 'none'; img-src data:; media-src 'self'; style-src 'unsafe-inline'";
+
+	/** Whether a stored MIME type is one the strict (REST) path will serve inline: PDF, common images, video/*, audio/*, plain text and CSV. Never SVG, HTML or XML. */
+	public static function is_safe_inline( string $mime ): bool {
+		$base = \strtolower( \trim( \explode( ';', $mime )[0] ) );
+		return \in_array( $base, self::SAFE_INLINE, true ) || 0 === \strpos( $base, 'video/' ) || 0 === \strpos( $base, 'audio/' );
+	}
+
+	/**
+	 * The header lines for a file response, as "Name: value" strings in send order. Pure (sends nothing), so tests
+	 * assert on it: in-process headers_list() is empty under PHPUnit.
+	 *
+	 * $strict is the REST content route's posture: private, no-store and no-referrer set explicitly (core's
+	 * nocache_headers() omits no-store for signed-out requests before WP 6.8), an inline request for a type outside
+	 * is_safe_inline() becomes an attachment, and inline responses carry a sandboxing CSP. The portal's AJAX stream
+	 * passes false and keeps its long-standing behaviour: its allowed upload types include some (bmp, tif, ...) the
+	 * strict set would turn into downloads.
+	 *
+	 * @param array $plan Result of plan().
+	 * @return string[]
+	 */
+	public static function response_headers( string $mime, string $disposition, string $name, array $plan, bool $strict = false ): array {
+		$disp = 'inline' === $disposition && ( ! $strict || self::is_safe_inline( $mime ) ) ? 'inline' : 'attachment';
+		$out  = [];
+		if ( $strict ) {
+			$out[] = 'Cache-Control: private, no-store';
+			$out[] = 'Referrer-Policy: no-referrer';
+		}
+		$out[] = 'Accept-Ranges: bytes';
+		$out[] = 'Content-Type: ' . $mime;
+		$out[] = Http::content_disposition( $disp, $name );
+		$out[] = 'X-Content-Type-Options: nosniff';
+		if ( $strict && 'inline' === $disp ) {
+			$out[] = 'Content-Security-Policy: ' . self::INLINE_CSP;
+		}
+		foreach ( $plan['headers'] as $header => $value ) {
+			$out[] = $header . ': ' . $value;
+		}
+		return $out;
+	}
+
+	/**
 	 * Send headers and body for a stored file, then exit. The caller has already checked permission and that the
 	 * file is readable, and logged activity.
 	 *
@@ -216,19 +271,14 @@ class Storage {
 	 * @param string $disposition 'inline' or 'attachment' (anything else is an attachment).
 	 * @param string $name        Download file name.
 	 * @param bool   $discard_buffers Passed to write_range(); only tests that capture the body pass false.
+	 * @param bool   $strict      The REST posture; see response_headers().
 	 */
-	public static function stream( string $path, string $mime, string $disposition, string $name, bool $discard_buffers = true ): void {
-		$disp = 'inline' === $disposition ? 'inline' : 'attachment';
-		$size = (int) \filesize( $path );
-		$plan = self::plan( isset( $_SERVER['HTTP_RANGE'] ) ? (string) $_SERVER['HTTP_RANGE'] : '', $size ); // phpcs:ignore WordPress.Security
+	public static function stream( string $path, string $mime, string $disposition, string $name, bool $discard_buffers = true, bool $strict = false ): void {
+		$plan = self::plan( isset( $_SERVER['HTTP_RANGE'] ) ? (string) $_SERVER['HTTP_RANGE'] : '', (int) \filesize( $path ) ); // phpcs:ignore WordPress.Security
 
 		\nocache_headers();
-		\header( 'Accept-Ranges: bytes' );
-		\header( 'Content-Type: ' . $mime );
-		\header( 'Content-Disposition: ' . $disp . '; filename="' . \sanitize_file_name( $name ) . '"' );
-		\header( 'X-Content-Type-Options: nosniff' );
-		foreach ( $plan['headers'] as $header => $value ) {
-			\header( $header . ': ' . $value );
+		foreach ( self::response_headers( $mime, $disposition, $name, $plan, $strict ) as $line ) {
+			\header( $line );
 		}
 		if ( 200 !== $plan['status'] ) {
 			\status_header( $plan['status'] );

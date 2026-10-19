@@ -349,7 +349,7 @@ class Files {
 			Activity::log($disp === 'inline' ? 'preview_file' : 'download_file', 'file', $file_id, [], $user_id);
 		}
 
-		Storage::stream($path, $file->mime_type, $disp, $file->original_name, (bool) \apply_filters('anchor_library_stream_discard_buffers', true));
+		Storage::stream($path, $file->mime_type, $disp, $file->original_name, Storage::discard_buffers());
 	}
 
 	public static function ajax_create_link() {

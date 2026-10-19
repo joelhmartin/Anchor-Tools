@@ -2,7 +2,7 @@
 /**
  * Short-lived, user- and file-bound download links for the member app.
  *
- * Token = base64url("user_id.file_id.disposition.exp") . "." . hex(HMAC-SHA256(encoded payload, wp_salt('auth'))).
+ * Token = base64url("user_id.file_id.disposition.exp") . "." . hex(HMAC-SHA256('anchor-library-link|' . encoded payload, wp_salt('auth'))).
  * The token is the only credential on /files/{id}/content: it names who may read which one file until it expires,
  * and nothing else. It carries no password or session. The view right is NOT baked in; the content route re-checks
  * it for the token's user, so revoking a grant stops a link that has not yet expired.
@@ -18,6 +18,8 @@ class LinkToken {
 
 	/** Seconds a link stays valid. */
 	public const TTL = 600;
+
+	private const MAC_DOMAIN = 'anchor-library-link|';
 
 	private const DISPOSITIONS = [ 'inline', 'attachment' ];
 
@@ -53,8 +55,9 @@ class LinkToken {
 		return [ 'user_id' => (int) $m[1], 'disposition' => $m[3] ];
 	}
 
+	/** Domain-separated: the prefix means a MAC minted for any other feature over the same salt can never verify here. */
 	private static function mac( string $encoded_payload ): string {
-		return \hash_hmac( 'sha256', $encoded_payload, \wp_salt( 'auth' ) );
+		return \hash_hmac( 'sha256', self::MAC_DOMAIN . $encoded_payload, \wp_salt( 'auth' ) );
 	}
 
 	private static function b64( string $raw ): string {

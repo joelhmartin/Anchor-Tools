@@ -53,11 +53,17 @@ Each hit adds `folder_id` (its folder) and `path` (that folder's names joined wi
 
 `/link` checks the caller's view right and returns a URL to `/content` carrying a token. `expires_at` is UTC, 10 minutes ahead.
 
-- Token = `base64url("user_id.file_id.disposition.exp")` + `"."` + hex `HMAC-SHA256(that encoded payload, wp_salt('auth'))`, compared with `hash_equals`. TTL 600 s. It is bound to one user and one file, and carries no password.
+- Token = `base64url("user_id.file_id.disposition.exp")` + `"."` + hex `HMAC-SHA256("anchor-library-link|" . that encoded payload, wp_salt('auth'))` (domain-separated, so a MAC minted elsewhere with the same salt never verifies), compared with `hash_equals`. TTL 600 s. It is bound to one user and one file, and carries no password.
 - `/content` is authenticated by the token alone. It ignores the current user, cookies and nonces, so a browser session with no token is a `401`. The app opens the URL as is, with no Basic auth header, so in-app viewers and players work.
 - The view right is **re-checked** for the token's user on every request: a grant removed inside the 10 minutes gives `403`.
-- Range requests give `206` with a correct `Content-Range` / `Content-Length` and stream in 256 KB chunks (`Storage::plan` / `Storage::stream`); an unsatisfiable range is `416`.
-- `Content-Disposition` follows the `disposition` the link was issued with.
+- Range requests give `206` with a correct `Content-Range` / `Content-Length` and stream in 256 KB chunks (`Storage::plan` / `Storage::stream`); an unsatisfiable range is `416`, which is not logged (no bytes were delivered).
+- `/content` is GET only: `HEAD` and other methods get `405` (a HEAD would otherwise stream and log with the body thrown away).
+- Response headers on `/content` (`Storage::response_headers( ..., $strict = true )`, asserted in `tests/test-library-delivery.php`):
+  - `Cache-Control: private, no-store` and `Referrer-Policy: no-referrer`, always, set explicitly. Core's `nocache_headers()` leaves `no-store` out for signed-out requests before WordPress 6.8, and `/content` is a signed-out request by design. `X-Content-Type-Options: nosniff` and `Accept-Ranges: bytes` as well.
+  - `Content-Disposition` follows the `disposition` the link was issued with, **except** that `inline` is honoured only for PDF, `image/png|jpeg|gif|webp`, `video/*`, `audio/*`, `text/plain` and `text/csv`. Anything else (SVG, HTML, XML, unknown) is sent as `attachment`.
+  - An inline response also carries `Content-Security-Policy: sandbox; default-src 'none'; img-src data:; media-src 'self'; style-src 'unsafe-inline'`.
+  - The name goes out as an ASCII `filename="..."` fallback plus `filename*=UTF-8''<percent-encoded>` (`Http::content_disposition()`, shared with the AJAX stream and the folder zip).
+  - The portal's AJAX stream (`anchor_fm_stream`) keeps its existing inline behaviour: its allowed upload types include some (bmp, tif, ...) outside the safe set, so applying it there would turn working previews into downloads. It does get the shared `Content-Disposition` helper.
 - Each read is logged to the activity table (`preview_file` for inline, `download_file` for attachment) with `meta` `{"source":"app"}` and the token's user as actor. As on the portal, an inline preview logs only its opening range; a download is always logged.
 
 ### Auth and visibility
@@ -66,7 +72,7 @@ Application Passwords sent as HTTP Basic over HTTPS; core resolves the user befo
 
 ### Caching
 
-`/folders/*` and `/search` carry a weak body-hash `ETag`, `Cache-Control: private, max-age=60` and `Vary: Authorization` (also on the `304`); a matching `If-None-Match` returns `304` with no body. These routes opt out of core's `rest_send_nocache_headers`, which would overwrite it for any signed-in caller. `/link` is `no-store` (every call mints a new token). `/content` is not cached.
+`/folders/*` and `/search` carry a weak body-hash `ETag`, `Cache-Control: private, max-age=60` and `Vary: Authorization` (also on the `304`); a matching `If-None-Match` returns `304` with no body. These routes opt out of core's `rest_send_nocache_headers`, which would overwrite it for any signed-in caller. `/link` is `no-store` (every call mints a new token). `/content` is `private, no-store`. Every error response in the namespace (400/401/403/404/405) carries `Cache-Control: no-store` (`Routes::no_store_errors()`).
 
 ### Errors
 

@@ -69,25 +69,26 @@ class Folders {
 		}
 
 		// Read-only from here to the response: the memo scope never spans a write.
-		Permissions::begin_memo();
-		$lists = Repository::children( $folder_id, $user_id );
-		$cap = $folder_id === 0
-			? ( \user_can( $user_id, 'administrator' ) ? 'manage' : 'view' )
-			: Permissions::folder_capability( $folder_id, $user_id );
-		$payload = [
-			'folderId' => $folder_id,
-			'breadcrumbs' => $folder_id === 0 ? [] : Repository::breadcrumbs( $folder_id ),
-			'folders' => $lists['folders'],
-			'links' => $lists['links'],
-			'files' => $lists['files'],
-			'videos' => $lists['videos'],
-			'capability' => $cap,
-			'isProductDocs' => $folder_id === $product_docs_id,
-			// Every other folder this user may open, so expanding one costs no request at all. Sent on every
-			// listing, which is what keeps it fresh: the client's copy is never older than its last navigation.
-			'contents' => Repository::contents_map( $user_id ),
-		];
-		Permissions::end_memo();
+		$payload = Permissions::with_memo( static function () use ( $folder_id, $user_id, $product_docs_id ) {
+			$lists = Repository::children( $folder_id, $user_id );
+			$cap = $folder_id === 0
+				? ( \user_can( $user_id, 'administrator' ) ? 'manage' : 'view' )
+				: Permissions::folder_capability( $folder_id, $user_id );
+			$payload = [
+				'folderId' => $folder_id,
+				'breadcrumbs' => $folder_id === 0 ? [] : Repository::breadcrumbs( $folder_id ),
+				'folders' => $lists['folders'],
+				'links' => $lists['links'],
+				'files' => $lists['files'],
+				'videos' => $lists['videos'],
+				'capability' => $cap,
+				'isProductDocs' => $folder_id === $product_docs_id,
+				// Every other folder this user may open, so expanding one costs no request at all. Sent on every
+				// listing, which is what keeps it fresh: the client's copy is never older than its last navigation.
+				'contents' => Repository::contents_map( $user_id ),
+			];
+			return $payload;
+		} );
 		Http::success( $payload );
 	}
 
@@ -422,77 +423,109 @@ class Folders {
 		if ($folder_id <= 0) Http::error('Missing folder_id');
 		if (!Permissions::can_view_folder($folder_id, $user_id)) Http::error('Forbidden', 403);
 
-		// Walks the whole subtree permission-checking every file; see begin_perm_memo().
-		Permissions::begin_memo();
-
-		global $wpdb;
-		$folders_table = Schema::table('folders');
-		$files_table = Schema::table('files');
-
-		$all_folders = $wpdb->get_results("SELECT id, parent_id, name FROM {$folders_table}");
-		$children = [];
-		foreach ((array) $all_folders as $row) {
-			$pid = (int) $row->parent_id;
-			if (!isset($children[$pid])) $children[$pid] = [];
-			$children[$pid][] = (int) $row->id;
+		$entries = Permissions::with_memo( static function () use ( $folder_id, $user_id ) {
+			return self::zip_entries( $folder_id, $user_id );
+		} );
+		if ( ! $entries ) {
+			Http::error( 'No files to download', 400 );
 		}
 
+		$tmp = \wp_tempnam( 'anchor-folder-zip' );
+		if ( ! $tmp ) Http::error( 'Could not create temp file', 500 );
+
+		$zip = new \ZipArchive();
+		if ( $zip->open( $tmp, \ZipArchive::OVERWRITE ) !== true ) {
+			@\unlink( $tmp );
+			Http::error( 'Could not create zip', 500 );
+		}
+		foreach ( $entries['files'] as $entry ) {
+			$zip->addFile( $entry['path'], $entry['entry'] );
+		}
+		$zip->close();
+
+		\header( 'Content-Type: application/zip' );
+		\header( Http::content_disposition( 'attachment', $entries['name'] . '.zip' ) );
+		\header( 'Content-Length: ' . \filesize( $tmp ) );
+		\readfile( $tmp );
+		@\unlink( $tmp );
+		Http::halt();
+	}
+
+	/**
+	 * The files a zip of $folder_id would hold: every viewable, readable file in the subtree, each with a sanitized
+	 * entry name. Call inside Permissions::with_memo(): it permission-checks every file.
+	 *
+	 * @return array{name:string,files:array<int,array{path:string,entry:string}>}|array{} Empty when nothing qualifies.
+	 */
+	public static function zip_entries( int $folder_id, int $user_id ): array {
+		global $wpdb;
+		$folders_table = Schema::table( 'folders' );
+		$files_table   = Schema::table( 'files' );
+
+		$children = [];
+		foreach ( (array) $wpdb->get_results( "SELECT id, parent_id FROM {$folders_table}" ) as $row ) {
+			$children[ (int) $row->parent_id ][] = (int) $row->id;
+		}
 		$folder_ids = [];
-		$stack = [$folder_id];
-		$seen = [];
-		while ($stack) {
-			$id = (int) \array_pop($stack);
-			if (isset($seen[$id])) continue;
-			$seen[$id] = true;
+		$stack      = [ $folder_id ];
+		$seen       = [];
+		while ( $stack ) {
+			$id = (int) \array_pop( $stack );
+			if ( isset( $seen[ $id ] ) ) continue;
+			$seen[ $id ]  = true;
 			$folder_ids[] = $id;
-			foreach (($children[$id] ?? []) as $cid) {
+			foreach ( ( $children[ $id ] ?? [] ) as $cid ) {
 				$stack[] = $cid;
 			}
 		}
+		$placeholders = \implode( ',', \array_fill( 0, \count( $folder_ids ), '%d' ) );
+		$query        = "SELECT id, folder_id, original_name, stored_name FROM {$files_table} WHERE folder_id IN ({$placeholders})";
+		$file_rows    = (array) $wpdb->get_results( \call_user_func_array( [ $wpdb, 'prepare' ], \array_merge( [ $query ], $folder_ids ) ) );
 
-		$file_rows = [];
-		if ($folder_ids) {
-			$placeholders = \implode(',', \array_fill(0, \count($folder_ids), '%d'));
-			$query = "SELECT id, folder_id, original_name, stored_name, mime_type, size FROM {$files_table} WHERE folder_id IN ({$placeholders})";
-			$args = \array_merge([$query], $folder_ids);
-			$sql = \call_user_func_array([$wpdb, 'prepare'], $args);
-			$file_rows = $wpdb->get_results($sql);
+		$base_parts = Repository::folder_path_names( $folder_id );
+		$base       = $base_parts ? $base_parts : [ 'folder-' . $folder_id ];
+		$files      = [];
+		$used       = [];
+		foreach ( $file_rows as $row ) {
+			if ( ! Permissions::can_view_file( (int) $row->id, $user_id ) ) continue;
+			$path = Storage::path_for( $row );
+			if ( ! \file_exists( $path ) || ! \is_readable( $path ) ) continue;
+			$parts   = Repository::folder_path_names( (int) $row->folder_id ) ?: $base;
+			$files[] = [ 'path' => $path, 'entry' => self::zip_entry_path( $parts, (string) $row->original_name, $used ) ];
 		}
-
-		if (!$file_rows) {
-			Http::error('No files to download', 400);
+		if ( ! $files ) {
+			return [];
 		}
+		return [ 'name' => self::zip_segment( \implode( '-', $base ), 'folder-' . $folder_id ), 'files' => $files ];
+	}
 
-		$tmp = \wp_tempnam('anchor-folder-zip');
-		if (!$tmp) Http::error('Could not create temp file', 500);
-
-		$zip = new \ZipArchive();
-		if ($zip->open($tmp, \ZipArchive::OVERWRITE) !== true) {
-			@\unlink($tmp);
-			Http::error('Could not create zip', 500);
+	/**
+	 * Entry name for a zip member: every path segment and the file name go through sanitize_file_name(), so a
+	 * folder or file called "../x" or with control characters cannot write outside the extraction directory.
+	 * Names that collapse to the same entry get a numeric suffix so nothing is silently shadowed.
+	 *
+	 * @param string[]            $folder_parts Folder names from the root down.
+	 * @param array<string,true>  $used         Entries already taken; updated.
+	 */
+	public static function zip_entry_path( array $folder_parts, string $name, array &$used ): string {
+		$dir = [];
+		foreach ( $folder_parts as $part ) {
+			$dir[] = self::zip_segment( (string) $part, 'folder' );
 		}
-
-		$folder_name_parts = Repository::folder_path_names($folder_id);
-		$folder_base = $folder_name_parts ? \implode('/', $folder_name_parts) : ('folder-' . $folder_id);
-
-		foreach ($file_rows as $row) {
-			if (!Permissions::can_view_file((int) $row->id, $user_id)) continue;
-			$path = Storage::path_for($row);
-			if (!\file_exists($path) || !\is_readable($path)) continue;
-			$relative_parts = Repository::folder_path_names((int) $row->folder_id);
-			$rel_dir = $relative_parts ? \implode('/', $relative_parts) : $folder_base;
-			$zip_path = $rel_dir . '/' . $row->original_name;
-			$zip->addFile($path, $zip_path);
+		$file  = self::zip_segment( $name, 'file' );
+		$stem  = \pathinfo( $file, PATHINFO_FILENAME );
+		$ext   = \pathinfo( $file, PATHINFO_EXTENSION );
+		$n     = 1;
+		$entry = \implode( '/', \array_merge( $dir, [ $file ] ) );
+		while ( isset( $used[ \strtolower( $entry ) ] ) ) {
+			$entry = \implode( '/', \array_merge( $dir, [ $stem . '-' . ( ++$n ) . ( '' !== $ext ? '.' . $ext : '' ) ] ) );
 		}
+		$used[ \strtolower( $entry ) ] = true;
+		return $entry;
+	}
 
-		$zip->close();
-
-		$download_name = $folder_base . '.zip';
-		\header('Content-Type: application/zip');
-		\header('Content-Disposition: attachment; filename="' . $download_name . '"');
-		\header('Content-Length: ' . \filesize($tmp));
-		\readfile($tmp);
-		@\unlink($tmp);
-		Http::halt();
+	private static function zip_segment( string $raw, string $fallback ): string {
+		$clean = \trim( \sanitize_file_name( $raw ), '.' );
+		return '' !== $clean ? $clean : $fallback;
 	}
 }

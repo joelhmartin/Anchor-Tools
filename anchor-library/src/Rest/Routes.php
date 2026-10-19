@@ -36,6 +36,7 @@ class Routes {
 	public static function register_routes(): void {
 		\add_filter( 'rest_pre_dispatch', [ self::class, 'note_route' ], 10, 3 );
 		\add_filter( 'rest_send_nocache_headers', [ self::class, 'filter_nocache_headers' ] );
+		\add_filter( 'rest_request_after_callbacks', [ self::class, 'no_store_errors' ], 10, 3 );
 
 		$open = '__return_true'; // Auth is inside the callbacks so the error codes are ours.
 		\register_rest_route( self::NS, '/folders/(?P<id>\d+)', [
@@ -80,6 +81,32 @@ class Routes {
 	public static function filter_nocache_headers( $send ) {
 		$own = '/' . self::NS;
 		return \preg_match( '#^' . \preg_quote( $own, '#' ) . '/(folders/\d+|search)$#', self::$dispatching ) ? false : $send;
+	}
+
+	/**
+	 * rest_request_after_callbacks: every error from this namespace (400/401/403/404/405) becomes a response with
+	 * `Cache-Control: no-store`. The listing routes switch core's no-cache headers off, so without this their errors
+	 * would carry no cache directive at all, and an intermediary must never keep a 401 or 403 for a URL another
+	 * caller may open. (This hook, unlike rest_post_dispatch, also runs for in-process rest_do_request().)
+	 *
+	 * @param WP_REST_Response|WP_HTTP_Response|WP_Error|mixed $response
+	 * @param array                                            $handler
+	 */
+	public static function no_store_errors( $response, $handler, $request ) {
+		if ( ! $request instanceof \WP_REST_Request || 0 !== \strpos( $request->get_route(), '/' . self::NS . '/' ) ) {
+			return $response;
+		}
+		if ( \is_wp_error( $response ) ) {
+			$status = (int) ( ( $response->get_error_data() )['status'] ?? 500 );
+			if ( $status < 400 ) {
+				return $response;
+			}
+			$response = \rest_convert_error_to_response( $response );
+		}
+		if ( $response instanceof \WP_HTTP_Response && $response->get_status() >= 400 ) {
+			$response->header( 'Cache-Control', 'no-store' );
+		}
+		return $response;
 	}
 
 	// ---- Listings -------------------------------------------------------------------------------------------
@@ -186,6 +213,10 @@ class Routes {
 	 * against the live permission model, so a grant revoked inside the 10 minutes stops the link.
 	 */
 	public static function rest_content( \WP_REST_Request $request ) {
+		// GET only: a HEAD would run the whole handler (stream, log) with the body discarded by the server.
+		if ( 'GET' !== $request->get_method() ) {
+			return new \WP_Error( 'anchor_library_method', \__( 'Use GET to fetch a file.', 'anchor-schema' ), [ 'status' => 405 ] );
+		}
 		$file_id = (int) $request['id'];
 		$claims  = LinkToken::verify( (string) $request['t'], $file_id, \time() );
 		if ( null === $claims ) {
@@ -210,10 +241,11 @@ class Routes {
 		$disposition = $claims['disposition'];
 		$plan        = Storage::plan( isset( $_SERVER['HTTP_RANGE'] ) ? (string) $_SERVER['HTTP_RANGE'] : '', (int) \filesize( $path ) ); // phpcs:ignore WordPress.Security
 		// Same rule as the portal's stream: a preview logs only its opening range, a download is always logged.
-		if ( 'attachment' === $disposition || $plan['opening'] ) {
+		// A 416 delivers no bytes, so it is neither (the stream still answers it, with Content-Range: bytes */size).
+		if ( 416 !== $plan['status'] && ( 'attachment' === $disposition || $plan['opening'] ) ) {
 			Activity::log( 'inline' === $disposition ? 'preview_file' : 'download_file', 'file', $file_id, [ 'source' => 'app' ], $user_id );
 		}
-		Storage::stream( $path, (string) $file->mime_type, $disposition, (string) $file->original_name, (bool) \apply_filters( 'anchor_library_stream_discard_buffers', true ) );
+		Storage::stream( $path, (string) $file->mime_type, $disposition, (string) $file->original_name, Storage::discard_buffers(), true );
 		return null; // Unreachable: stream() ends the request.
 	}
 

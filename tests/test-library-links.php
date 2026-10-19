@@ -156,7 +156,8 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 		[ $payload, $mac ] = explode( '.', $t );
 		$this->assertMatchesRegularExpression( '/^[A-Za-z0-9_-]+$/', $payload );
 		$this->assertSame( '5.9.attachment.' . ( self::NOW + 600 ), base64_decode( strtr( $payload, '-_', '+/' ) ) );
-		$this->assertSame( hash_hmac( 'sha256', $payload, wp_salt( 'auth' ) ), $mac );
+		$this->assertSame( hash_hmac( 'sha256', 'anchor-library-link|' . $payload, wp_salt( 'auth' ) ), $mac, 'domain-separated HMAC' );
+		$this->assertNotSame( hash_hmac( 'sha256', $payload, wp_salt( 'auth' ) ), $mac, 'not the bare-payload MAC another feature could mint' );
 		$this->assertSame( 600, LinkToken::TTL );
 	}
 
@@ -175,7 +176,9 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 		$this->assertNull( LinkToken::verify( '', 7, self::NOW ) );
 		$this->assertNull( LinkToken::verify( 'a.b.c', 7, self::NOW ) );
 		$bad = rtrim( strtr( base64_encode( '1.7.evil.' . ( self::NOW + 600 ) ), '+/', '-_' ), '=' );
-		$this->assertNull( LinkToken::verify( $bad . '.' . hash_hmac( 'sha256', $bad, wp_salt( 'auth' ) ), 7, self::NOW ), 'unknown disposition' );
+		$this->assertNull( LinkToken::verify( $bad . '.' . hash_hmac( 'sha256', 'anchor-library-link|' . $bad, wp_salt( 'auth' ) ), 7, self::NOW ), 'unknown disposition' );
+		$bare = rtrim( strtr( base64_encode( '1.7.inline.' . ( self::NOW + 600 ) ), '+/', '-_' ), '=' );
+		$this->assertNull( LinkToken::verify( $bare . '.' . hash_hmac( 'sha256', $bare, wp_salt( 'auth' ) ), 7, self::NOW ), 'a MAC without the domain prefix is refused' );
 	}
 
 	public function test_token_for_file_a_is_refused_for_file_b() {
@@ -341,5 +344,44 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 		$out = $this->content( $id, $q['t'], 'bytes=0-3' );
 		$this->assertSame( 206, $out['status'] );
 		$this->assertSame( 'FAKE', $out['body'] );
+	}
+
+	// ---- review D: M1 ------------------------------------------------------------------------------------------
+
+	public function test_unsatisfiable_range_logs_no_activity() {
+		$id = $this->file( 'abcdef', 'r.txt' );
+		foreach ( [ 'attachment', 'inline' ] as $disp ) {
+			$this->assertSame( 416, $this->content( $id, LinkToken::issue( $this->member, $id, $disp, time() ), 'bytes=9999-' )['status'] );
+		}
+		$this->assertSame( [], $this->activity_rows(), 'a 416 delivered no bytes, so it is not a download or preview' );
+	}
+
+	public function test_head_on_content_is_405_and_neither_streams_nor_logs() {
+		$id  = $this->file( 'abcdef', 'h.txt' );
+		$tok = LinkToken::issue( $this->member, $id, 'attachment', time() );
+		$req = new WP_REST_Request( 'HEAD', '/anchor-library/v1/files/' . $id . '/content' );
+		$req->set_query_params( [ 't' => $tok ] );
+		ob_start();
+		$res = rest_do_request( $req );
+		$this->assertSame( '', ob_get_clean() );
+		$this->assertSame( 405, $res->get_status() );
+		$this->assertSame( [], $this->activity_rows() );
+	}
+
+	public function test_zip_entries_hold_only_viewable_readable_files_with_sanitized_names() {
+		$this->file( 'a', 'Q1 report.pdf', 'application/pdf' );
+		$this->file( 'b', 'evil "quoted" name.txt' );
+		$this->file( null, 'ghost.txt' ); // row without bytes: skipped
+		wp_set_current_user( 0 );
+		$zip = Permissions::with_memo( fn() => \Anchor\Library\Ajax\Folders::zip_entries( $this->folder, $this->member ) );
+		$this->assertSame( 'docs', $zip['name'] );
+		$entries = array_column( $zip['files'], 'entry' );
+		sort( $entries );
+		$this->assertCount( 2, $entries );
+		$this->assertSame( 'docs/Q1-report.pdf', $entries[0] );
+		$this->assertSame( 'docs/', substr( $entries[1], 0, 5 ) );
+		$this->assertStringNotContainsString( '"', $entries[1] );
+		$this->assertStringNotContainsString( ' ', $entries[1] );
+		$this->assertSame( [], Permissions::with_memo( fn() => \Anchor\Library\Ajax\Folders::zip_entries( $this->folder, self::factory()->user->create( [ 'role' => 'editor' ] ) ) ), 'nothing viewable: empty' );
 	}
 }

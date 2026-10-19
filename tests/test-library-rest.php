@@ -165,7 +165,9 @@ class Anchor_Library_Rest_Test extends Anchor_Library_TestCase {
 	public function test_memo_warm_for_another_user_does_not_leak() {
 		$f = $this->folder( 'Staff' );
 		$this->grant( $f, 'role', 'subscriber' );
-		Permissions::begin_memo(); // a leaked scope from "another request"
+		$begin = new ReflectionMethod( Permissions::class, 'begin_memo' ); // a leaked scope from "another request"
+		$begin->setAccessible( true );
+		$begin->invoke( null );
 		wp_set_current_user( $this->admin );
 		$this->assertSame( 200, $this->get( '/folders/' . $f )->get_status() );
 		wp_set_current_user( $this->outsider );
@@ -173,6 +175,26 @@ class Anchor_Library_Rest_Test extends Anchor_Library_TestCase {
 		wp_set_current_user( $this->member );
 		$this->assertSame( 200, $this->get( '/folders/' . $f )->get_status() );
 		Permissions::reset_memo();
+	}
+
+	public function test_error_responses_are_never_cached() {
+		$f = $this->folder( 'Staff' );
+		$this->grant( $f, 'role', 'subscriber' );
+		$cases = [
+			[ 0, '/folders/' . $f, 401 ],
+			[ 0, '/search', 401 ],
+			[ $this->outsider, '/folders/' . $f, 403 ],
+			[ $this->member, '/folders/999999', 404 ],
+			[ $this->member, '/search', 400 ],
+		];
+		foreach ( $cases as [ $user, $route, $status ] ) {
+			wp_set_current_user( $user );
+			$res = $this->get( $route );
+			$this->assertSame( $status, $res->get_status(), $route );
+			$this->assertSame( 'no-store', $res->get_headers()['Cache-Control'] ?? '', $route . ' ' . $status );
+		}
+		wp_set_current_user( $this->member );
+		$this->assertStringContainsString( 'private', $this->get( '/folders/' . $f )->get_headers()['Cache-Control'], 'success keeps private caching' );
 	}
 
 	// ---- shapes ---------------------------------------------------------------------------------------------

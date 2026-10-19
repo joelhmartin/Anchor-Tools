@@ -4232,6 +4232,10 @@ class WooCommerce {
             [ 'label' => \__( 'Buyer', 'anchor-schema' ), 'value' => $buyer ],
             [ 'label' => \__( 'Remaining capacity', 'anchor-schema' ), 'value' => $remaining ],
         ];
+        if ( $kind !== 'released' && isset( $by_event[ $event_id ] ) ) {
+            // Answers to questions ticked "Include in admin email" (new registrations only).
+            $detail_rows = \array_merge( $detail_rows, Admin_Email_Answers::detail_rows( $this->module, $event_id, $by_event[ $event_id ] ) );
+        }
 
         $ctx = [
             'event_id'      => $event_id,

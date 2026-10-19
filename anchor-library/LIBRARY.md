@@ -34,7 +34,7 @@ Each live step needs the owner's explicit OK. Rehearse on the local DevKinsta co
 
 ### Rollback
 
-Order matters. **Disable the Library module first, then reactivate the plugin.** Activating the plugin while the module is loaded would redeclare classes; the activation is refused (sandboxed fatal), which is safe but confusing. The data is the same tables, so nothing needs restoring. The 2.15 to 2.17 upgrade steps stay applied and the plugin accepts that.
+Order matters. **Disable the Library module first, then reactivate the plugin.** Activating the plugin while the module is loaded would redeclare classes; the activation is refused (sandboxed fatal), which is safe but confusing. The data is the same tables, so nothing needs restoring. The 2.15 to 2.17 upgrade steps stay applied and the plugin accepts that. Reactivating the 2.14.0 plugin re-stamps `anchor_fm_db_version` to 2.14.0; a second cutover then re-runs the upgrade (2.14.0 to 2.17.0), which is safe to repeat: the host pins only fill unset options and the watch-stats reset only applies below 2.12.0. Rehearsed on the local TMJ copy: with the module still enabled, activating the plugin is refused (it stays inactive); with the module disabled first, it activates cleanly.
 
 ## REST API (member app)
 

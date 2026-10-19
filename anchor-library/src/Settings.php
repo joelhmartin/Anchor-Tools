@@ -39,11 +39,8 @@ class Settings {
 			},
 			'default' => 0,
 		]);
-		\register_setting(self::GROUP, Schema::OPT_VIMEO_TOKEN, [
-			'type' => 'string',
-			'sanitize_callback' => function ($v) { return \sanitize_text_field((string) $v); },
-			'default' => '',
-		]);
+		// anchor_fm_vimeo_token is deliberately NOT registered: the field was dead (nothing reads it) and options.php
+		// would blank the stored value on save if it were registered without a form field. The option stays in the DB.
 		\register_setting(self::GROUP, Schema::OPT_REQUEST_ACCESS_EMAIL, [
 			'type' => 'string',
 			'sanitize_callback' => function ($v) {
@@ -80,13 +77,6 @@ class Settings {
 						</td>
 					</tr>
 					<tr>
-						<th scope="row">Vimeo access token</th>
-						<td>
-							<input type="text" class="regular-text" name="<?php echo \esc_attr(Schema::OPT_VIMEO_TOKEN); ?>" value="<?php echo \esc_attr(\get_option(Schema::OPT_VIMEO_TOKEN, '')); ?>" autocomplete="off">
-							<p class="description">Optional. Used only for future aggregate Vimeo stats; per-user watch history works without it. A <code>VIMEO_ACCESS_TOKEN</code> environment variable or constant overrides this field.</p>
-						</td>
-					</tr>
-					<tr>
 						<th scope="row">Portal logo URL</th>
 						<td>
 							<input type="url" class="regular-text" name="<?php echo \esc_attr(Schema::OPT_PORTAL_LOGO); ?>" value="<?php echo \esc_attr(\get_option(Schema::OPT_PORTAL_LOGO, '')); ?>">
@@ -106,14 +96,6 @@ class Settings {
 			<?php StorageMonitor::render_status(); ?>
 		</div>
 		<?php
-	}
-
-	/** Vimeo token: the environment, then a constant, then the saved option. */
-	public static function vimeo_token() {
-		$env = \getenv('VIMEO_ACCESS_TOKEN');
-		if (!empty($env)) return (string) $env;
-		if (\defined('VIMEO_ACCESS_TOKEN') && VIMEO_ACCESS_TOKEN) return (string) VIMEO_ACCESS_TOKEN;
-		return (string) \get_option(Schema::OPT_VIMEO_TOKEN, '');
 	}
 
 	/** Where "Request access" messages go: the saved address, else the site admin email. */

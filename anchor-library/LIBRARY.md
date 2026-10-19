@@ -8,10 +8,10 @@ Module key `library` (disabled by default), directory `anchor-library/`, namespa
 - **Data is shared with the plugin, not copied:** the same `{prefix}anchor_fm_*` tables, `anchor_fm_*` options (`anchor_fm_db_version`), `_anchor_pd_docs` meta, cron hooks (`anchor_fm_prune_resume`, `anchor_fm_storage_check`), JS globals (`AnchorFM`, `AnchorAP`) and the private storage dir (`ANCHOR_FM_STORAGE_DIR`, see `PRIVATE-STORAGE.md`).
 - **Off by default.** Enable it in Anchor Tools Settings > Modules, or set `anchor_schema_settings['modules']['library']` to a truthy value.
 - **Legacy guard:** while the class `Anchor_Private_File_Manager` exists (the plugin is active) the module loads nothing but an admin notice ("Anchor Library is waiting: deactivate the Anchor Private File Manager plugin..."). No upgrade, no cron, no hooks. The ported global helper classes are only required when not already declared, so having both on disk never fatals. Never run both.
-- **Code map:** `src/Module.php` (guard and wiring), `Schema` (tables and the `maybe_upgrade_db()` version gates), `Permissions` / `Repository` / `Activity`, the AJAX handlers in `Uploads`, `Copier`, `Users`, `Settings`, `Portal`, `Storage` / `StorageGuard` / `StorageMonitor`, `Rest/*`. The classes in `includes/` are the legacy global helpers moved as-is. `assets/file-manager.js` and `.css` are copied verbatim from the plugin (over the 1,000-line house limit on purpose: parity first; splitting is a follow-up).
+- **Code map:** `src/Module.php` (guard and wiring), `Schema` (tables and the `maybe_upgrade_db()` version gates), `Permissions` / `Repository` / `Activity`, the AJAX handlers in `Uploads`, `Copier`, `Users`, `Settings`, `Portal`, `Storage` / `StorageGuard` / `StorageMonitor`, `Ajax/*` (the 51 action handlers by area: `Account`, `Files`, `Folders`, `Media`, `ProductDocs`, `Sharing`, `Users`, plus the `Registry` that wires them), `Rest/*`. The classes in `includes/` are the legacy global helpers moved as-is. `assets/js/` holds `file-manager.js`, `account-documents.js` and `user-manager.js`, and `assets/css/` the two stylesheets; they load through `Anchor_Asset_Loader` (so a release build serves the `.min` siblings). `assets/js/file-manager.js` and `assets/css/file-manager.css` are copied verbatim from the plugin (over the 1,000-line house limit on purpose: parity first; splitting is a follow-up).
 - **Autoload:** the module's PSR-4 line is in the committed `vendor/composer/autoload_psr4.php` and `autoload_static.php` (production builds use the committed vendor).
 - **Text domain:** strings moved from `anchor-private-file-manager` to `anchor-schema`. Any site translation files for the old domain no longer apply.
-- **Vimeo:** the module does not read the plugin's `.env` (`VIMEO_ACCESS_TOKEN`) any more. The portal and API use only the stored `vimeo_id` / `vimeo_hash` embeds. Nothing in this project calls the Vimeo API.
+- **Vimeo:** the module does not read the plugin's `.env` (`VIMEO_ACCESS_TOKEN`) any more. The portal and API use only the stored `vimeo_id` / `vimeo_hash` embeds. The one outbound Vimeo call is the public oEmbed lookup (`Anchor_FM_Vimeo::fetch_meta()`), made when an admin adds a video or resolves its title and thumbnail; it needs no token. The plain-text "Vimeo token" settings field was removed (nothing read it); the `anchor_fm_vimeo_token` option is left untouched in the database.
 
 ## Cutover and rollback runbook (TMJ)
 
@@ -24,6 +24,13 @@ Each live step needs the owner's explicit OK. Rehearse on the local DevKinsta co
 3. Note the current `anchor_fm_db_version` (expected 2.14.0 on TMJ) and that the storage dir (`ANCHOR_FM_STORAGE_DIR`) is defined in `wp-config.php`.
 4. REST only: Application Passwords must be available (`wp eval 'var_dump(wp_is_application_passwords_available());'`). Wordfence "Disable WordPress application passwords" blocks them.
 
+### Before the member app launches (not blocking the portal cutover)
+
+On staging, with two different Application Password users:
+
+1. `GET /folders/0` as each user. The bodies must differ (each sees only their grants) and `X-Kinsta-Cache` must be `BYPASS` or `MISS`, never `HIT`. Repeat for `/content` with a `Range` header. The API is cookie-free and sets `Vary: Authorization`, but a host page cache that ignores it would serve one user's folder list to another, so this must be measured on the real host, not assumed.
+2. Confirm no security plugin blocks anonymous REST (a `rest_authentication_errors` filter). `/content` is authenticated by its token alone and has no user, so such a block breaks every in-app viewer.
+
 ### Cutover
 
 1. Deploy the Anchor Tools release containing the module. It stays off. While the plugin is active the module is inert even if switched on.
@@ -34,7 +41,16 @@ Each live step needs the owner's explicit OK. Rehearse on the local DevKinsta co
 
 ### Rollback
 
-Order matters. **Disable the Library module first, then reactivate the plugin.** Activating the plugin while the module is loaded would redeclare classes; the activation is refused (sandboxed fatal), which is safe but confusing. The data is the same tables, so nothing needs restoring. The 2.15 to 2.17 upgrade steps stay applied and the plugin accepts that. Reactivating the 2.14.0 plugin re-stamps `anchor_fm_db_version` to 2.14.0; a second cutover then re-runs the upgrade (2.14.0 to 2.17.0), which is safe to repeat: the host pins only fill unset options and the watch-stats reset only applies below 2.12.0. Rehearsed on the local TMJ copy: with the module still enabled, activating the plugin is refused (it stays inactive); with the module disabled first, it activates cleanly.
+Order matters. **Disable the Library module first, then reactivate the plugin.** Activating the plugin while the module is loaded would redeclare classes; the activation is refused (sandboxed fatal), which is safe but confusing. The data is the same tables, so nothing needs restoring. The 2.15 to 2.17 upgrade steps stay applied and the plugin accepts that. **Roll back to plugin 2.17.0 (Anchor-Private-File-Manager commit `9e3f491`) or 2.16.2, never 2.14.0.** 2.14.0 predates the 2.16.1 security fixes, and its policy `normalize()` drops conditions it does not understand inside "all" rules, which widens access for policies written by 2.17. Live has 2.14.0 installed, so **build the 2.17.0 (or 2.16.2) plugin zip before cutover** and keep it ready to install. Reactivating it re-stamps `anchor_fm_db_version` to that plugin's own version; a second cutover then re-runs only the steps above it, which is safe to repeat (the host pins only fill unset options). Rehearsed on the local TMJ copy: with the module still enabled, activating the plugin is refused (it stays inactive); with the module disabled first, it activates cleanly.
+
+### What changes for TMJ at cutover
+
+Besides the code move, these behaviours are new on the live site:
+
+- **`deleted_user` now erases that user's `video_views`** (and their permission rows). Deleting a WordPress user used to leave their watch history behind.
+- **Admins get a front-end Users tab** in the portal that can delete users and roles, not just wp-admin.
+- **The first live 0700 narrowing** of the storage directories runs on the first storage access. Check that downloads still work about a minute after cutover (after the first storage check has run).
+- **The 2.15 host pins run on live for the first time** (live is on 2.14.0), setting the TMJ-specific options once.
 
 ## REST API (member app)
 
@@ -72,7 +88,7 @@ A read-only API for the member phone app, namespace `anchor-library/v1` (`Rest\R
 
 ### Search rows
 
-Each hit adds `folder_id` (its folder) and `path` (that folder's names joined with " / ", for display):
+Each hit adds `folder_id` (its folder) and `path` (that folder's names joined with " › " (space, U+203A, space), for display):
 
 | Kind | Keys |
 |---|---|
@@ -122,6 +138,8 @@ Application Passwords sent as HTTP Basic over HTTPS; core resolves the user befo
 
 The `403` body never names the folder or its ancestors: the folder is gated before any breadcrumb is read.
 
+**Note for app developers:** a search hit can point at a folder the caller cannot open (`folder_id` / `path` are returned for any visible item, but opening that folder follows the folder rules, and a private or hidden one is `404`). Handle a `404`/`403` on the folder fetch gracefully; do not assume every hit is navigable.
+
 ### Reuse
 
-`Rest\Routes::respond()` and `filter_nocache_headers()` are twins of `Anchor\Events\Feed::respond()` / `filter_nocache_headers()` (branch `feat/events-feed-api`). When both are on main, fold them into one shared helper. Don't add a second permission calculation to the API: call `Permissions` with the explicit user id.
+`Rest\Routes::respond()` and `filter_nocache_headers()` are twins of `Anchor\Events\Feed::respond()` / `filter_nocache_headers()` (branch `feat/events-feed-api`). Whichever of `feat/events-feed-api` / `feat/library-module` merges second **must** fold the two `respond()` / nocache helpers into one shared helper (do it in that merge; it is not done here). Don't add a second permission calculation to the API: call `Permissions` with the explicit user id.

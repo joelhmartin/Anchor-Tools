@@ -62,7 +62,7 @@ Assets load from `ANCHOR_TOOLS_PLUGIN_URL`. The plugin's PUC updater is removed.
   - the cron hooks `anchor_fm_prune_resume` and `anchor_fm_storage_check`;
   - `anchor_fm_db_version` and its upgrade steps.
 
-  Live is at 2.14.0. The module runs the 2.15.0 step (including its host-gated TMJ pins) and the 2.16.x steps on first load.
+  Live is at 2.14.0. The module runs the 2.15.0 step (including its host-gated TMJ pins) and the 2.16.1 and 2.16.2 steps and the 2.17.0 step on first load.
 - **Storage:**
   - the `ANCHOR_FM_STORAGE_DIR` constant (TMJ: `wp-content/.anchor-private-files`);
   - the filters `anchor_fm_storage_dir` and `anchor_fm_allowed_upload_extensions`;
@@ -140,7 +140,7 @@ Nothing personal goes out beyond the caller's own data. Uploader names are not i
    - the storage self-test is green;
    - the activity log is still writing;
    - `anchor_fm_db_version` is now 2.17.0.
-5. **Rollback:** disable the module and reactivate the plugin. The data is the same tables, so nothing needs restoring. The one exception is that the 2.15/2.16 upgrade steps will already have run, and plugin 2.16.2+ expects that anyway.
+5. **Rollback:** disable the module and reactivate the plugin. The data is the same tables, so nothing needs restoring. The 2.15 to 2.17 upgrade steps will already have run; roll back only to plugin 2.17.0 (Anchor-Private-File-Manager commit `9e3f491`) or 2.16.2, never 2.14.0 (it predates the 2.16.1 security fixes, and its policy `normalize()` drops conditions it does not understand inside "all" rules, widening access for policies written by 2.17). Build that zip before cutover.
 
 ## Testing
 

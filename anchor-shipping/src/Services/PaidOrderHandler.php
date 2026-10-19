@@ -27,9 +27,9 @@ final class PaidOrderHandler {
 	}
 
 	public function eligible( \WC_Order $order ): bool {
-		return $order->needs_shipping_address()
-			&& [] !== $order->get_shipping_methods()
+		return $this->labels->is_shippable( $order )
 			&& ! $this->labels->is_labelled( $order )
+			&& ! Settings::order_predates_labels( $order )
 			&& 'needs_attention' !== $order->get_meta( LabelService::STATE_META );
 	}
 

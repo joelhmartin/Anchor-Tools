@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.36.3
+Stable tag: 3.37.8
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,45 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.37.8 =
+* Webinars: YouTube videos (URL or ID) alongside Vimeo, with watch-time and watched-% tracking for both.
+* Webinars: form registrations without accounts. An Anchor Forms webhook (signed) registers the visitor; [anchor_webinar_registered] shows their webinar from a personal ?r= link; Analytics lists registrants with time watched, % watched and UTM source. Per webinar opt-in: "Form registrants can watch".
+
+= 3.37.7 =
+* Shipping: Shop Manager can refund a paid order in full through its payment gateway (money back, items restocked, labels voided); on paid orders Cancel reads "Cancel without refund".
+
+= 3.37.6 =
+* Shipping: Shop Manager order view tidied — two independent columns, readable label status, the create form folds behind "Create another label" once a label exists, one Print button (prints the preview in place), 4x6 label preview without browser PDF chrome, full totals breakdown.
+
+= 3.37.5 =
+* Shipping: insurance/signature chosen (and paid for) at checkout are fixed on every label for the order, even after a settings change; each locked option says why.
+* Shipping: insurance fee follows UPS's declared-value shape (flat to $300, then per $100 of the whole value); new "fee for values $100.01–$300" setting.
+
+= 3.37.4 =
+* Shipping: customer tracking card on the order page (expected delivery, latest scan, progress steps); expected date in the My Account orders column.
+* Shipping: no browser dialogs — Void / Complete / Cancel / bulk confirm with a second click; refused voids are noted on the order.
+
+= 3.37.3 =
+* Shipping: labels only for orders placed on or after the date label printing started (new "Labels for orders placed on or after" setting, recorded on first use). Older orders leave Needs label and offer "Create a label anyway".
+
+= 3.37.2 =
+* Shipping: Tracking column in My Account → Orders (tracking link + status per package; a dash when none).
+
+= 3.37.1 =
+* Shop Manager: the order status pill sits beside the order number and carries a per-status class (asm-status-{status}) for theme colouring.
+
+= 3.37.0 =
+
+Shipping (module 1.1.0): UPS tracking with a 2-hourly poller that completes orders on delivery and
+auto-voids unused labels after 10 days. Customers get a "shipped" email on the first carrier scan,
+and tracking shows in My Account. WooCommerce's New order email carries a Create-label button (a
+separate Ready-to-ship email goes only to inbox addresses that do not receive New order). New
+front-end Shop Manager console, shortcode [shop_manager]: order tabs and search, order view with
+label panel, print, mark completed and cancel; a Products tab for price, sale, stock, weight and
+default box; bulk labels merged into one PDF. UPS address validation warns on questionable
+addresses. Live UPS checkout rates are included as a method that is not attached to any shipping
+zone until you add it.
 
 = 3.36.3 =
 

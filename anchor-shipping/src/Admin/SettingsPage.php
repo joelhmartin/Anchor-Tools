@@ -44,6 +44,10 @@ final class SettingsPage {
 		$out['label_format']    = in_array( $post['label_format'] ?? '', [ 'GIF', 'ZPL' ], true ) ? $post['label_format'] : 'GIF';
 		$out['inbox']           = implode( ', ', array_filter( array_map( 'sanitize_email', array_map( 'trim', explode( ',', (string) ( $post['inbox'] ?? $current['inbox'] ) ) ) ) ) );
 		$out['auto_label']      = ! empty( $post['auto_label'] );
+		$out['complete_on_delivery'] = ! empty( $post['complete_on_delivery'] );
+		$out['new_order_button'] = ! empty( $post['new_order_button'] );
+		$out['console_page']    = isset( $post['console_page'] ) ? max( 0, (int) $post['console_page'] ) : (int) $current['console_page'];
+		$out['labels_since']    = self::labels_since_from_post( $post['labels_since'] ?? null, (string) $current['labels_since'] );
 
 		foreach ( array_keys( $current['ship_from'] ) as $k ) {
 			$out['ship_from'][ $k ] = $txt( $post['ship_from'][ $k ] ?? $current['ship_from'][ $k ] );
@@ -67,6 +71,7 @@ final class SettingsPage {
 		$out['insurance']['mode']        = in_array( $post['insurance']['mode'] ?? '', self::MODES, true ) ? $post['insurance']['mode'] : 'off';
 		$out['insurance']['threshold']   = $num( $post['insurance']['threshold'] ?? $current['insurance']['threshold'] );
 		$out['insurance']['fee_per_100'] = '' === ( $post['insurance']['fee_per_100'] ?? '' ) ? '' : (string) $num( $post['insurance']['fee_per_100'] );
+		$out['insurance']['fee_to_300']  = '' === ( $post['insurance']['fee_to_300'] ?? '' ) ? '' : (string) $num( $post['insurance']['fee_to_300'] );
 		$out['signature']['mode']        = in_array( $post['signature']['mode'] ?? '', self::MODES, true ) ? $post['signature']['mode'] : 'off';
 		$out['signature']['threshold']   = $num( $post['signature']['threshold'] ?? $current['signature']['threshold'] );
 		$out['signature']['fee']         = '' === ( $post['signature']['fee'] ?? '' ) ? '' : (string) $num( $post['signature']['fee'] );
@@ -150,6 +155,14 @@ final class SettingsPage {
 				<table class="form-table">
 					<tr><th><?php \esc_html_e( 'Create labels automatically when an order is paid', 'anchor-schema' ); ?></th>
 						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[auto_label]' ) ); ?>" value="1" <?php \checked( $s['auto_label'] ); ?>> <?php \esc_html_e( 'When every item has a weight and a default box. Otherwise, and when this is off, the shipping inbox gets a "Ready to ship" email with a Create label button.', 'anchor-schema' ); ?></label></td></tr>
+					<tr><th><?php \esc_html_e( 'Complete orders when delivered', 'anchor-schema' ); ?></th>
+						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[complete_on_delivery]' ) ); ?>" value="1" <?php \checked( $s['complete_on_delivery'] ); ?>> <?php \esc_html_e( 'When every package of a processing order shows as delivered, mark the order Completed.', 'anchor-schema' ); ?></label></td></tr>
+					<tr><th><?php \esc_html_e( 'Create label button in the New order email', 'anchor-schema' ); ?></th>
+						<td><label><input type="checkbox" name="<?php echo \esc_attr( $name( '[new_order_button]' ) ); ?>" value="1" <?php \checked( $s['new_order_button'] ); ?>> <?php \esc_html_e( 'Add a Create shipping label button to the WooCommerce New order email when the order ships. Shipping inbox addresses that already get that email are not sent a separate Ready to ship email.', 'anchor-schema' ); ?></label></td></tr>
+					<tr><th><label for="anchor-shipping-labels-since"><?php \esc_html_e( 'Labels for orders placed on or after', 'anchor-schema' ); ?></label></th>
+						<td><input type="date" id="anchor-shipping-labels-since" name="<?php echo \esc_attr( $name( '[labels_since]' ) ); ?>" value="<?php echo \esc_attr( '' === $s['labels_since'] ? '' : \get_date_from_gmt( $s['labels_since'], 'Y-m-d' ) ); ?>"><p class="description"><?php \esc_html_e( 'Older orders were shipped some other way: they stay out of Needs label, and their order screen offers a label only on request. Set automatically the day shipping is switched on; clear it to treat every order as needing a label.', 'anchor-schema' ); ?></p></td></tr>
+					<tr><th><?php \esc_html_e( 'Shipping console page', 'anchor-schema' ); ?></th>
+						<td><?php \wp_dropdown_pages( [ 'name' => $name( '[console_page]' ), 'selected' => (int) $s['console_page'], 'show_option_none' => \__( '— None (use the order edit screen) —', 'anchor-schema' ), 'option_none_value' => '0' ] ); ?><p class="description"><?php \esc_html_e( 'The page that shows the shipping console. Email buttons link here.', 'anchor-schema' ); ?></p></td></tr>
 					<tr><th><?php \esc_html_e( 'Shipping inbox', 'anchor-schema' ); ?></th>
 						<td><input type="text" class="regular-text" name="<?php echo \esc_attr( $name( '[inbox]' ) ); ?>" value="<?php echo \esc_attr( $s['inbox'] ); ?>" placeholder="<?php echo \esc_attr( (string) \get_option( 'admin_email' ) ); ?>"><p class="description"><?php \esc_html_e( 'Comma-separate several addresses.', 'anchor-schema' ); ?></p></td></tr>
 					<tr><th><?php \esc_html_e( 'Default carrier / service', 'anchor-schema' ); ?></th>
@@ -185,7 +198,9 @@ final class SettingsPage {
 					<tr><th><?php \esc_html_e( 'Insurance (declared value)', 'anchor-schema' ); ?></th><td>
 						<select name="<?php echo \esc_attr( $name( '[insurance][mode]' ) ); ?>"><?php foreach ( $modes as $k => $l ) : ?><option value="<?php echo \esc_attr( $k ); ?>" <?php \selected( $s['insurance']['mode'], $k ); ?>><?php echo \esc_html( $l ); ?></option><?php endforeach; ?></select>
 						<p><label><?php \esc_html_e( 'Automatic above order value', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][threshold]' ) ); ?>" value="<?php echo \esc_attr( (string) $s['insurance']['threshold'] ); ?>"></label></p>
-						<p><label><?php \esc_html_e( 'Customer fee per $100 over $100', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][fee_per_100]' ) ); ?>" value="<?php echo \esc_attr( (string) $s['insurance']['fee_per_100'] ); ?>"></label></p>
+						<p><label><?php \esc_html_e( 'Customer fee for values $100.01–$300 (flat)', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][fee_to_300]' ) ); ?>" value="<?php echo \esc_attr( (string) ( $s['insurance']['fee_to_300'] ?? '' ) ); ?>"></label></p>
+						<p><label><?php \esc_html_e( 'Customer fee per $100 of the full value, above $300', 'anchor-schema' ); ?> <input type="text" size="6" name="<?php echo \esc_attr( $name( '[insurance][fee_per_100]' ) ); ?>" value="<?php echo \esc_attr( (string) $s['insurance']['fee_per_100'] ); ?>"></label></p>
+						<p class="description"><?php \esc_html_e( 'Same shape as UPS declared value: the first $100 is covered free, one flat charge up to $300, then per started $100 of the whole value. Insurance is offered at checkout only once the per-$100 fee is set (it prices every value above $300, and values up to $300 too when the flat fee is blank).', 'anchor-schema' ); ?></p>
 					</td></tr>
 					<tr><th><?php \esc_html_e( 'Signature required', 'anchor-schema' ); ?></th><td>
 						<select name="<?php echo \esc_attr( $name( '[signature][mode]' ) ); ?>"><?php foreach ( $modes as $k => $l ) : ?><option value="<?php echo \esc_attr( $k ); ?>" <?php \selected( $s['signature']['mode'], $k ); ?>><?php echo \esc_html( $l ); ?></option><?php endforeach; ?></select>
@@ -224,5 +239,23 @@ final class SettingsPage {
 			</form>
 		</div>
 		<?php
+	}
+
+	/** Posted Y-m-d (site time) → GMT 'Y-m-d H:i:s'. An unchanged date keeps the stored time; blank clears the cutoff. */
+	private static function labels_since_from_post( $posted, string $current ): string {
+		if ( null === $posted ) {
+			return $current;
+		}
+		$posted = \sanitize_text_field( (string) $posted );
+		if ( '' === $posted ) {
+			return '';
+		}
+		if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $posted ) ) {
+			return $current;
+		}
+		if ( '' !== $current && \get_date_from_gmt( $current, 'Y-m-d' ) === $posted ) {
+			return $current;
+		}
+		return \get_gmt_from_date( $posted . ' 00:00:00' );
 	}
 }

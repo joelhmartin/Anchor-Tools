@@ -38,7 +38,7 @@ class Test_Shipping_Checkout_Protection extends Anchor_Shipping_TestCase {
 		WC()->session->set( 'anchor_shipping_signature', 'yes' );
 
 		$this->assertSame( 450.0, ( new ProtectionFields() )->cart_shippable_subtotal( WC()->cart ) );
-		$this->assertSame( [ [ 'Shipping insurance', 5.0 ], [ 'Signature on delivery', 7.7 ] ], $this->fees() );
+		$this->assertSame( [ [ 'Shipping insurance', 6.25 ], [ 'Signature on delivery', 7.7 ] ], $this->fees() );
 	}
 
 	public function test_no_fee_when_not_offered_or_not_chosen() {

@@ -181,6 +181,26 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ), 'still-processing order with no label needs a person (no email)' );
 	}
 
+	public function test_a_refused_void_leaves_the_carrier_reason_on_the_order_and_keeps_the_label() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'processing' );
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		$ids = Module::instance()->labels->create_for_order( $order, [ $this->parcel() ], 'manual' );
+
+		$this->queue_response( 400, [ 'response' => [ 'errors' => [ [ 'code' => '190117', 'message' => 'Void period has expired' ] ] ] ] );
+		try {
+			Module::instance()->labels->void_shipment( $ids[0] );
+			$this->fail( 'expected the refusal to surface' );
+		} catch ( \Anchor\Shipping\Domain\CarrierError $e ) {
+			$this->assertStringContainsString( 'Void period has expired', $e->getMessage() );
+		}
+		$notes = implode( "\n", wp_list_pluck( wc_get_order_notes( [ 'order_id' => $order->get_id() ] ), 'content' ) );
+		$this->assertStringContainsString( 'refused to void', $notes );
+		$this->assertStringContainsString( 'Void period has expired', $notes );
+		$this->assertNotSame( 'voided', Module::instance()->shipments->find( $ids[0] )['status'] );
+	}
+
 	public function test_voiding_the_last_label_of_a_non_processing_order_clears_the_state() {
 		$this->configure_ups();
 		$order = $this->make_order( [], 'processing' );
@@ -223,11 +243,21 @@ class Test_Shipping_Label_Service extends Anchor_Shipping_TestCase {
 	public function test_insurance_fee_rule() {
 		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '1.25' ] ] );
 		$this->assertSame( 0.0, Protection::insurance_fee( 100.0 ) );
-		$this->assertSame( 1.25, Protection::insurance_fee( 100.01 ) );
-		$this->assertSame( 5.0, Protection::insurance_fee( 450.0 ) );
+		$this->assertSame( 2.5, Protection::insurance_fee( 100.01 ) ); // no flat fee set: per started $100 of the whole value
+		$this->assertSame( 6.25, Protection::insurance_fee( 450.0 ) );
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '0.95', 'fee_to_300' => '2.85' ] ] );
+		$this->assertSame( 0.0, Protection::insurance_fee( 100.0 ) );
+		$this->assertSame( 2.85, Protection::insurance_fee( 150.0 ) );
+		$this->assertSame( 2.85, Protection::insurance_fee( 300.0 ) );
+		$this->assertSame( 3.8, Protection::insurance_fee( 301.0 ) );   // UPS rated DEKA's account at these exact figures
+		$this->assertSame( 7.6, Protection::insurance_fee( 795.0 ) );
+		$this->assertSame( 10.45, Protection::insurance_fee( 1050.0 ) );
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '1.25', 'fee_to_300' => '' ] ] );
 		$this->assertTrue( Protection::offered( 'insurance' ) );
 		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '' ] ] );
 		$this->assertFalse( Protection::offered( 'insurance' ), 'hidden until a fee is set' );
+		$this->configure_ups( [ 'insurance' => [ 'mode' => 'customer', 'fee_per_100' => '', 'fee_to_300' => '2.85' ] ] );
+		$this->assertFalse( Protection::offered( 'insurance' ), 'a flat fee alone would leave values over $300 free' );
 	}
 
 	public function test_explicit_protection_opts_override_and_reach_the_carrier() {

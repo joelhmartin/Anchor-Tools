@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, schema, galleries, forms, and content utilities.
- * Version: 3.36.3
+ * Version: 3.37.8
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -459,4 +459,29 @@ if ( ! function_exists( 'anchor_tools_agreements_clear_cleanup' ) ) {
 
     add_action( 'update_option_' . Anchor_Schema_Admin::OPTION_KEY, 'anchor_tools_agreements_maybe_clear_cleanup', 10, 2 );
     register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, 'anchor_tools_agreements_clear_cleanup' );
+}
+
+/**
+ * Shipping: unschedule the tracking poll when the module is switched off (literal hook/group names, so no module
+ * code is needed while it is off) and on plugin deactivation. The module re-creates it on the next admin visit once on.
+ */
+if ( ! function_exists( 'anchor_tools_shipping_clear_poll' ) ) {
+    function anchor_tools_shipping_clear_poll() {
+        if ( function_exists( 'as_unschedule_all_actions' ) ) {
+            as_unschedule_all_actions( 'anchor_shipping_poll_tracking', array(), 'anchor-shipping' );
+        }
+    }
+
+    /**
+     * @param mixed $old_value Previous settings.
+     * @param mixed $value     New settings.
+     */
+    function anchor_tools_shipping_maybe_clear_poll( $old_value, $value ) {
+        if ( ! empty( $old_value['modules']['shipping'] ) && empty( $value['modules']['shipping'] ) ) {
+            anchor_tools_shipping_clear_poll();
+        }
+    }
+
+    add_action( 'update_option_' . Anchor_Schema_Admin::OPTION_KEY, 'anchor_tools_shipping_maybe_clear_poll', 10, 2 );
+    register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, 'anchor_tools_shipping_clear_poll' );
 }

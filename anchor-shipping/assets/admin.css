@@ -6,3 +6,8 @@
 .anchor-shipping-note { background: #fcf9e8; border-left: 3px solid #dba617; padding: 6px 8px; }
 .anchor-shipping-custom input { width: 4em; }
 .anchor-shipping-error { color: #b32d2e; }
+/* Two-step confirm (admin.js arm()): the armed button reads as a warning until clicked again or it times out. */
+.anchor-shipping-panel .is-armed, .asm-actions .is-armed, .asm-bulk-create.is-armed { outline: 2px solid currentColor; outline-offset: 2px; font-weight: 600; }
+.anchor-shipping-more { margin-top: 10px; }
+.anchor-shipping-more > summary { cursor: pointer; }
+.anchor-shipping-more[open] > summary { margin-bottom: 8px; }

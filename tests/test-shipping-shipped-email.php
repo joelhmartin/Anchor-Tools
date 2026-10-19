@@ -1,0 +1,134 @@
+<?php
+use Anchor\Shipping\Module;
+
+class Test_Shipping_Shipped_Email extends Anchor_Shipping_TestCase {
+
+	public function set_up() {
+		parent::set_up();
+		reset_phpmailer_instance();
+	}
+
+	private function sent(): array {
+		return tests_retrieve_phpmailer_instance()->mock_sent;
+	}
+
+	private function add_row( WC_Order $order, string $tracking, string $status = 'in_transit' ): array {
+		$repo = Module::instance()->shipments;
+		$id   = $repo->insert( [ 'order_id' => $order->get_id(), 'carrier' => 'ups', 'tracking_number' => $tracking, 'status' => $status, 'shipment_id' => 'S' . $tracking ] );
+		return $repo->find( $id );
+	}
+
+	public function test_first_scan_sends_once_to_the_billing_email_with_tracking_links_and_address() {
+		$order = $this->make_order( [], 'processing' );
+		$row   = $this->add_row( $order, '1ZK877V90300000001' );
+		$this->add_row( $order, '1ZK877V90300000002', 'label_created' );
+		$this->add_row( $order, '1ZVOIDED', 'voided' );
+		reset_phpmailer_instance();
+
+		do_action( 'anchor_shipping_first_scan', $order->get_id(), $row );
+
+		$sent = $this->sent();
+		$this->assertCount( 1, $sent );
+		$this->assertSame( 'pat@example.com', $sent[0]['to'][0][0] );
+		$this->assertStringContainsString( 'has shipped', $sent[0]['subject'] );
+		$this->assertStringContainsString( (string) $order->get_order_number(), $sent[0]['subject'] );
+		$this->assertStringContainsString( 'tracknum=1ZK877V90300000001', $sent[0]['body'] );
+		$this->assertStringContainsString( '1ZK877V90300000002', $sent[0]['body'] );
+		$this->assertStringNotContainsString( '1ZVOIDED', $sent[0]['body'] );
+		$this->assertStringContainsString( 'Cupertino', $sent[0]['body'] );
+	}
+
+	public function test_no_customer_email_at_label_creation() {
+		$this->configure_ups();
+		$order = $this->make_order( [], 'pending' );
+		reset_phpmailer_instance();
+		$this->queue_token();
+		$this->queue_response( 200, $this->fixture( 'ups-ship-single' ) );
+		Module::instance()->labels->create_for_order( $order, [ new Anchor\Shipping\Domain\Parcel( 1, 10, 10, 10 ) ], 'manual' );
+		foreach ( $this->sent() as $mail ) {
+			$this->assertNotSame( 'pat@example.com', $mail['to'][0][0] );
+		}
+	}
+
+	public function test_account_tracking_prints_links_for_active_rows_only() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000001' );
+		$this->add_row( $order, '1ZVOIDED', 'voided' );
+		ob_start();
+		do_action( 'woocommerce_order_details_after_order_table', $order );
+		$html = ob_get_clean();
+		$this->assertStringContainsString( 'tracknum=1ZK877V90300000001', $html );
+		$this->assertStringNotContainsString( '1ZVOIDED', $html );
+		$this->assertStringContainsString( 'In transit', $html );
+	}
+
+	public function test_account_tracking_prints_nothing_without_shipments() {
+		$order = $this->make_order( [], 'processing' );
+		ob_start();
+		do_action( 'woocommerce_order_details_after_order_table', $order );
+		$this->assertSame( '', ob_get_clean() );
+	}
+
+	public function test_account_orders_list_gets_a_tracking_column_after_status() {
+		$cols = apply_filters( 'woocommerce_account_orders_columns', [ 'order-number' => 'Order', 'order-status' => 'Status', 'order-total' => 'Total', 'order-actions' => 'Actions' ] );
+		$this->assertSame( [ 'order-number', 'order-status', 'anchor-shipping-tracking', 'order-total', 'order-actions' ], array_keys( $cols ) );
+	}
+
+	public function test_account_orders_tracking_column_links_active_rows_and_dashes_when_none() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000002' );
+		$this->add_row( $order, '1ZVOIDED2', 'voided' );
+		ob_start();
+		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $order );
+		$html = ob_get_clean();
+		$this->assertStringContainsString( 'tracknum=1ZK877V90300000002', $html );
+		$this->assertStringContainsString( 'In transit', $html );
+		$this->assertStringNotContainsString( '1ZVOIDED2', $html );
+
+		$bare = $this->make_order( [], 'processing' );
+		ob_start();
+		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $bare );
+		$this->assertSame( '&mdash;', ob_get_clean() );
+	}
+
+	public function test_account_orders_tracking_column_separates_multiple_packages() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000003' );
+		$this->add_row( $order, '1ZK877V90300000004' );
+		ob_start();
+		do_action( 'woocommerce_my_account_my_orders_column_anchor-shipping-tracking', $order );
+		$this->assertSame( 1, substr_count( ob_get_clean(), '</span><br><span' ) );
+	}
+
+	private function card_for( WC_Order $order ): string {
+		ob_start();
+		do_action( 'woocommerce_order_details_after_order_table', $order );
+		return ob_get_clean();
+	}
+
+	public function test_tracking_card_shows_expected_date_latest_scan_and_current_step() {
+		$order = $this->make_order( [], 'processing' );
+		$row   = $this->add_row( $order, '1ZK877V90300000005' );
+		Module::instance()->shipments->update( (int) $row['id'], [ 'expected_delivery' => '2026-10-16', 'last_location' => 'Nashville, TN', 'status_detail' => 'DEPARTED FROM FACILITY', 'last_event_at' => '2026-10-13 08:08:00' ] );
+		$html = $this->card_for( $order );
+		$this->assertMatchesRegularExpression( '/Expected delivery<\/dt><dd>Friday, October 16</', $html );
+		$this->assertStringContainsString( 'Departed from facility — Nashville, TN', $html );
+		$this->assertMatchesRegularExpression( '/ast-step is-current"[^>]*><span>In transit/', $html );
+		$this->assertStringContainsString( 'ast-step is-done', $html );
+	}
+
+	public function test_tracking_card_wording_for_label_created_and_delivered() {
+		$order = $this->make_order( [], 'processing' );
+		$this->add_row( $order, '1ZK877V90300000006', 'label_created' );
+		$html = $this->card_for( $order );
+		$this->assertStringContainsString( 'Preparing to ship', $html );
+		$this->assertStringNotContainsString( 'Latest update', $html );
+
+		$done = $this->make_order( [], 'processing' );
+		$row  = $this->add_row( $done, '1ZK877V90300000007', 'delivered' );
+		Module::instance()->shipments->update( (int) $row['id'], [ 'delivered_at' => '2026-10-16 18:00:00', 'expected_delivery' => '2026-10-16' ] );
+		$html = $this->card_for( $done );
+		$this->assertStringContainsString( 'Delivered Friday, October 16', $html );
+		$this->assertStringNotContainsString( 'Expected delivery', $html );
+	}
+}

@@ -16,17 +16,36 @@ final class ImagePdf {
 		if ( ! $images ) {
 			throw new \InvalidArgumentException( 'At least one image is required.' );
 		}
-		$pw = $width_in * 72;
-		$ph = $height_in * 72;
-		$n  = count( $images );
-
-		$objs = [];
-		$kids = [];
-		foreach ( array_values( $images ) as $i => $im ) {
-			$page_id = 3 + $i * 3;
-			$kids[]  = $page_id . ' 0 R';
+		$pages = [];
+		foreach ( array_values( $images ) as $im ) {
 			$w       = \imagesx( $im );
 			$h       = \imagesy( $im );
+			$pages[] = [ 'w' => $w, 'h' => $h, 'data' => \gzcompress( self::gray_bytes( $im, $w, $h ) ), 'pw' => $width_in * 72, 'ph' => $height_in * 72 ];
+		}
+		return self::write( $pages );
+	}
+
+	/**
+	 * Same document from already-compressed gray pages (what PdfMerge lifts out of earlier ImagePdf files).
+	 *
+	 * @param array<int, array{w:int, h:int, data:string, pw:float, ph:float}> $pages data = FlateDecode gray bytes; pw/ph = page size in points
+	 */
+	public static function from_streams( array $pages ): string {
+		if ( ! $pages ) {
+			throw new \InvalidArgumentException( 'At least one page is required.' );
+		}
+		return self::write( array_values( $pages ) );
+	}
+
+	/** The one PDF writer: one page per entry, image scaled to the page width and top-aligned. */
+	private static function write( array $pages ): string {
+		$n    = count( $pages );
+		$objs = [];
+		$kids = [];
+		foreach ( $pages as $i => $pg ) {
+			$page_id = 3 + $i * 3;
+			$kids[]  = $page_id . ' 0 R';
+			[ $w, $h, $data, $pw, $ph ] = [ $pg['w'], $pg['h'], $pg['data'], $pg['pw'], $pg['ph'] ];
 
 			$draw_w = $pw;
 			$draw_h = $draw_w * $h / $w;
@@ -35,7 +54,6 @@ final class ImagePdf {
 				$draw_w = $draw_h * $w / $h;
 			}
 			$content = sprintf( 'q %.2F 0 0 %.2F 0 %.2F cm /Im0 Do Q', $draw_w, $draw_h, $ph - $draw_h );
-			$data    = \gzcompress( self::gray_bytes( $im, $w, $h ) );
 
 			$objs[ $page_id ]     = sprintf( '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2F %.2F] /Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>', $pw, $ph, $page_id + 2, $page_id + 1 );
 			$objs[ $page_id + 1 ] = sprintf( "<< /Length %d >>\nstream\n%s\nendstream", strlen( $content ), $content );

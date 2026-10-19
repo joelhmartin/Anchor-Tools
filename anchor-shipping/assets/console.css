@@ -1,0 +1,33 @@
+/* Structural only: the client theme owns colour and type. */
+.asm-tabs ul { display: flex; flex-wrap: wrap; gap: .5rem; list-style: none; margin: 0 0 1rem; padding: 0; }
+.asm-tab.is-current a { font-weight: 700; text-decoration: underline; }
+.asm-search { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: 1rem; }
+.asm-orders { width: 100%; border-collapse: collapse; }
+.asm-orders th, .asm-orders td { text-align: left; padding: .5rem; vertical-align: top; }
+.asm-sub { display: block; font-size: .85em; opacity: .7; }
+.asm-state { display: inline-block; margin-left: .5rem; font-size: .85em; }
+.asm-pager { display: flex; gap: 1rem; margin-top: 1rem; }
+.asm-order-view { display: grid; gap: 1.5rem; grid-template-columns: minmax(0, 1fr); }
+.asm-order-main, .asm-order-side { display: grid; gap: 1.5rem; align-content: start; min-width: 0; }
+@media (min-width: 900px) {
+	.asm-order-view { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+	.asm-order-head { grid-column: 1 / -1; }
+}
+.asm-order-title { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+.asm-order-title h2 { margin: 0; }
+.asm-items table { width: 100%; border-collapse: collapse; }
+.asm-items th, .asm-items td { text-align: left; padding: .35rem .5rem; }
+.asm-actions.is-busy { opacity: .5; pointer-events: none; }
+.asm-status-error { color: #b32d2e; }
+/* 4x6 label: portrait page, so the frame keeps that shape instead of a fixed tall box. */
+.asm-label-frame { display: block; width: 100%; max-width: 26rem; aspect-ratio: 4 / 6; margin: 1rem auto 0; border: 0; }
+.asm-notes ul { list-style: none; padding: 0; }
+.asm-note { padding: .35rem 0; }
+
+.asm-products { width: 100%; border-collapse: collapse; }
+.asm-products th, .asm-products td { text-align: left; padding: .5rem; vertical-align: top; }
+.asm-product.is-variation > th { padding-left: 1.5rem; font-weight: 400; }
+.asm-product.is-busy { opacity: .5; pointer-events: none; }
+.asm-product-msg.is-error { color: #b32d2e; }
+.asm-stock { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+.asm-stock-qty { width: 5rem; }

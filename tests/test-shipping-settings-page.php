@@ -101,4 +101,9 @@ class Test_Shipping_Settings_Page extends Anchor_Shipping_TestCase {
 		$this->assertStringContainsString( "Forced to Sandbox because this site&#039;s environment type is &#039;staging&#039;", $html );
 		$this->assertStringContainsString( 'ANCHOR_SHIPPING_UPS_ENVIRONMENT', $html );
 	}
+
+	public function test_complete_on_delivery_checkbox() {
+		$this->assertTrue( $this->page()->sanitize( [ 'complete_on_delivery' => '1' ], Settings::all() )['complete_on_delivery'] );
+		$this->assertFalse( $this->page()->sanitize( [], Settings::all() )['complete_on_delivery'], 'unticked checkbox posts nothing' );
+	}
 }

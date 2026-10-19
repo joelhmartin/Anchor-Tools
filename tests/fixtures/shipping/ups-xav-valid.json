@@ -1,0 +1,30 @@
+{
+  "XAVResponse": {
+    "Response": {
+      "ResponseStatus": {
+        "Code": "1",
+        "Description": "Success"
+      }
+    },
+    "ValidAddressIndicator": "",
+    "AddressClassification": {
+      "Code": "2",
+      "Description": "Residential"
+    },
+    "Candidate": {
+      "AddressClassification": {
+        "Code": "2",
+        "Description": "Residential"
+      },
+      "AddressKeyFormat": {
+        "AddressLine": "1 INFINITE LOOP",
+        "PoliticalDivision2": "CUPERTINO",
+        "PoliticalDivision1": "CA",
+        "PostcodePrimaryLow": "95014",
+        "PostcodeExtendedLow": "2084",
+        "Region": "CUPERTINO CA 95014-2084",
+        "CountryCode": "US"
+      }
+    }
+  }
+}

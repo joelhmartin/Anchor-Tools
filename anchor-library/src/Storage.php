@@ -223,9 +223,14 @@ class Storage {
 	/** CSP for an inline REST response: no script, no network, no framing, own-origin media only. */
 	public const INLINE_CSP = "sandbox; default-src 'none'; img-src data:; media-src 'self'; style-src 'unsafe-inline'";
 
+	/** Lower-cased MIME type without parameters. */
+	private static function base_mime( string $mime ): string {
+		return \strtolower( \trim( \explode( ';', $mime )[0] ) );
+	}
+
 	/** Whether a stored MIME type is one the strict (REST) path will serve inline: PDF, common images, video/*, audio/*, plain text and CSV. Never SVG, HTML or XML. */
 	public static function is_safe_inline( string $mime ): bool {
-		$base = \strtolower( \trim( \explode( ';', $mime )[0] ) );
+		$base = self::base_mime( $mime );
 		return \in_array( $base, self::SAFE_INLINE, true ) || 0 === \strpos( $base, 'video/' ) || 0 === \strpos( $base, 'audio/' );
 	}
 
@@ -235,7 +240,7 @@ class Storage {
 	 *
 	 * $strict is the REST content route's posture: private, no-store and no-referrer set explicitly (core's
 	 * nocache_headers() omits no-store for signed-out requests before WP 6.8), an inline request for a type outside
-	 * is_safe_inline() becomes an attachment, and inline responses carry a sandboxing CSP. The portal's AJAX stream
+	 * is_safe_inline() becomes an attachment, and inline responses carry a sandboxing CSP (except PDF, which Chrome's viewer cannot open under one). The portal's AJAX stream
 	 * passes false and keeps its long-standing behaviour: its allowed upload types include some (bmp, tif, ...) the
 	 * strict set would turn into downloads.
 	 *
@@ -253,7 +258,7 @@ class Storage {
 		$out[] = 'Content-Type: ' . $mime;
 		$out[] = Http::content_disposition( $disp, $name );
 		$out[] = 'X-Content-Type-Options: nosniff';
-		if ( $strict && 'inline' === $disp ) {
+		if ( $strict && 'inline' === $disp && 'application/pdf' !== self::base_mime( $mime ) ) { // Chrome's PDF viewer breaks under a sandbox CSP.
 			$out[] = 'Content-Security-Policy: ' . self::INLINE_CSP;
 		}
 		foreach ( $plan['headers'] as $header => $value ) {

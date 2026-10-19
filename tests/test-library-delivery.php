@@ -54,11 +54,23 @@ class Anchor_Library_Delivery_Test extends Anchor_Library_TestCase {
 	}
 
 	public function test_strict_inline_safe_types_stay_inline_with_a_sandbox_csp() {
-		foreach ( [ 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'video/mp4', 'audio/mpeg', 'text/plain', 'text/csv', 'IMAGE/PNG', 'text/plain; charset=utf-8' ] as $mime ) {
+		foreach ( [ 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'video/mp4', 'audio/mpeg', 'text/plain', 'text/csv', 'IMAGE/PNG', 'text/plain; charset=utf-8' ] as $mime ) {
 			$h = $this->plan_headers( $mime, 'inline', true );
 			$this->assertTrue( 0 === strpos( implode( "\n", $h ), 'Content-Type: ' ) || in_array( 'Content-Type: ' . $mime, $h, true ), $mime );
 			$this->assertNotEmpty( preg_grep( '/^Content-Disposition: inline;/', $h ), $mime . ' stays inline' );
 			$this->assertContains( "Content-Security-Policy: sandbox; default-src 'none'; img-src data:; media-src 'self'; style-src 'unsafe-inline'", $h, $mime );
+		}
+	}
+
+	public function test_inline_pdf_stays_inline_without_a_csp_but_keeps_the_other_hardening() {
+		// A sandbox CSP breaks Chrome's built-in PDF viewer; PDFs are not scriptable from this origin (nosniff, own type).
+		foreach ( [ 'application/pdf', 'Application/PDF; x=y' ] as $mime ) {
+			$h = $this->plan_headers( $mime, 'inline', true );
+			$this->assertNotEmpty( preg_grep( '/^Content-Disposition: inline;/', $h ), 'pdf stays inline' );
+			$this->assertEmpty( preg_grep( '/^Content-Security-Policy:/', $h ), 'no CSP on inline pdf' );
+			$this->assertContains( 'X-Content-Type-Options: nosniff', $h );
+			$this->assertContains( 'Cache-Control: private, no-store', $h );
+			$this->assertContains( 'Referrer-Policy: no-referrer', $h );
 		}
 	}
 

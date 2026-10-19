@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.37.8
+Stable tag: 3.38.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -24,7 +24,9 @@ Usage:
 
 == Changelog ==
 
-= Unreleased =
+= 3.38.0 =
+* Events: read-only REST feed for the member app (`anchor-events/v1` events, categories, me) with Prerequisites-aware visibility, ETag/304 and Vary: Authorization. "App categories" setting picks which categories the app shows; hide-from-archive events still appear in the app.
+* Events: "Member app URL schemes" setting. When set, the Application Passwords approval screen only hands passwords to the listed app (no third-party callbacks) and refuses administrator accounts.
 * Library: new module (off by default) that folds in the Anchor Private File Manager 2.17.0 (same tables, options, shortcodes and AJAX actions) and adds a read-only REST API for the member app with signed, Range-capable file links. Inert while the old plugin is active; deactivate the plugin, then enable the module. Rollback: disable the module first, then reactivate the plugin. Text domain is now anchor-schema; the plugin's `.env` Vimeo token is no longer read.
 
 = 3.37.8 =

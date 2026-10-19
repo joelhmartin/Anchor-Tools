@@ -418,6 +418,7 @@ class Module {
         require_once $dir . 'class-events-log.php';
         // The tri-state every sender and every status write answers with.
         require_once $dir . 'class-outcome.php';
+        require_once $dir . 'class-admin-email-answers.php';
         require_once $dir . 'class-registrations.php';
         require_once $dir . 'class-roster.php';
         require_once $dir . 'class-ticket-types.php';
@@ -15146,6 +15147,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'type'     => $type,
                 'options'  => $options,
                 'required' => ! empty( $row['required'] ),
+                // "Include in admin email": off unless the author ticked it, so
+                // every question saved before this setting existed stays off.
+                'admin_email' => ! empty( $row['admin_email'] ),
             ];
         }
         return $clean;
@@ -15202,6 +15206,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $type     = $row['type'] ?? 'text';
         $options  = isset( $row['options'] ) && \is_array( $row['options'] ) ? \implode( "\n", $row['options'] ) : '';
         $required = ! empty( $row['required'] );
+        $in_admin = ! empty( $row['admin_email'] );
 
         \ob_start();
         ?>
@@ -15224,6 +15229,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             </td>
             <td>
                 <label><input type="checkbox" name="<?php echo esc_attr( $base . '[required]' ); ?>" value="1" <?php checked( $required ); ?> /> <?php echo esc_html__( 'Required', 'anchor-schema' ); ?></label>
+                <label><input type="checkbox" name="<?php echo esc_attr( $base . '[admin_email]' ); ?>" value="1" <?php checked( $in_admin ); ?> /> <?php echo esc_html__( 'Include in admin email', 'anchor-schema' ); ?></label>
             </td>
             <td>
                 <button type="button" class="button-link-delete anchor-event-question-remove" aria-label="<?php echo esc_attr__( 'Remove question', 'anchor-schema' ); ?>">&times;</button>
@@ -15379,6 +15385,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             1 + $guests,
             \get_permalink( $event_id )
         );
+        // Answers to the questions the author ticked "Include in admin email" on.
+        $answer_lines = $seat_id ? Admin_Email_Answers::text_lines( $this, (int) $event_id, (int) $seat_id ) : [];
+        if ( $answer_lines ) {
+            $message .= "\n" . \implode( "\n", $answer_lines );
+        }
         // Plain-text email, but still carry the configured sender identity.
         $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
         if ( ! $sent ) {

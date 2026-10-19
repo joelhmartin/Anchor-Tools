@@ -638,6 +638,128 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 
 ---
 
+## REST feed (member app)
+
+A read-only feed for the member phone app, namespace `anchor-events/v1` (`Module::REST_NS`), served by `class-feed.php` (`$module->feed`, always loaded). The app mirrors the site, so the feed decides nothing of its own: it selects, maps and serves what the site already knows.
+
+### Endpoints
+
+| Route | Returns |
+|---|---|
+| `GET /wp-json/anchor-events/v1/events` | `{ events: [row…], page, per_page, total, total_pages }`, plus `X-WP-Total` / `X-WP-TotalPages` headers |
+| `GET /wp-json/anchor-events/v1/categories` | `{ categories: [ { slug, name, count } ] }`, sorted by name |
+| `GET /wp-json/anchor-events/v1/me` | `{ name, sees_restricted }`, or `401` when signed out |
+
+`/events` params:
+
+| Param | Default | Notes |
+|---|---|---|
+| `from` | today (site zone) | `YYYY-MM-DD`, inclusive |
+| `to` | `from` + 12 months | `YYYY-MM-DD`, inclusive; the range may not exceed 24 months |
+| `category` | the App categories setting (all, if empty) | comma-separated `event_category` slugs; an unknown slug is a 400 |
+| `page` | 1 | integer >= 1 |
+| `per_page` | 50 | 1-100; above 100 is WP's own `400 rest_invalid_param` |
+
+Selection: published events whose time **overlaps** `[from, to]` (a multi-day course that started yesterday still appears), minus soft-closed dates (`occurrence_closed`), minus group parents and unreconciled `offering`/`recurring` containers (the rows are the dates), minus events the caller's Prerequisites don't allow. Ordered by start, id as tiebreak. A group child's `categories` are its parent's, since reconcile doesn't copy `event_category` to children. An event with no usable schema node is skipped silently.
+
+**Hide from archive does not apply to the feed.** It is a website-listing switch only, so a Centre-only event ticked "Hide from archive" (to keep it off the site's listings) still reaches the app for users who meet its Prerequisites. Who sees an event is decided only by Prerequisites; the website's month calendar and listings are unchanged. Password-protected events are never served, and neither are children of a password-protected group parent.
+
+Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible** events (those whose date meta computes a start, `Module::has_usable_start()`, the same test the schema node uses); rows are built for the requested page only. If an event on the page still has no usable schema node it is skipped, so a page can very rarely hold one row fewer than `per_page`.
+
+`/categories` lists the `event_category` terms on events the caller could see in the default 12-month window (limited to the App categories setting when set), so a signed-out caller never learns that restricted-only categories exist. `/me` reports `sees_restricted` = the caller meets the Prerequisites of at least one restricted event in the next 24 months.
+
+### Row
+
+```json
+{
+  "id": 1120711,
+  "parent_id": 1119885,
+  "title": "Mini Residency – Toronto",
+  "summary": "Plain-text excerpt, 300 chars max",
+  "url": "https://site/events/…/",
+  "image": "https://site/…/hero.jpg",
+  "categories": [ { "slug": "courses", "name": "Courses" } ],
+  "start": "2026-11-13T08:00:00-05:00",
+  "end": "2026-11-15T17:00:00-05:00",
+  "all_day": false,
+  "timezone": "America/Toronto",
+  "location": { "venue": "…", "city": "Toronto", "state": "ON", "country": "CA", "online": false },
+  "registration": {
+    "mode": "paid",
+    "status": "open",
+    "price": "950.00",
+    "currency": "USD",
+    "register_url": "https://site/events/…/"
+  },
+  "audience": "public"
+}
+```
+
+- `parent_id` is 0 unless the row is a group child. `image` is `null` without one.
+- `title` and `summary` are plain text, entities decoded, no HTML.
+- `start` / `end` are ISO 8601 in the event's own timezone, taken from the schema node; all-day events send date-only values (`YYYY-MM-DD`).
+- `location.venue` is blank when the event has no venue (the schema node names the Place after the post title then, so the venue meta decides). `online` is true for a VirtualLocation. A stream or room URL is never included.
+- `price` is the lowest Offer price as a two-decimal string; `price` and `currency` are `null` when the node has no Offer. Free events report `"0.00"`, because the schema emits a zero-price Offer for them.
+- `register_url` is always the event page, which shows the right button (native or external).
+- `audience` is `restricted` when the event has required roles, otherwise `public`.
+
+Registration vocabulary:
+
+| `registration_mode()` | feed `mode` |
+|---|---|
+| `wc` | `paid` |
+| `free` | `free` |
+| `external` | `external` |
+
+| `bookability()` | feed `status` |
+|---|---|
+| `open` | `open` |
+| `waitlist` | `waitlist` |
+| `full` | `sold_out` |
+| `disabled` | `unavailable` (registration switched off) |
+| anything else | `closed` |
+
+An `external` event ignores the native states: it is `closed` when `bookability()` says `closed`, otherwise `open`. There is no "not open yet" state; a registration window that hasn't opened reads `closed`.
+
+### Auth and visibility
+
+Application Passwords sent as HTTP Basic over HTTPS; core resolves the user before the route runs. A bad or revoked key is a core `401` before the route. Signed out sees only events with no Prerequisites; signed in also sees events whose Prerequisites they meet (`Entitlements::meets_prerequisites()`, the same check the site's registration uses, so no role names are hard-coded). The feed carries no rosters, registrant or seat counts, attendee data or private meta. Application Passwords must be **available** on the site for the app to sign in. Core enables them on HTTPS sites; some security plugins turn them off (Wordfence Login Security has a "Disable WordPress application passwords" option), so check `wp_is_application_passwords_available()` on the target site. Nothing in this module filters availability.
+
+### Member app URL schemes setting
+
+Settings > Anchor Tools > Events, **Member app URL schemes**: comma or space separated custom URL schemes the app uses for its sign-in `success_url` (e.g. `tmjcentres`). Sanitized to lowercase `[a-z][a-z0-9+.-]*` (invalid tokens dropped, duplicates removed) and stored as a string under `app_schemes` in `anchor_events_settings`. **Empty (the default) changes nothing.** When set, `class-app-auth.php` hooks core's `wp_authorize_application_password_request_errors` action (raised by `wp_is_authorize_application_password_request_valid()` on the `wp-admin/authorize-application.php` screen) and adds:
+
+| Error code | When |
+|---|---|
+| `anchor_events_app_scheme` | `success_url` or `reject_url` uses any scheme (including `https`) that isn't in the list |
+| `anchor_events_app_admin` | `success_url` uses a listed scheme and the signed-in user has the `administrator` role |
+
+While the setting is on, only the listed app schemes may receive a password through the consent screen: a third-party `https` callback is refused too, because that is how a phishing link would collect one. The no-callback flow (password shown on screen) and creating one from the profile still work. Everything is allowed while the setting is empty. Core runs `auth_redirect()` before this screen, so the user is always known by then (a signed-out visitor is sent to the login form first). Existing application passwords are never touched. This is a consent-screen gate, not a security boundary: core validates the URLs only when the screen renders (the REST call that mints the password does not), and an administrator can still create an application password from their profile. Note that, with the setting on, a plain `http://` redirect (including core's loopback exception) is also refused.
+
+### App categories setting
+
+Settings > Anchor Tools > Events, **App categories**: a checkbox list of `event_category` terms. Stored as term IDs (so renaming a category doesn't break it) under `app_categories` in `anchor_events_settings`; deleted terms are dropped on read and on save. Empty means all categories. It is the default for `/events` and the filter for `/categories`; an explicit `category` param overrides it on `/events`.
+
+### Caching
+
+Every 200 carries a weak `ETag` (a hash of the body, not the cache generation, since a seat sale moves `registration.status` without bumping it) and `Cache-Control: private, max-age=300`, plus `Vary: Authorization` (also on the 304; the public and signed-in `/events` URLs are identical and differ only by that header, so any HTTP cache, including the phone's native one, must key on it; set once in `respond()`, appended to any existing `Vary`) (never public: restricted rows depend on who asks; the feed opts these three routes out of WordPress's `rest_send_nocache_headers`, which would otherwise overwrite it for any signed-in caller, Application Passwords included). Password-protected events are left out, and `all_day` is true exactly when the schema node's start is a bare date. A matching `If-None-Match` returns `304` with no body. Only the event-ID query is cached (`get_cached_ids()`); rows are built fresh.
+
+### Errors
+
+| Case | Response |
+|---|---|
+| Bad `from`/`to`, `to` before `from`, range over 24 months | `400 anchor_events_bad_range` |
+| Unknown category slug | `400 anchor_events_bad_category` |
+| `per_page` over 100, `page` below 1 | `400 rest_invalid_param` (core) |
+| Bad or revoked credentials | `401` from core |
+| `/me` signed out | `401 anchor_events_not_signed_in` |
+
+### Reuse
+
+Keep one implementation of each job. The range query is `Module::range_query_args()` (the month calendar and the feed both call it; the feed passes the overlap form and `$include_hidden`, which keeps `hide_from_archive` events but still drops soft-closed dates). Row data is `Event_Schema::for_event()`, so the app, the site and Google agree. Registration state is `Module::bookability()`. Who may see a restricted event is `Entitlements::meets_prerequisites()`. Don't add a parallel calculation of any of these to the feed.
+
+---
+
 ## Filters
 
 | Filter | Args | Purpose |

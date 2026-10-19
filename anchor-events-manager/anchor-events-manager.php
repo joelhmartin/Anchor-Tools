@@ -322,6 +322,12 @@ class Module {
     /** @var Entitlements|null Event roles + access (spec §4; always loaded). */
     public $entitlements = null;
 
+    /** @var App_Auth|null Application Passwords hardening for the member app. */
+    public $app_auth;
+
+    /** @var Feed|null Read-only REST feed for the member app (spec 2026-10-12-events-feed-api; always loaded). */
+    public $feed = null;
+
     /**
      * Request-scoped: set by room_headers() when a sign-in token in the URL
      * was rejected (invalid or expired), read by render_room()'s logged-out
@@ -426,6 +432,8 @@ class Module {
         // Event roles / access (virtual-events spec §4) — free + paid, no
         // WooCommerce dependency.
         require_once $dir . 'class-entitlements.php';
+        require_once $dir . 'class-feed.php';
+        require_once $dir . 'class-app-auth.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -447,6 +455,12 @@ class Module {
         // WooCommerce dependency. Constructed like Registrations/Roster so
         // $module->entitlements is the one handle every surface uses.
         $this->entitlements = new Entitlements( $this );
+
+        // Member-app feed: selection + row mapping over the above (no hooks yet).
+        $this->feed = new Feed( $this );
+        // Application Passwords hardening for the member app: hooks core's authorize-request
+        // validation, and does nothing until "Member app URL schemes" is set.
+        $this->app_auth = new App_Auth( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
@@ -7960,6 +7974,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             },
             'callback' => [ $this, 'rest_room' ],
         ] );
+
+        // The member-app feed (spec 2026-10-12-events-feed-api).
+        $this->feed->register_routes();
     }
 
     /**
@@ -11787,6 +11804,35 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php
         }, 'anchor_events_settings', 'anchor_events_main' );
 
+        \add_settings_field( 'app_categories', __( 'App categories', 'anchor-schema' ), function() {
+            $selected = array_map( 'intval', (array) $this->get_settings()['app_categories'] );
+            $terms    = \get_terms( [ 'taxonomy' => 'event_category', 'hide_empty' => false ] );
+            if ( empty( $terms ) || \is_wp_error( $terms ) ) {
+                echo '<p class="description">' . esc_html__( 'No event categories yet.', 'anchor-schema' ) . '</p>';
+                return;
+            }
+            echo '<fieldset>';
+            foreach ( $terms as $term ) {
+                printf(
+                    '<label style="display:block"><input type="checkbox" name="%1$s[app_categories][]" value="%2$d" %3$s /> %4$s</label>',
+                    esc_attr( self::OPTION_KEY ),
+                    (int) $term->term_id,
+                    checked( in_array( (int) $term->term_id, $selected, true ), true, false ),
+                    esc_html( $term->name )
+                );
+            }
+            echo '</fieldset><p class="description">' . esc_html__( 'Categories the member app shows. Leave empty to show all.', 'anchor-schema' ) . '</p>';
+        }, 'anchor_events_settings', 'anchor_events_main' );
+
+        \add_settings_field( 'app_schemes', __( 'Member app URL schemes', 'anchor-schema' ), function() {
+            printf(
+                '<input type="text" class="regular-text" name="%1$s[app_schemes]" value="%2$s" placeholder="tmjcentres" /><p class="description">%3$s</p>',
+                esc_attr( self::OPTION_KEY ),
+                esc_attr( (string) $this->get_settings()['app_schemes'] ),
+                esc_html__( 'Custom URL schemes the member app signs in with (comma or space separated). When set, Application Passwords sign-in refuses other custom schemes and refuses administrator accounts for the app. Leave empty to change nothing.', 'anchor-schema' )
+            );
+        }, 'anchor_events_settings', 'anchor_events_main' );
+
         \add_settings_section( 'anchor_events_email_sender', __( 'Email Sender', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'From / Reply-To / BCC identity applied to all event emails. Leave blank to use WordPress defaults.', 'anchor-schema' ) . '</p>';
             echo '<p class="description">' . esc_html__( 'This only sets the email headers — actual delivery still relies on your site\'s mail service (e.g. Mailgun, WP Mail SMTP). The From address should be on a domain that service is authorized to send for (SPF/DKIM), or mail may be marked as spam. Some SMTP/Mailgun plugins force their own From address and will override this; Reply-To is usually respected.', 'anchor-schema' ) . '</p>';
@@ -12197,6 +12243,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'timezone_mode' => in_array( $timezone_mode, [ 'site', 'event' ], true ) ? $timezone_mode : 'site',
             'archive_hide_past' => ! empty( $input['archive_hide_past'] ),
             'template_source' => in_array( $template_source, [ 'theme', 'plugin' ], true ) ? $template_source : 'theme',
+            // Member-app feed default filter (feed spec "App categories setting").
+            // Term IDs, not slugs, so renaming a category doesn't silently drop it.
+            'app_categories' => Feed::existing_category_ids( (array) ( $input['app_categories'] ?? [] ) ),
+            // Member-app sign-in hardening: lowercase scheme allowlist, '' = off.
+            'app_schemes' => App_Auth::sanitize( $input['app_schemes'] ?? '' ),
             'registration_internal' => ! empty( $input['registration_internal'] ),
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),
@@ -13671,6 +13722,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Whether the event's own date meta computes a start. The one definition
+     * of "this event has a usable start": Event_Schema's single-event node
+     * returns nothing without it, and the app feed lists only events that pass.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function has_usable_start( $event_id ) {
+        $ts = $this->compute_timestamps( $this->get_meta( (int) $event_id ) );
+        return (int) $ts['start'] > 0;
+    }
+
+    /**
      * Public wrapper around calculate_timestamps() (spec Phase 2, Task 2.1) so
      * the Occurrences engine can derive a child occurrence's start_ts/end_ts
      * using the exact same timezone/all-day logic as the classic per-event
@@ -13984,6 +14048,69 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $am - $bm;
     }
 
+    /**
+     * WP_Query args for published, listable events in a time range — the ONE
+     * range query (feed spec "Reuse"). The month calendar uses the BETWEEN
+     * form (an event belongs to the month it starts in); the app feed uses
+     * the overlap form, so a course that started yesterday and runs through
+     * tomorrow is still "on" today.
+     *
+     * Events with no end_ts are treated as instants at start_ts in the
+     * overlap form rather than being dropped.
+     *
+     * @param int  $start_ts Range start (inclusive).
+     * @param int  $end_ts   Range end.
+     * @param bool $overlap  False = start_ts BETWEEN [start, end]; true = overlaps.
+     * @param bool $include_hidden True = hide_from_archive events are kept (it is a
+     *                       website-listing switch); soft-closed dates are still dropped.
+     * @return array
+     */
+    public function range_query_args( $start_ts, $end_ts, $overlap = false, $include_hidden = false ) {
+        $start_ts = (int) $start_ts;
+        $end_ts   = (int) $end_ts;
+        if ( $overlap ) {
+            $range = [
+                'relation' => 'AND',
+                [ 'key' => $this->meta_key( 'start_ts' ), 'value' => $end_ts, 'compare' => '<=', 'type' => 'NUMERIC' ],
+                [
+                    'relation' => 'OR',
+                    [ 'key' => $this->meta_key( 'end_ts' ), 'value' => $start_ts, 'compare' => '>=', 'type' => 'NUMERIC' ],
+                    [
+                        'relation' => 'AND',
+                        [ 'key' => $this->meta_key( 'end_ts' ), 'compare' => 'NOT EXISTS' ],
+                        [ 'key' => $this->meta_key( 'start_ts' ), 'value' => $start_ts, 'compare' => '>=', 'type' => 'NUMERIC' ],
+                    ],
+                ],
+            ];
+        } else {
+            $range = [
+                'key' => $this->meta_key( 'start_ts' ),
+                'value' => [ $start_ts, $end_ts ],
+                'compare' => 'BETWEEN',
+                'type' => 'NUMERIC',
+            ];
+        }
+
+        return [
+            'post_type' => self::CPT,
+            'posts_per_page' => -1,
+            'post_status' => 'publish',
+            'meta_query' => [ $range, $include_hidden ? $this->not_closed_clause() : $this->build_hide_clause() ],
+            'orderby' => 'meta_value_num',
+            'meta_key' => $this->meta_key( 'start_ts' ),
+            'order' => 'ASC',
+        ];
+    }
+
+    /**
+     * Cached event IDs for range_query_args() — the feed's entry point.
+     *
+     * @return int[]
+     */
+    public function event_ids_in_range( $start_ts, $end_ts, $overlap = false, $include_hidden = false ) {
+        return array_map( 'intval', (array) $this->get_cached_ids( $this->range_query_args( $start_ts, $end_ts, $overlap, $include_hidden ) ) );
+    }
+
     private function render_calendar_month( $atts, $force_month = '' ) {
         $show_past = $atts['show_past'] ?? 'yes';
 
@@ -14020,28 +14147,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $prev_month = ( $diff_to_now > -12 ) ? date( 'Y-m', strtotime( '-1 month', strtotime( $month_start ) ) ) : '';
         $next_month = ( $diff_to_now < 12 ) ? date( 'Y-m', strtotime( '+1 month', strtotime( $month_start ) ) ) : '';
 
-        $meta_query = [
-            [
-                'key' => $this->meta_key( 'start_ts' ),
-                'value' => [ $start, $end ],
-                'compare' => 'BETWEEN',
-                'type' => 'NUMERIC',
-            ],
-            $this->build_hide_clause(),
-        ];
+        $args = $this->range_query_args( $start, $end );
         if ( $show_past === 'no' ) {
-            $meta_query[] = $this->build_visibility_clause();
+            $args['meta_query'][] = $this->build_visibility_clause();
         }
-
-        $args = [
-            'post_type' => self::CPT,
-            'posts_per_page' => -1,
-            'post_status' => 'publish',
-            'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
-            'order' => 'ASC',
-        ];
 
         $args = \apply_filters( 'anchor_events_query_args', $args, $atts );
         $events = $this->get_cached_ids( $args );
@@ -14316,17 +14425,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return [
             'relation' => 'AND',
             $hidden,
+            $this->not_closed_clause(),
+        ];
+    }
+
+    /**
+     * The soft-closed half of build_hide_clause(), on its own, for the one
+     * surface that lists hide_from_archive events but never a cancelled date
+     * (the member app feed, via range_query_args( …, $include_hidden )).
+     * Not a second predicate to apply beside build_hide_clause(): that method
+     * composes this one, so the shape lives in one place.
+     *
+     * @return array meta_query clause.
+     */
+    private function not_closed_clause() {
+        return [
+            'relation' => 'OR',
             [
-                'relation' => 'OR',
-                [
-                    'key' => $this->meta_key( 'occurrence_closed' ),
-                    'compare' => 'NOT EXISTS',
-                ],
-                [
-                    'key' => $this->meta_key( 'occurrence_closed' ),
-                    'value' => '1',
-                    'compare' => '!=',
-                ],
+                'key' => $this->meta_key( 'occurrence_closed' ),
+                'compare' => 'NOT EXISTS',
+            ],
+            [
+                'key' => $this->meta_key( 'occurrence_closed' ),
+                'value' => '1',
+                'compare' => '!=',
             ],
         ];
     }
@@ -16691,6 +16813,8 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'timezone_mode' => 'site',
             'archive_hide_past' => true,
             'template_source' => 'theme',
+            'app_categories' => [],
+            'app_schemes' => '',
             'registration_internal' => true,
             'admin_email' => '',
             'notify_admin' => true,

@@ -52,6 +52,10 @@
   flex-direction: column;
   gap: var(--afm-gap);
   min-height: 0;
+  /* A grid item's automatic minimum width is its min-content width, and the
+     tree labels are nowrap — so without this one long folder name sets a
+     floor under the whole column. */
+  min-width: 0;
   position: relative;
 }
 
@@ -334,6 +338,9 @@
 .afm__breadcrumbsTrail {
   display: flex;
   align-items: center;
+  /* Wrap rather than shrink: squeezing every crumb equally turned "Home" into
+     "H…" as soon as the path got deep. */
+  flex-wrap: wrap;
   gap: 0;
   min-width: 0;
 }
@@ -1347,8 +1354,14 @@
 }
 
 @media (max-width: 980px) {
-  .afm__frame {
-    grid-template-columns: 1fr;
+  /* minmax(0, 1fr), not 1fr: a bare 1fr is minmax(auto, 1fr), which lets the
+     single column grow to its widest unbreakable content. The frame clips its
+     overflow, so everything past the right edge was simply unreachable.
+     The drawerOpen selector is repeated because it out-specifies .afm__frame
+     and would otherwise bring the three desktop columns back on a phone. */
+  .afm__frame,
+  .afm.afm--drawerOpen .afm__frame {
+    grid-template-columns: minmax(0, 1fr);
     min-height: 0;
   }
 
@@ -1439,7 +1452,11 @@
   object-fit: cover;
   display: block;
 }
-.afm__rowKind, .afm__rowSize, .afm__rowModified { font-size: 12px; color: var(--afm-muted); }
+.afm__rowKind, .afm__rowSize, .afm__rowModified {
+  font-size: 12px; color: var(--afm-muted);
+  /* A long MIME type used to wrap and spill across the Size column. */
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .afm__rowActions { display: flex; justify-content: flex-end; }
 .afm__rowDisclosure {
   background: none; border: 0; cursor: pointer; color: var(--afm-faint);
@@ -1472,7 +1489,7 @@
 .afm__vplayerFrame { width: 100%; }
 .afm__vhistory { margin-top: 12px; }
 .afm__vhistoryTable { display: flex; flex-direction: column; gap: 4px; }
-.afm__vhistoryRow { display: grid; grid-template-columns: minmax(0,1fr) 60px 70px 100px; gap: 8px; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--afm-border); }
+.afm__vhistoryRow { display: grid; grid-template-columns: minmax(0,1fr) 44px 56px 84px; gap: 8px; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--afm-border); }
 .afm__vhName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .afm__vhPct { font-weight: 700; color: var(--afm-accent); }
 
@@ -1568,6 +1585,7 @@
 .afm__viewerVideo {
     display: block;
     width: 100%;
+    height: auto;
     max-height: 70vh;
     background: #000;
 }
@@ -1649,4 +1667,348 @@
 @media (max-width: 720px) {
   .afm__roleRow { grid-template-columns: minmax(0, 1fr) auto; }
   .afm__roleActions { grid-column: 1 / -1; }
+}
+
+/* ---- Folder tree fold (stacked layout only) ---- */
+/* On a phone the sidebar sits above the file list, so an always-open tree is
+   a screen or more of folders to scroll past before the first file. It folds
+   behind this button instead; the list and breadcrumbs already navigate. */
+.afm__treeFold {
+  display: none;
+  appearance: none;
+  -webkit-appearance: none;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--afm-border);
+  border-radius: 12px;
+  background: var(--afm-panel);
+  color: var(--afm-text);
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.afm__treeFoldLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.afm__treeFoldChevron {
+  color: var(--afm-muted);
+  transition: transform 160ms ease;
+}
+
+.afm--treeOpen .afm__treeFoldChevron {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 980px) {
+  /* Nothing to resize in a single column, and the handle swallows touches
+     along the sidebar's right edge. */
+  .afm__resizer {
+    display: none;
+  }
+
+  .afm__sidebar {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .afm__treeFold {
+    display: flex;
+  }
+
+  .afm:not(.afm--treeOpen) .afm__treeScroll,
+  .apfm--hide-files .afm__treeFold,
+  .apfm--hide-files .afm__treeScroll {
+    display: none;
+  }
+}
+
+/* ---- Phones ---- */
+@media (max-width: 640px) {
+  .afm__utilityBar {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 4px 16px;
+    padding: 8px 14px;
+  }
+
+  .afm__utilityLink {
+    min-height: 36px;
+  }
+
+  .afm__upload {
+    margin-left: auto;
+  }
+
+  .afm__toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  /* The trail gets its own line and wraps, so a deep path is readable in full
+     rather than running off the edge. */
+  .afm__breadcrumbsTrail {
+    flex: 1 1 100%;
+    margin-left: -6px;
+  }
+
+  .afm__crumb {
+    max-width: 100%;
+    padding: 6px;
+  }
+
+  .afm__search {
+    flex: none;
+    max-width: none;
+  }
+
+  /* 16px keeps iOS Safari from zooming the page when a field takes focus. */
+  .afm__search input,
+  .afm__input,
+  .afm__select,
+  .afm__renameInput {
+    font-size: 16px;
+  }
+
+  .afm__input {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .afm__content {
+    padding: 12px;
+  }
+
+  .afm__modalFooter,
+  .afm__drawerActions {
+    flex-wrap: wrap;
+  }
+
+  .afm__bulkBar {
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    max-width: calc(100vw - 16px);
+    overflow-x: auto;
+    padding: 6px 10px;
+  }
+
+  .afm__bulkBar > * {
+    flex: none;
+    white-space: nowrap;
+  }
+}
+
+/* ---- Compact file rows ---- */
+/* Keyed to the width of the list itself, not the viewport: the five-column
+   table needs about 560px, and it can be short of that on a phone, in a narrow
+   theme column, or on a laptop with the sidebar dragged wide. Below that each
+   row becomes two lines — the name, then "Kind · Size · Modified" — so every
+   column stays on screen and nothing needs to scroll sideways. */
+.afm__grid[data-afm-grid] {
+  container: afm-list / inline-size;
+}
+
+@container afm-list (max-width: 560px) {
+  .afm__row {
+    grid-template-columns: minmax(0, max-content) max-content max-content minmax(0, 1fr) 40px;
+    gap: 2px 0;
+    padding: 10px 0;
+  }
+
+  /* The desktop indent is 20px a level, which on a phone leaves a file six
+     folders deep about 70px for its name. Here a level is 8px and the indent
+     stops growing after six, so deep rows stay readable; past that depth the
+     breadcrumb trail is what says where you are. */
+  .afm__row {
+    --afm-row-indent: calc(4px + min(var(--afm-depth, 0), 6) * 8px);
+  }
+
+  .afm__row .afm__rowName {
+    grid-column: 1 / 5;
+    grid-row: 1;
+    padding-left: var(--afm-row-indent);
+  }
+
+  /* Two lines of name before truncating: on a narrow screen the start of a
+     filename alone often doesn't tell two files apart. */
+  .afm__row .afm__rowLabel {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+  }
+
+  .afm__row .afm__renameInput {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .afm__row .afm__rowKind,
+  .afm__row .afm__rowSize,
+  .afm__row .afm__rowModified {
+    grid-row: 2;
+    white-space: nowrap;
+  }
+
+  /* Indented to sit under the icon, past the disclosure arrow. */
+  .afm__row .afm__rowKind {
+    grid-column: 1;
+    padding-left: calc(var(--afm-row-indent) + 26px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .afm__row .afm__rowSize { grid-column: 2; }
+  .afm__row .afm__rowModified { grid-column: 3; }
+
+  .afm__row .afm__rowSize::before,
+  .afm__row .afm__rowModified::before {
+    content: "·";
+    margin: 0 6px;
+  }
+
+  /* A folder has no size or date; drop the placeholder dash rather than
+     print "Folder · — · —". */
+  .afm__row .afm__rowCell.is-empty {
+    display: none;
+  }
+
+  .afm__row .afm__rowActions {
+    grid-column: 5;
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+
+  .afm__row .afm__kebab {
+    width: 40px;
+    height: 40px;
+  }
+
+  .afm__row .afm__rowPath {
+    padding-left: calc(var(--afm-row-indent) + 26px);
+  }
+
+  /* The header is no longer a set of column titles, so it becomes a sort bar. */
+  .afm__listHead {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 14px;
+    padding: 4px 12px 8px;
+  }
+
+  .afm__listHead .afm__sortBtn {
+    min-height: 32px;
+    padding-left: 0;
+    font-size: 13px;
+  }
+
+  .afm__listHead .afm__rowActions {
+    display: none;
+  }
+}
+
+/* Narrowest phones: there is no room left for the type next to the size and
+   date, and the row icon already says what kind of file it is. */
+@container afm-list (max-width: 300px) {
+  .afm__row--file .afm__rowKind {
+    display: none;
+  }
+
+  .afm__row--file .afm__rowSize {
+    padding-left: calc(var(--afm-row-indent) + 26px);
+  }
+
+  .afm__row--file .afm__rowSize::before {
+    content: none;
+  }
+}
+
+/* ---- Viewer on phones ---- */
+/* Full screen instead of a centred card: the card capped its body at 60vh and
+   then put a 70vh PDF frame inside it, so the document scrolled inside a box
+   that itself scrolled, and the details under it were out of reach. */
+@media (max-width: 640px) {
+  .afm__modalPanel--viewer {
+    inset: 0;
+    transform: none;
+    width: auto;
+    border: 0;
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .afm__modalPanel--viewer .afm__modalTitle {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+
+  .afm__modalPanel--viewer .afm__iconBtn {
+    flex: none;
+    width: 40px;
+    height: 40px;
+  }
+
+  .afm__modalPanel--viewer .afm__modalBody {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    padding: 12px;
+  }
+
+  .afm__modalPanel--viewer .afm__viewer {
+    min-height: 100%;
+  }
+
+  /* The PDF takes whatever height the screen has left. */
+  .afm__modalPanel--viewer .afm__viewerStage:has(> .afm__viewerPdf) {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: stretch;
+    min-height: 320px;
+  }
+
+  .afm__modalPanel--viewer .afm__viewerPdf {
+    flex: 1 1 auto;
+    height: auto;
+  }
+
+  .afm__modalPanel--viewer .afm__viewerImg,
+  .afm__modalPanel--viewer .afm__viewerVideo {
+    max-height: 60vh;
+  }
+
+  .afm__modalPanel--viewer .afm__metaVal {
+    max-width: 62%;
+  }
+
+  .afm__modalPanel--viewer .afm__modalFooter {
+    flex: none;
+    padding: 10px 12px;
+  }
+
+  .afm__viewerFooter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }

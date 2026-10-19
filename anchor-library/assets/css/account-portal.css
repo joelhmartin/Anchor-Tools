@@ -210,3 +210,35 @@
   }
 }
 
+/* Stacked layout: the section nav becomes one swipeable row of pills rather
+   than eight full-width buttons stacked above the content. The negative margin
+   lets the row scroll edge to edge under the sidebar's padding. */
+@media (max-width: 980px) {
+  .aap__nav {
+    display: flex;
+    gap: 6px;
+    margin: 0 -14px;
+    padding: 2px 14px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .aap__nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .aap__navItem {
+    flex: none;
+    width: auto;
+    min-height: 40px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border-color: var(--afm-border);
+    white-space: nowrap;
+  }
+
+  .aap__navItem--link {
+    margin-top: 0;
+  }
+}

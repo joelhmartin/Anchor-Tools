@@ -17,10 +17,14 @@
 
         // Optional UX nicety: prefill the first EMPTY attendee from billing, so a
         // pre-filled attendee 1 doesn't block prefilling a later empty attendee.
-        var $firstName = $wrap.find('input[type="text"]').filter(function () {
+        // Only the seat's own Name / Email inputs (anchor_attendees[cart][seat][name|email]):
+        // an attendee question is a text input too ([fields][key]), and once
+        // attendee 1's name is filled, "the first empty text input" was the
+        // first question — the buyer's name landed in "How did you hear about us?".
+        var $firstName = $wrap.find('input[name$="][name]"]').not('[name*="[fields]"]').filter(function () {
             return $(this).val() === '';
         }).first();
-        var $firstEmail = $wrap.find('input[type="email"]').filter(function () {
+        var $firstEmail = $wrap.find('input[name$="][email]"]').not('[name*="[fields]"]').filter(function () {
             return $(this).val() === '';
         }).first();
 

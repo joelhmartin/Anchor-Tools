@@ -131,7 +131,9 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 			'status'  => $halted ? ( $codes ? end( $codes ) : 200 ) : $res->get_status(),
 			'body'    => $body,
 			'codes'   => $codes,
-			'headers' => function_exists( 'headers_list' ) ? headers_list() : [],
+			// Only readable when nothing has been printed yet; PHPUnit's own output normally has, so the header
+			// assertions below are best-effort and the status codes, bodies and Storage::plan() carry the proof.
+			'headers' => headers_sent() ? [] : headers_list(),
 			'error'   => ( $res && $res->is_error() ) ? $res->as_error() : null,
 		];
 	}
@@ -207,7 +209,7 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 		$data   = $res->get_data();
 		$this->assertSame( 200, $res->get_status() );
 		$this->assertSame( [ 'url', 'expires_at' ], array_keys( $data ) );
-		$this->assertStringContainsString( '/anchor-library/v1/files/' . $id . '/content', $data['url'] );
+		$this->assertSame( rest_url( 'anchor-library/v1/files/' . $id . '/content' ), rawurldecode( remove_query_arg( 't', $data['url'] ) ) );
 		parse_str( (string) wp_parse_url( $data['url'], PHP_URL_QUERY ), $q );
 		$ver = LinkToken::verify( $q['t'], $id, time() );
 		$this->assertSame( [ 'user_id' => $this->member, 'disposition' => 'attachment' ], $ver, 'default is attachment' );
@@ -247,7 +249,8 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 		if ( $out2['headers'] ) {
 			$this->assertContains( 'Content-Disposition: attachment; filename="my-doc.txt"', $out2['headers'] );
 		}
-		$this->assertSame( 'download_file', end( $this->activity_rows() )->action );
+		$rows = $this->activity_rows();
+		$this->assertSame( 'download_file', end( $rows )->action );
 	}
 
 	public function test_content_ignores_cookie_session_and_needs_a_token() {

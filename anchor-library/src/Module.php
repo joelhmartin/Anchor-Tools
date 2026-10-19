@@ -50,6 +50,7 @@ class Module {
 		StorageMonitor::register();
 		Users::register();
 		Ajax\Registry::register();
+		\add_action( 'rest_api_init', [ Rest\Routes::class, 'register_routes' ] );
 		\add_action( Schema::CRON_PRUNE_RESUME, [ Ajax\Media::class, 'cron_prune_resume' ] );
 	}
 

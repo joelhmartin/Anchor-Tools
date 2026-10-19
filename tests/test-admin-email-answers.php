@@ -83,6 +83,18 @@ class Test_Admin_Email_Answers extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( "How did you hear about us?: A friend", $body );
 	}
 
+	public function test_plain_text_notice_is_not_html_encoded() {
+		$event_id = $this->event_with_questions();
+		$seat_id  = $this->make_seat( $event_id, [ 'reg_fields' => [ 'heard' => 'R&D <b>' ] ] );
+		update_option( Module::OPTION_KEY, array_merge( $this->module()->get_settings(), [ 'notify_admin' => 1 ] ) );
+
+		$body = $this->send_free_notice( $event_id, $seat_id );
+
+		$this->assertStringContainsString( 'How did you hear about us?: R&D <b>', $body );
+		$this->assertStringNotContainsString( '&amp;', $body );
+		$this->assertStringNotContainsString( '&lt;', $body );
+	}
+
 	public function test_unticked_questions_never_appear() {
 		$event_id = $this->event_with_questions();
 		$seat_id  = $this->make_seat( $event_id, [ 'reg_fields' => $this->answers() ] );
@@ -207,6 +219,12 @@ class Test_Admin_Email_Answers extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'How did you hear about us?: Radio &amp; TV &lt;b&gt;', $html, 'Answers are escaped.' );
 		$this->assertStringNotContainsString( 'Private note', $html );
 		$this->assertStringNotContainsString( 'Left blank', $html );
+		$this->assertMatchesRegularExpression(
+			'/Ann.*How did you hear about us\?: A friend.*Dietary restrictions\?: Vegan.*Bob.*How did you hear about us\?: Radio &amp; TV &lt;b&gt;/s',
+			$html,
+			'Ann heading, Ann lines, Bob heading, Bob lines, in that order.'
+		);
+		$this->assertLessThan( strpos( $html, 'Radio &amp;' ), strrpos( $html, 'Dietary restrictions?' ), 'No Ann line after Bob starts.' );
 		$this->assertSame( 1, substr_count( $html, 'Dietary restrictions?' ), 'Bob left the multi-choice blank, so only Ann has that line.' );
 	}
 

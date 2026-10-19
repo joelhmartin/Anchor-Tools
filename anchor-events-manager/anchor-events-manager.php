@@ -15142,11 +15142,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
 
             $clean[] = [
-                'key'      => $key,
-                'label'    => $label,
-                'type'     => $type,
-                'options'  => $options,
-                'required' => ! empty( $row['required'] ),
+                'key'         => $key,
+                'label'       => $label,
+                'type'        => $type,
+                'options'     => $options,
+                'required'    => ! empty( $row['required'] ),
                 // "Include in admin email": off unless the author ticked it, so
                 // every question saved before this setting existed stays off.
                 'admin_email' => ! empty( $row['admin_email'] ),

@@ -87,6 +87,8 @@ All settings below are registered in the Events tab of **Settings > Anchor Tools
 
 Each attendee question has an **Include in admin email** checkbox (event edit screen > Attendee questions; off by default, inherited by child dates with the question). Ticked, answered questions are listed as `Question label: answer` per attendee in the admin notice for a free registration (plain text) and the organizer new-registration notice for a WooCommerce order (HTML). Multi-choice answers are joined with ", " including the "Other" write-in; unanswered questions are skipped. Attendee-facing emails, the seats-released notice and the roster digest are unchanged. Logic lives in `class-admin-email-answers.php`.
 
+Limits: WooCommerce's own "New order" admin email does not include the answers. A custom organiser email template that leaves out `{detail_rows}` drops them from the organizer notice. Multi-line answers are flattened to one line.
+
 ### Organizer Roster Digest
 
 | Setting | Default | Notes |

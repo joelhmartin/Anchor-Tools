@@ -1531,6 +1531,11 @@ class Registrations {
             'fields'         => 'ids',
             'posts_per_page' => -1,
             'no_found_rows'  => true,
+            // Creation order. The default (post_date DESC) ties whenever seats
+            // are minted within the same second, which made the order of an
+            // order's seats in emails nondeterministic.
+            'orderby'        => 'ID',
+            'order'          => 'ASC',
             'meta_query'     => [
                 [ 'key' => '_anchor_event_order_id', 'value' => $order_id, 'compare' => '=', 'type' => 'NUMERIC' ],
             ],

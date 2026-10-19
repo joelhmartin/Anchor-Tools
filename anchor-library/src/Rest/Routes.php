@@ -272,6 +272,8 @@ class Routes {
 	 * Anchor\Events\Feed::respond(). `Vary: Authorization` because the URL is the same for every caller and the
 	 * answer differs only by who asks.
 	 */
+	// TODO(merge order): whichever of feat/events-feed-api / feat/library-module merges second must fold this
+	// respond() and filter_nocache_headers() with Anchor\Events\Feed's twins into one shared helper.
 	private static function respond( \WP_REST_Request $request, array $data ): \WP_REST_Response {
 		$etag     = 'W/"' . \md5( (string) \wp_json_encode( $data ) ) . '"';
 		$match    = \trim( (string) $request->get_header( 'if_none_match' ) );

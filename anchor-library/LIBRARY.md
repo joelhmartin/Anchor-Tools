@@ -1,6 +1,40 @@
 # Anchor Library
 
-Module key `library` (disabled by default), directory `anchor-library/`, namespace `Anchor\Library\`. A port of the Anchor Private File Manager 2.17.0: same tables, options, shortcodes and AJAX actions. This file documents the REST API; Task 7 adds the cutover and rollback notes.
+Module key `library` (disabled by default), directory `anchor-library/`, namespace `Anchor\Library\`. A port of the Anchor Private File Manager 2.17.0: same tables, options, shortcodes and AJAX actions. This file is the module overview, the REST reference for the member app and the cutover and rollback runbook for the first site (TMJ). Spec: `docs/superpowers/specs/2026-10-18-library-module-design.md`.
+
+## Overview
+
+- **What it is:** the Anchor Private File Manager (plugin 2.17.0) folded into Anchor Tools. Portal shortcodes `[anchor_file_manager]`, `[anchor_account_portal]`, `[anchor_documents_portal]`, 51 `anchor_fm_*` / `anchor_ap_*` / `anchor_pd_*` AJAX actions, the admin Users tab and Settings, activity log, storage self-test, Product Docs (AJAX only), plus the read-only REST API below.
+- **Data is shared with the plugin, not copied:** the same `{prefix}anchor_fm_*` tables, `anchor_fm_*` options (`anchor_fm_db_version`), `_anchor_pd_docs` meta, cron hooks (`anchor_fm_prune_resume`, `anchor_fm_storage_check`), JS globals (`AnchorFM`, `AnchorAP`) and the private storage dir (`ANCHOR_FM_STORAGE_DIR`, see `PRIVATE-STORAGE.md`).
+- **Off by default.** Enable it in Anchor Tools Settings > Modules, or set `anchor_schema_settings['modules']['library']` to a truthy value.
+- **Legacy guard:** while the class `Anchor_Private_File_Manager` exists (the plugin is active) the module loads nothing but an admin notice ("Anchor Library is waiting: deactivate the Anchor Private File Manager plugin..."). No upgrade, no cron, no hooks. The ported global helper classes are only required when not already declared, so having both on disk never fatals. Never run both.
+- **Code map:** `src/Module.php` (guard and wiring), `Schema` (tables and the `maybe_upgrade_db()` version gates), `Permissions` / `Repository` / `Activity`, the AJAX handlers in `Uploads`, `Copier`, `Users`, `Settings`, `Portal`, `Storage` / `StorageGuard` / `StorageMonitor`, `Rest/*`. The classes in `includes/` are the legacy global helpers moved as-is. `assets/file-manager.js` and `.css` are copied verbatim from the plugin (over the 1,000-line house limit on purpose: parity first; splitting is a follow-up).
+- **Autoload:** the module's PSR-4 line is in the committed `vendor/composer/autoload_psr4.php` and `autoload_static.php` (production builds use the committed vendor).
+- **Text domain:** strings moved from `anchor-private-file-manager` to `anchor-schema`. Any site translation files for the old domain no longer apply.
+- **Vimeo:** the module does not read the plugin's `.env` (`VIMEO_ACCESS_TOKEN`) any more. The portal and API use only the stored `vimeo_id` / `vimeo_hash` embeds. Nothing in this project calls the Vimeo API.
+
+## Cutover and rollback runbook (TMJ)
+
+Each live step needs the owner's explicit OK. Rehearse on the local DevKinsta copy first.
+
+### Pre-cutover checks (read-only)
+
+1. Kinsta backup of the site (files and database).
+2. Is there a `.env` in the old plugin directory (`wp-content/plugins/anchor-private-file-manager/.env`) holding `VIMEO_ACCESS_TOKEN`? The plugin read it; the module does not. If one exists, nothing breaks (embeds do not need it), but note that the token is no longer used, and that anything else that depended on it (admin Vimeo lookups) is gone. Do not copy it anywhere.
+3. Note the current `anchor_fm_db_version` (expected 2.14.0 on TMJ) and that the storage dir (`ANCHOR_FM_STORAGE_DIR`) is defined in `wp-config.php`.
+4. REST only: Application Passwords must be available (`wp eval 'var_dump(wp_is_application_passwords_available());'`). Wordfence "Disable WordPress application passwords" blocks them.
+
+### Cutover
+
+1. Deploy the Anchor Tools release containing the module. It stays off. While the plugin is active the module is inert even if switched on.
+2. Enable the Library module (Settings > Modules). The legacy notice appears. Nothing else changes.
+3. Deactivate Anchor Private File Manager. Order matters: the module is already enabled, so the guard lifts on the next request and the module boots, upgrading the schema from 2.14.0 to 2.17.0.
+4. Smoke test: `/my-account/` Files tab as a Centre user and as an admin (open, download, play a video), the Users tab, Settings, the storage self-test is green, the activity log still writes, `anchor_fm_db_version` is 2.17.0.
+5. Optional: the REST checks in the section below with a test Application Password (delete it afterwards).
+
+### Rollback
+
+Order matters. **Disable the Library module first, then reactivate the plugin.** Activating the plugin while the module is loaded would redeclare classes; the activation is refused (sandboxed fatal), which is safe but confusing. The data is the same tables, so nothing needs restoring. The 2.15 to 2.17 upgrade steps stay applied and the plugin accepts that.
 
 ## REST API (member app)
 

@@ -26,7 +26,7 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		\Anchor\Library\Portal::reset();
 		Module::boot();
 		add_filter( 'pre_wp_mail', '__return_true' );
-		$GLOBALS['wp_scripts'] = new WP_Scripts(); // the portal enqueues once per process, like per request
+		$GLOBALS['wp_scripts'] = new WP_Scripts(); $GLOBALS['wp_styles'] = new WP_Styles(); // the portal enqueues once per process, like per request
 	}
 
 	public function tear_down() {
@@ -205,15 +205,46 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		$this->assertFileExists( ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-library/assets/css/account-portal.css' );
 	}
 
+	public function test_portal_assets_load_through_the_shared_asset_loader() {
+		// Release builds ship .min siblings; the loader prefers them unless SCRIPT_DEBUG is on.
+		$dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-library/assets/';
+		$made = [];
+		foreach ( [ 'js/file-manager', 'css/file-manager', 'js/account-documents', 'css/account-portal', 'js/user-manager' ] as $base ) {
+			$ext = strpos( $base, 'css/' ) === 0 ? 'css' : 'js';
+			$min = $dir . $base . '.min.' . $ext;
+			if ( ! file_exists( $min ) ) { file_put_contents( $min, '/* min */' ); $made[] = $min; }
+		}
+		try {
+			wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+			$_SERVER['REQUEST_URI'] = '/';
+			do_shortcode( '[anchor_documents_portal]' );
+			$reg = wp_scripts()->registered;
+			$this->assertStringEndsWith( 'anchor-library/assets/js/file-manager.min.js', strtok( $reg['anchor-file-manager']->src, '?' ) );
+			$this->assertStringEndsWith( 'anchor-library/assets/js/account-documents.min.js', strtok( $reg['anchor-documents-portal']->src, '?' ) );
+			$this->assertStringEndsWith( 'anchor-library/assets/js/user-manager.min.js', strtok( $reg['anchor-fm-user-manager']->src, '?' ) );
+			$this->assertStringEndsWith( 'anchor-library/assets/css/file-manager.min.css', strtok( wp_styles()->registered['anchor-file-manager']->src, '?' ) );
+			$this->assertStringEndsWith( 'anchor-library/assets/css/account-portal.min.css', strtok( wp_styles()->registered['anchor-account-portal']->src, '?' ) );
+			$this->assertSame( (string) filemtime( $dir . 'js/file-manager.min.js' ), $reg['anchor-file-manager']->ver );
+		} finally {
+			foreach ( $made as $f ) { unlink( $f ); }
+		}
+	}
+
+	public function test_dead_account_portal_js_is_not_shipped() {
+		$this->assertFileDoesNotExist( ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-library/assets/js/account-portal.js' );
+	}
+
 	// ---- settings -------------------------------------------------------------------------------------------
 
 	public function test_settings_page_and_option_keys_unchanged() {
 		do_action( 'admin_init' );
 		$settings = get_registered_settings();
-		foreach ( [ 'anchor_fm_email_on_upload', 'anchor_fm_vimeo_token', 'anchor_fm_request_access_email', 'anchor_fm_portal_logo' ] as $key ) {
+		foreach ( [ 'anchor_fm_email_on_upload', 'anchor_fm_request_access_email', 'anchor_fm_portal_logo' ] as $key ) {
 			$this->assertArrayHasKey( $key, $settings );
 			$this->assertSame( 'anchor_private_file_manager', $settings[ $key ]['group'] );
 		}
+		// The dead Vimeo token field is gone and unregistered, so options.php can never blank the stored value on save.
+		$this->assertArrayNotHasKey( 'anchor_fm_vimeo_token', $settings );
 		$this->assertSame( 1, call_user_func( $settings['anchor_fm_email_on_upload']['sanitize_callback'], 'on' ) );
 		$this->assertSame( 'a@b.co', call_user_func( $settings['anchor_fm_request_access_email']['sanitize_callback'], ' a@b.co ' ) );
 
@@ -228,6 +259,10 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		\Anchor\Library\Settings::render_settings_page();
 		$html = ob_get_clean();
 		$this->assertStringContainsString( 'name="anchor_fm_portal_logo"', $html );
+		$this->assertStringContainsString( 'name="anchor_fm_request_access_email"', $html );
+		$this->assertStringContainsString( 'name="anchor_fm_email_on_upload"', $html );
+		$this->assertStringNotContainsString( 'anchor_fm_vimeo_token', $html );
+		$this->assertStringNotContainsString( 'Vimeo access token', $html );
 		$this->assertStringContainsString( 'Private storage', $html );
 		$this->assertStringContainsString( 'value="anchor_fm_storage_check"', $html );
 	}

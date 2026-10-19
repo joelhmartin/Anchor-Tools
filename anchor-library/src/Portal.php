@@ -38,26 +38,22 @@ class Portal {
 	private static function do_enqueue_assets() {
 		if (\wp_script_is('anchor-file-manager', 'enqueued')) return;
 
-		$css_path = ANCHOR_LIBRARY_DIR . 'assets/css/file-manager.css';
-		$css_ver = \file_exists($css_path) ? (string) \filemtime($css_path) : Schema::DB_VERSION;
-		$js_path = ANCHOR_LIBRARY_DIR . 'assets/js/file-manager.js';
-		$js_ver = \file_exists($js_path) ? (string) \filemtime($js_path) : Schema::DB_VERSION;
-
-		$ap_css_path = ANCHOR_LIBRARY_DIR . 'assets/css/account-portal.css';
-		$ap_css_ver = \file_exists($ap_css_path) ? (string) \filemtime($ap_css_path) : Schema::DB_VERSION;
-		$portal_js_path = ANCHOR_LIBRARY_DIR . 'assets/js/account-documents.js';
-		$portal_js_ver = \file_exists($portal_js_path) ? (string) \filemtime($portal_js_path) : Schema::DB_VERSION;
+		// Shared loader: serves the release build's .min siblings (unless SCRIPT_DEBUG) and versions by file mtime.
+		$css_ver = self::asset_ver('anchor-library/assets/css/file-manager.css');
+		$ap_css_ver = self::asset_ver('anchor-library/assets/css/account-portal.css');
+		$js_ver = self::asset_ver('anchor-library/assets/js/file-manager.js');
+		$portal_js_ver = self::asset_ver('anchor-library/assets/js/account-documents.js');
 
 		\wp_enqueue_style('dashicons');
 		\wp_enqueue_style(
 			'anchor-file-manager',
-			ANCHOR_TOOLS_PLUGIN_URL . 'anchor-library/assets/css/file-manager.css',
+			\Anchor_Asset_Loader::url('anchor-library/assets/css/file-manager.css'),
 			[],
 			$css_ver
 		);
 		\wp_enqueue_script(
 			'anchor-file-manager',
-			ANCHOR_TOOLS_PLUGIN_URL . 'anchor-library/assets/js/file-manager.js',
+			\Anchor_Asset_Loader::url('anchor-library/assets/js/file-manager.js'),
 			['jquery'],
 			$js_ver,
 			true
@@ -71,13 +67,13 @@ class Portal {
 
 		\wp_enqueue_style(
 			'anchor-account-portal',
-			ANCHOR_TOOLS_PLUGIN_URL . 'anchor-library/assets/css/account-portal.css',
+			\Anchor_Asset_Loader::url('anchor-library/assets/css/account-portal.css'),
 			['anchor-file-manager'],
 			$ap_css_ver
 		);
 		\wp_enqueue_script(
 			'anchor-documents-portal',
-			ANCHOR_TOOLS_PLUGIN_URL . 'anchor-library/assets/js/account-documents.js',
+			\Anchor_Asset_Loader::url('anchor-library/assets/js/account-documents.js'),
 			['jquery', 'anchor-file-manager'],
 			$portal_js_ver,
 			true
@@ -92,12 +88,11 @@ class Portal {
 		);
 
 		if (\current_user_can('administrator')) {
-			$um_path = ANCHOR_LIBRARY_DIR . 'assets/js/user-manager.js';
 			\wp_enqueue_script(
 				'anchor-fm-user-manager',
-				ANCHOR_TOOLS_PLUGIN_URL . 'anchor-library/assets/js/user-manager.js',
+				\Anchor_Asset_Loader::url('anchor-library/assets/js/user-manager.js'),
 				['jquery', 'anchor-file-manager'],
-				\file_exists($um_path) ? (string) \filemtime($um_path) : Schema::DB_VERSION,
+				self::asset_ver('anchor-library/assets/js/user-manager.js'),
 				true
 			);
 		}
@@ -151,6 +146,12 @@ class Portal {
 				'files' => \__('Files', 'anchor-schema'),
 			],
 		]);
+	}
+
+	/** mtime of the asset the loader resolves (min or source); the schema version when the file is missing. */
+	private static function asset_ver( string $relative ): string {
+		$path = \Anchor_Asset_Loader::path($relative);
+		return \file_exists($path) ? (string) \filemtime($path) : Schema::DB_VERSION;
 	}
 
 	public static function render_file_manager() {

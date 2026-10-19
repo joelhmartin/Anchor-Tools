@@ -21,6 +21,9 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 
 global $wpdb;
 
+// Library module (anchor-library): deliberately NOT cleaned up here. Its tables, options and storage are shared
+// with the Anchor Private File Manager plugin; dropping them on uninstall would be data loss for that plugin too.
+
 /*
  * ── Anchor Compliance ────────────────────────────────────────────────────
  * A privacy module must not leave privacy data behind: the consent audit

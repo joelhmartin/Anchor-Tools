@@ -24,6 +24,9 @@ Usage:
 
 == Changelog ==
 
+= Unreleased =
+* Library: new module (off by default) that folds in the Anchor Private File Manager 2.17.0 (same tables, options, shortcodes and AJAX actions) and adds a read-only REST API for the member app with signed, Range-capable file links. Inert while the old plugin is active; deactivate the plugin, then enable the module. Rollback: disable the module first, then reactivate the plugin. Text domain is now anchor-schema; the plugin's `.env` Vimeo token is no longer read.
+
 = 3.37.8 =
 * Webinars: YouTube videos (URL or ID) alongside Vimeo, with watch-time and watched-% tracking for both.
 * Webinars: form registrations without accounts. An Anchor Forms webhook (signed) registers the visitor; [anchor_webinar_registered] shows their webinar from a personal ?r= link; Analytics lists registrants with time watched, % watched and UTM source. Per webinar opt-in: "Form registrants can watch".

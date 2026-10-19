@@ -1,0 +1,33 @@
+# Every add_action / add_filter / add_shortcode (and register_setting, cron) the Anchor Private File Manager 9e3f491
+# (2.17.0) registers, one per line: <kind>|<tag>|<callback in the plugin>|<where the module wires it>.
+# kinds: shortcode, action, filter(none registered by the plugin), setting, cron, applies (apply_filters extension point
+# that must keep firing), removed (deliberately not ported, with the reason). wp_ajax_* actions live in
+# library-ajax-actions.txt. The plugin has no wp_ajax_nopriv_* handlers and no WooCommerce metabox or My Account hooks:
+# Product Docs is AJAX only (anchor_pd_*), and the Woo side is read through wc_get_orders()/wc_get_products().
+shortcode|anchor_file_manager|render_file_manager
+shortcode|anchor_account_portal|render_account_portal
+shortcode|anchor_documents_portal|render_documents_portal
+action|wp_enqueue_scripts|enqueue_assets
+action|admin_menu|register_settings_page
+action|admin_init|register_settings
+action|deleted_user|on_deleted_user
+action|anchor_fm_prune_resume|cron_prune_resume
+action|anchor_fm_storage_check|run_storage_check
+action|admin_post_anchor_fm_storage_check|handle_storage_check_request
+action|admin_notices|render_storage_notice
+setting|anchor_fm_email_on_upload|register_settings
+setting|anchor_fm_request_access_email|register_settings
+setting|anchor_fm_portal_logo|register_settings
+cron|anchor_fm_prune_resume|constructor schedules daily (+1h)
+cron|anchor_fm_storage_check|constructor schedules daily (+1m)
+applies|anchor_fm_storage_dir|storage_base
+applies|anchor_fm_enable_upload_email|notify_upload
+applies|anchor_fm_contents_preload_max|contents_preload_max
+applies|anchor_fm_allowed_upload_extensions|allowed_upload_extensions
+applies|anchor_fm_upload_mimes|allowed_upload_mimes
+# Not listed above, on purpose: the core `upload_mimes` filter. Uploads::validate_type adds a callback at PHP_INT_MAX for the one
+# wp_check_filetype_and_ext() call and removes it in a finally. It is transient, never registered at rest, so a hooks audit will not find it.
+applies|anchor_fm_entitled_order_statuses|entitled_order_statuses
+removed|plugins_loaded|bootstrap_update_checker (Plugin Update Checker + GitHub token + .env loader: the module ships with Anchor Tools)
+removed|register_activation_hook|activate (Schema::maybe_upgrade installs on first module load)
+removed|register_deactivation_hook|deactivate (anchor_tools_library_clear_events in anchor-tools.php)

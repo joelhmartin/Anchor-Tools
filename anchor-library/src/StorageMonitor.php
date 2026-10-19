@@ -97,7 +97,7 @@ class StorageMonitor {
 		<p class="description">
 			The plugin puts a random test file in each storage folder and requests it from this server without logging in.
 			"Protected" means the origin refused it; a CDN in front of the site is not covered and should be checked separately.
-			If this says exposed, block the folder in the web-server config (see anchor-library/PRIVATE-STORAGE.md) and check again.
+			If this says exposed, block the folder in the web-server config and check again. Nginx: <code>location ~ /\.anchor-private-files { deny all; return 403; }</code> and <code>location ~ /anchor-private-files { deny all; return 403; }</code> (the leading dot is already denied by Kinsta; the second covers the legacy folder). Also keep the folder at mode 0700. Full notes: <a href="https://github.com/joelhmartin/Anchor-Tools/blob/main/anchor-library/PRIVATE-STORAGE.md" target="_blank" rel="noopener">PRIVATE-STORAGE.md</a>.
 		</p>
 		<form method="post" action="<?php echo \esc_url(\admin_url('admin-post.php')); ?>">
 			<input type="hidden" name="action" value="anchor_fm_storage_check">

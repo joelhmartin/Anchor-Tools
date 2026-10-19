@@ -11,6 +11,8 @@ use Anchor\Library\Schema;
 use Anchor\Library\Storage;
 
 class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
+	/** @var mixed */
+	private $saved_styles = null;
 
 	/** Same table bootstrap as Anchor_Library_TestCase (this class needs the Ajax base instead). */
 	public function set_up() {
@@ -26,10 +28,13 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		\Anchor\Library\Portal::reset();
 		Module::boot();
 		add_filter( 'pre_wp_mail', '__return_true' );
-		$GLOBALS['wp_scripts'] = new WP_Scripts(); $GLOBALS['wp_styles'] = new WP_Styles(); // the portal enqueues once per process, like per request
+		$this->saved_styles = $GLOBALS['wp_styles'] ?? null;
+		$GLOBALS['wp_scripts'] = new WP_Scripts();
+		$GLOBALS['wp_styles']  = new WP_Styles(); // the portal enqueues once per process, like per request
 	}
 
 	public function tear_down() {
+		$GLOBALS['wp_styles'] = $this->saved_styles; // do not leak a bare style registry into later suites
 		wp_clear_scheduled_hook( Schema::CRON_PRUNE_RESUME );
 		wp_clear_scheduled_hook( Schema::CRON_STORAGE_CHECK );
 		$_FILES = [];
@@ -264,6 +269,7 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		$this->assertStringNotContainsString( 'anchor_fm_vimeo_token', $html );
 		$this->assertStringNotContainsString( 'Vimeo access token', $html );
 		$this->assertStringContainsString( 'Private storage', $html );
+		$this->assertStringContainsString( 'deny all', $html ); // the nginx rule is inline: release zips strip *.md
 		$this->assertStringContainsString( 'value="anchor_fm_storage_check"', $html );
 	}
 

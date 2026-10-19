@@ -16,7 +16,6 @@ action|anchor_fm_storage_check|run_storage_check
 action|admin_post_anchor_fm_storage_check|handle_storage_check_request
 action|admin_notices|render_storage_notice
 setting|anchor_fm_email_on_upload|register_settings
-setting|anchor_fm_vimeo_token|register_settings
 setting|anchor_fm_request_access_email|register_settings
 setting|anchor_fm_portal_logo|register_settings
 cron|anchor_fm_prune_resume|constructor schedules daily (+1h)

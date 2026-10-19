@@ -306,9 +306,19 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 		$this->assertSame( 404, $this->content( $gone, LinkToken::issue( $this->member, $gone, 'inline', time() ) )['status'] );
 	}
 
+	public function test_inline_request_for_an_unsafe_type_is_served_and_logged_as_a_download() {
+		$id  = $this->file( 'doc-bytes', 'old.doc', 'application/msword' );
+		$tok = LinkToken::issue( $this->member, $id, 'inline', time() );
+		$out = $this->content( $id, $tok );
+		$this->assertSame( 'doc-bytes', $out['body'] );
+		$rows = $this->activity_rows();
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 'download_file', $rows[0]->action );
+	}
+
 	public function test_range_request_returns_206_with_exact_length_on_a_large_file() {
 		$bytes = str_repeat( '0123456789', 314573 ); // 3,145,730 bytes
-		$id    = $this->file( $bytes, 'big.bin', 'application/octet-stream' );
+		$id    = $this->file( $bytes, 'big.mp4', 'video/mp4' ); // a type that really is served inline, so the playthrough logging rule applies
 		$tok   = LinkToken::issue( $this->member, $id, 'inline', time() );
 
 		$out = $this->content( $id, $tok, 'bytes=0-99' );

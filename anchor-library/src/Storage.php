@@ -234,6 +234,11 @@ class Storage {
 		return \in_array( $base, self::SAFE_INLINE, true ) || 0 === \strpos( $base, 'video/' ) || 0 === \strpos( $base, 'audio/' );
 	}
 
+	/** What a response will really be: 'inline' only when asked for and, in the strict posture, the type is safe. Also what activity logging should record. */
+	public static function effective_disposition( string $disposition, string $mime, bool $strict = false ): string {
+		return 'inline' === $disposition && ( ! $strict || self::is_safe_inline( $mime ) ) ? 'inline' : 'attachment';
+	}
+
 	/**
 	 * The header lines for a file response, as "Name: value" strings in send order. Pure (sends nothing), so tests
 	 * assert on it: in-process headers_list() is empty under PHPUnit.
@@ -248,7 +253,7 @@ class Storage {
 	 * @return string[]
 	 */
 	public static function response_headers( string $mime, string $disposition, string $name, array $plan, bool $strict = false ): array {
-		$disp = 'inline' === $disposition && ( ! $strict || self::is_safe_inline( $mime ) ) ? 'inline' : 'attachment';
+		$disp = self::effective_disposition( $disposition, $mime, $strict );
 		$out  = [];
 		if ( $strict ) {
 			$out[] = 'Cache-Control: private, no-store';

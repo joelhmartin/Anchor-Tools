@@ -238,7 +238,7 @@ class Routes {
 			return self::not_found();
 		}
 
-		$disposition = $claims['disposition'];
+		$disposition = Storage::effective_disposition( $claims['disposition'], (string) $file->mime_type, true ); // A download is what the client gets for a type outside the inline-safe set, so that is what is logged.
 		$plan        = Storage::plan( isset( $_SERVER['HTTP_RANGE'] ) ? (string) $_SERVER['HTTP_RANGE'] : '', (int) \filesize( $path ) ); // phpcs:ignore WordPress.Security
 		// Same rule as the portal's stream: a preview logs only its opening range, a download is always logged.
 		// A 416 delivers no bytes, so it is neither (the stream still answers it, with Content-Range: bytes */size).

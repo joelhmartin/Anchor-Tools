@@ -82,6 +82,15 @@ class Anchor_Library_Delivery_Test extends Anchor_Library_TestCase {
 		}
 	}
 
+	public function test_effective_disposition_is_what_the_response_and_the_activity_log_use() {
+		$this->assertSame( 'attachment', Storage::effective_disposition( 'inline', 'application/msword', true ), 'inline request for a non-safe type is a download' );
+		$this->assertSame( 'attachment', Storage::effective_disposition( 'inline', 'image/svg+xml', true ) );
+		$this->assertSame( 'inline', Storage::effective_disposition( 'inline', 'application/pdf', true ) );
+		$this->assertSame( 'attachment', Storage::effective_disposition( 'attachment', 'application/pdf', true ) );
+		$this->assertSame( 'attachment', Storage::effective_disposition( 'bogus', 'application/pdf', true ) );
+		$this->assertSame( 'inline', Storage::effective_disposition( 'inline', 'image/bmp', false ), 'lenient (portal) keeps inline' );
+	}
+
 	public function test_lenient_mode_keeps_the_portal_behaviour() {
 		$h = $this->plan_headers( 'image/bmp', 'inline', false );
 		$this->assertNotEmpty( preg_grep( '/^Content-Disposition: inline;/', $h ), 'portal viewer keeps inline for bmp' );

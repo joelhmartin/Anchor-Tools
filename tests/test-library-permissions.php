@@ -165,10 +165,10 @@ class Anchor_Library_Permissions_Test extends Anchor_Library_TestCase {
 		$this->assertSame( 'view', Permissions::folder_capability( $ids[49], $this->member ), '50 levels reach the grant' );
 		$this->assertSame( 'none', Permissions::folder_capability( $ids[50], $this->member ), '51 levels do not' );
 
-		Permissions::begin_memo(); // same answer through the preloaded index
-		$this->assertSame( 'view', Permissions::folder_capability( $ids[49], $this->member ) );
-		$this->assertSame( 'none', Permissions::folder_capability( $ids[50], $this->member ) );
-		Permissions::end_memo();
+		Permissions::with_memo( function () use ( $ids ) { // same answer through the preloaded index
+			$this->assertSame( 'view', Permissions::folder_capability( $ids[49], $this->member ) );
+			$this->assertSame( 'none', Permissions::folder_capability( $ids[50], $this->member ) );
+		} );
 	}
 
 	public function test_a_parent_cycle_terminates() {
@@ -200,25 +200,26 @@ class Anchor_Library_Permissions_Test extends Anchor_Library_TestCase {
 		$file = $this->file( $leaf );
 		$this->grant( 'folder', $root, 'user', (string) $this->member, 'view' );
 
-		Permissions::begin_memo();
-		$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ) );
-		$this->assertTrue( Permissions::can_view_file( $file, $this->member ) );
+		Permissions::with_memo( function () use ( $leaf, $file ) {
+			global $wpdb;
+			$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ) );
+			$this->assertTrue( Permissions::can_view_file( $file, $this->member ) );
 
-		$before = $wpdb->num_queries;
-		$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ) );
-		$this->assertSame( $before, $wpdb->num_queries, 'the memo is warm for the member: no queries' );
+			$before = $wpdb->num_queries;
+			$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ) );
+			$this->assertSame( $before, $wpdb->num_queries, 'the memo is warm for the member: no queries' );
 
-		$this->assertSame( 'none', Permissions::folder_capability( $leaf, $this->outsider ), 'warm memo for A does not answer for B' );
-		$this->assertFalse( Permissions::can_view_file( $file, $this->outsider ) );
-		$this->assertSame( 'manage', Permissions::folder_capability( $leaf, $this->admin ) );
-		$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ), 'and A is still A' );
-		Permissions::end_memo();
+			$this->assertSame( 'none', Permissions::folder_capability( $leaf, $this->outsider ), 'warm memo for A does not answer for B' );
+			$this->assertFalse( Permissions::can_view_file( $file, $this->outsider ) );
+			$this->assertSame( 'manage', Permissions::folder_capability( $leaf, $this->admin ) );
+			$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ), 'and A is still A' );
+		} );
 
 		// And the other way round, starting with the user who has nothing.
-		Permissions::begin_memo();
-		$this->assertSame( 'none', Permissions::folder_capability( $leaf, $this->outsider ) );
-		$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ) );
-		Permissions::end_memo();
+		Permissions::with_memo( function () use ( $leaf ) {
+			$this->assertSame( 'none', Permissions::folder_capability( $leaf, $this->outsider ) );
+			$this->assertSame( 'view', Permissions::folder_capability( $leaf, $this->member ) );
+		} );
 	}
 
 	public function test_memo_is_not_live_outside_a_scope_so_writes_are_seen() {
@@ -230,9 +231,13 @@ class Anchor_Library_Permissions_Test extends Anchor_Library_TestCase {
 
 	public function test_reset_memo_closes_an_open_scope() {
 		$f = $this->folder( 'F' );
-		Permissions::begin_memo();
+		$begin = new ReflectionMethod( Permissions::class, 'begin_memo' );
+		$begin->setAccessible( true );
+		$begin->invoke( null );
+		$this->assertTrue( Permissions::memo_active() );
 		$this->assertSame( 'none', Permissions::folder_capability( $f, $this->member ) );
 		Permissions::reset_memo();
+		$this->assertFalse( Permissions::memo_active() );
 		$this->grant( 'folder', $f, 'role', 'subscriber' );
 		$this->assertSame( 'view', Permissions::folder_capability( $f, $this->member ) );
 	}
@@ -437,5 +442,61 @@ class Anchor_Library_Permissions_Test extends Anchor_Library_TestCase {
 		$this->assertSame( [ (string) $this->member, 'uploadfile', 'file', '12', '{"name":"a.pdf"}' ], [ $rows[0]->actor_user_id, $rows[0]->action, $rows[0]->entity_type, $rows[0]->entity_id, $rows[0]->meta ] );
 		$this->assertSame( (string) $this->admin, $rows[1]->actor_user_id, 'explicit actor' );
 		$this->assertNull( $rows[1]->meta );
+	}
+
+	// ---- review gaps: index fallbacks, policy via the index, product doc expiry ----------------------------------
+
+	public function test_folder_created_after_the_index_loaded_falls_back_to_its_row() {
+		$root = $this->folder( 'Root' );
+		$this->grant( 'folder', $root, 'role', 'subscriber' );
+		Permissions::with_memo( function () use ( $root ) {
+			$late = $this->folder( 'Late', $root ); // not in the preloaded index: folder_ancestry() index miss
+			$this->assertSame( 'view', Permissions::folder_capability( $late, $this->member ), 'inherits through the row fallback' );
+			$this->assertSame( 'none', Permissions::folder_capability( $late, $this->outsider ) );
+			$this->assertSame( 'none', Permissions::folder_capability( 999999, $this->member ), 'a folder that exists nowhere is still none' );
+		} );
+	}
+
+	public function test_entity_folder_lookup_above_the_preload_ceiling_queries_the_row() {
+		$f = $this->folder( 'F' );
+		$this->grant( 'folder', $f, 'role', 'subscriber' );
+		add_filter( 'anchor_fm_contents_preload_max', fn() => 1 );
+		Permissions::reset_memo();
+		$this->file( $f );
+		$this->file( $f, 'b.pdf' );
+		$this->assertTrue( Permissions::store_exceeds_preload_max() );
+		Permissions::with_memo( function () use ( $f ) {
+			$late = $this->file( $f, 'late.pdf' ); // would read as "no such file" if the index claimed to track files
+			$this->assertTrue( Permissions::can_view_file( $late, $this->member ), 'untracked type: the row is queried' );
+			$this->assertFalse( Permissions::can_view_file( $late, $this->outsider ) );
+			$this->assertFalse( Permissions::can_view_file( 999999, $this->member ), 'a missing file is still denied' );
+		} );
+	}
+
+	public function test_policy_grants_resolve_through_the_preloaded_index() {
+		global $wpdb;
+		$f = $this->folder( 'Policy' );
+		$wpdb->insert( Schema::table( 'permission_policies' ), [
+			'entity_type' => 'folder', 'entity_id' => $f, 'capability' => 'view',
+			'policy' => wp_json_encode( [ 'operator' => 'any', 'rules' => [ [ 'operator' => 'all', 'conditions' => [ [ 'type' => 'role', 'role' => 'editor' ] ] ] ] ] ),
+			'created_by' => 0, 'created_at' => current_time( 'mysql' ), 'updated_by' => 0, 'updated_at' => current_time( 'mysql' ),
+		] );
+		Permissions::with_memo( function () use ( $f, $wpdb ) {
+			$before = $wpdb->num_queries;
+			$this->assertSame( 'view', Permissions::folder_capability( $f, $this->outsider ) );
+			$this->assertSame( 'none', Permissions::folder_capability( $f, $this->member ) );
+			$this->assertNotEmpty( Permissions::policy( 'folder', $f )['rules'] ?? [], 'the stored policy reads back' );
+			$this->assertSame( $before, $wpdb->num_queries, 'answered from the index, not per-entity queries' );
+		} );
+	}
+
+	public function test_product_doc_expiry_runs_to_the_end_of_the_named_day() {
+		$today = current_time( 'Y-m-d' );
+		$this->assertFalse( Permissions::doc_is_expired( '' ), 'no date: never expires' );
+		$this->assertFalse( Permissions::doc_is_expired( null ) );
+		$this->assertFalse( Permissions::doc_is_expired( 'not a date' ), 'unparseable: not expired' );
+		$this->assertTrue( Permissions::doc_is_expired( gmdate( 'Y-m-d', strtotime( $today . ' -1 day' ) ) ) );
+		$this->assertFalse( Permissions::doc_is_expired( $today ), 'the day itself is still valid until 23:59:59' );
+		$this->assertFalse( Permissions::doc_is_expired( gmdate( 'Y-m-d', strtotime( $today . ' +1 day' ) ) ) );
 	}
 }

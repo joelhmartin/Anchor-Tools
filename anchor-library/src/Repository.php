@@ -112,10 +112,10 @@ class Repository {
 		if ( $folder_id < 0 || ( $pd > 0 && $folder_id === $pd ) ) {
 			return $out;
 		}
-		if ( $folder_id > 0 && ! Permissions::can_view_folder( $folder_id, $user_id ) ) {
-			return $out;
-		}
 		return Permissions::with_memo( static function () use ( $folder_id, $user_id, $pd, $out ) {
+			if ( $folder_id > 0 && ! Permissions::can_view_folder( $folder_id, $user_id ) ) {
+				return $out;
+			}
 			global $wpdb;
 			$folders = Schema::table( 'folders' );
 			$rows    = $wpdb->get_results( $wpdb->prepare(

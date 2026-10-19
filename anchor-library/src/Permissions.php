@@ -11,7 +11,7 @@
  * takes precedence over its folder's answer. Grants only ever add rights: there is no deny row.
  *
  * Memo. Listing a folder resolves a capability for every row, and each resolution walks the same ancestor chain.
- * begin_memo()/end_memo() open a scope inside which answers are cached and the whole permission model is preloaded
+ * with_memo() opens a scope (begin_memo()/end_memo() are private) inside which answers are cached and the whole permission model is preloaded
  * into an Anchor_FM_Permission_Index. It is deliberately NOT a request-wide cache: it is opened only around loops
  * that read, so a write in the same request can never be shadowed by a stale answer. Every key that depends on the
  * user carries the user id, so a memo warmed for one user can never answer for another.
@@ -172,14 +172,14 @@ class Permissions {
 
 	// ---- Memo scope -----------------------------------------------------------------------------------------
 
-	/** Open a read-only memo scope and preload the permission model. Call end_memo() when the reads are done. */
-	public static function begin_memo(): void {
+	/** Open a read-only memo scope and preload the permission model. Private: with_memo() is the only entry, so a scope cannot be left open. */
+	private static function begin_memo(): void {
 		self::$memo    = [];
 		self::$memo_on = true;
 		self::load_index();
 	}
 
-	public static function end_memo(): void {
+	private static function end_memo(): void {
 		self::$memo    = [];
 		self::$memo_on = false;
 		self::$index   = null;

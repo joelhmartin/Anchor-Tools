@@ -1127,6 +1127,17 @@ class Entitlements {
      * ------------------------------------------------------------------- */
 
     /**
+     * Does this event have Prerequisites at all? The one definition of "gated".
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function has_prerequisites( $event_id ) {
+        $meta = $this->module->get_meta( (int) $event_id );
+        return ! empty( $meta['required_roles'] ) && \is_array( $meta['required_roles'] );
+    }
+
+    /**
      * Does the viewer hold the roles this event requires?
      *
      * Staff bypass — the gate exists to stop the public booking a course they
@@ -1137,11 +1148,11 @@ class Entitlements {
      * @return bool True when there is nothing to check.
      */
     public function meets_prerequisites( $event_id, $user_id = 0 ) {
-        $meta     = $this->module->get_meta( (int) $event_id );
-        $required = \is_array( $meta['required_roles'] ?? null ) ? $meta['required_roles'] : [];
-        if ( empty( $required ) ) {
+        if ( ! $this->has_prerequisites( $event_id ) ) {
             return true;
         }
+        $meta     = $this->module->get_meta( (int) $event_id );
+        $required = $meta['required_roles'];
         $for_current = ( (int) $user_id === 0 );
         if ( $for_current && Roster::current_user_can_manage() ) {
             return true;
@@ -1171,8 +1182,10 @@ class Entitlements {
         if ( ! \is_user_logged_in() ) {
             return \__( 'Sign in to check eligibility for this course.', 'anchor-schema' );
         }
-        $meta     = $this->module->get_meta( (int) $event_id );
-        $required = \is_array( $meta['required_roles'] ?? null ) ? $meta['required_roles'] : [];
+        if ( ! $this->has_prerequisites( $event_id ) ) {
+            return '';
+        }
+        $required = $this->module->get_meta( (int) $event_id )['required_roles'];
         $names    = [];
         $roles    = \wp_roles();
         foreach ( $required as $slug ) {

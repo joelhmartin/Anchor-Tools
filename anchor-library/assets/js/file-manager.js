@@ -422,7 +422,7 @@ jQuery(function ($) {
             <div class="afm__row afm__row--${item.kind}${selected}"${draggable}
                  data-afm-row="${item.kind}:${item.id}"
                  data-afm-row-kind="${item.kind}" data-afm-row-id="${item.id}"
-                 style="--afm-row-pad:${pad}px" tabindex="-1">
+                 style="--afm-row-pad:${pad}px;--afm-depth:${depth || 0}" tabindex="-1">
                 <div class="afm__rowCell afm__rowName">
                     ${disclosure}
                     ${rowIconHtml(item)}
@@ -430,8 +430,8 @@ jQuery(function ($) {
                     ${(typeof item.watchPercent === 'number') ? watchRing(item.watchPercent) : ''}
                 </div>
                 <div class="afm__rowCell afm__rowKind">${esc(kindLabel(item.kind, item.mime))}</div>
-                <div class="afm__rowCell afm__rowSize">${sizeText}</div>
-                <div class="afm__rowCell afm__rowModified">${modified}</div>
+                <div class="afm__rowCell afm__rowSize${sizeText === '—' ? ' is-empty' : ''}">${sizeText}</div>
+                <div class="afm__rowCell afm__rowModified${modified === '—' ? ' is-empty' : ''}">${modified}</div>
                 <div class="afm__rowCell afm__rowActions">
                     <button type="button" class="afm__kebab" data-afm-row-menu="${item.kind}:${item.id}"><span class="dashicons dashicons-ellipsis"></span></button>
                 </div>
@@ -863,9 +863,16 @@ jQuery(function ($) {
                 '</div></div>';
             // Offering Download for bytes the server just said it cannot read
             // sends the user to a bare 404 page. Withhold it instead.
-            const footer = (prev.downloadUrl && prev.available !== false)
+            let footer = (prev.downloadUrl && prev.available !== false)
                 ? `<a class="afm__btn afm__btn--primary" href="${esc(prev.downloadUrl)}"><span class="dashicons dashicons-download"></span> Download</a>`
                 : '';
+            // iOS Safari shows only the first page of a PDF inside an iframe
+            // and will not scroll it, so the embedded preview alone is a dead
+            // end on an iPhone. A plain link hands it to the browser's own
+            // PDF viewer.
+            if (prev.type === 'pdf' && prev.inlineUrl && prev.available !== false) {
+                footer += `<a class="afm__btn" href="${esc(prev.inlineUrl)}" target="_blank" rel="noopener"><span class="dashicons dashicons-external"></span> Open in new tab</a>`;
+            }
             openViewerModal(esc(file.name), body, footer);
             bindPreviewErrorFallback($(document));
             if (prev.type === 'video') {
@@ -2059,6 +2066,13 @@ jQuery(function ($) {
             onResize(e);
         });
     }
+
+    // Stacked (phone) layout only — the button is display:none on desktop.
+    $root.on('click', '[data-afm-tree-fold]', function () {
+        const open = !$root.hasClass('afm--treeOpen');
+        $root.toggleClass('afm--treeOpen', open);
+        $(this).attr('aria-expanded', open ? 'true' : 'false');
+    });
 
     $root.on('click', '[data-afm-tree-toggle]', function (e) {
         e.preventDefault();

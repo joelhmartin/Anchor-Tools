@@ -228,6 +228,11 @@ class Portal {
 							<?php \esc_html_e('Log out', 'anchor-schema'); ?>
 						</a>
 					</nav>
+					<button type="button" class="afm__treeFold" data-afm-tree-fold aria-expanded="false">
+						<span class="dashicons dashicons-category" aria-hidden="true"></span>
+						<span class="afm__treeFoldLabel"><?php \esc_html_e('Browse folders', 'anchor-schema'); ?></span>
+						<span class="dashicons dashicons-arrow-down-alt2 afm__treeFoldChevron" aria-hidden="true"></span>
+					</button>
 					<div class="afm__treeScroll">
 						<div class="afm__tree" data-afm-tree></div>
 					</div>

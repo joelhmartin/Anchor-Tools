@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.38.1
+Stable tag: 3.38.2
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.38.2 =
+* Events checkout: attendee questions are full-width rows, so text and multi-choice questions line up; the billing prefill no longer writes the buyer's name into the first question.
 
 = 3.38.1 =
 * Library: restore the phone layout from File Manager 2.16.3 (folder tree folds behind "Browse folders", stacked rows, swipeable section nav, "Open in new tab" for PDFs on iPhone).

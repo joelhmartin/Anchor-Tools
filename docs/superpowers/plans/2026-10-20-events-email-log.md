@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Per registrant per event, admins see every email sent, whether it was delivered, opened and clicked, can view it and resend it — including emails sent before this existed. Also: the main event's editor shows and owns the wording its dates send (Task 6).
+**Goal:** Per registrant per event, admins see every email sent, whether it was delivered, opened and clicked, can view it and resend it — including emails sent before this existed. Also: dates inherit the main event's emails and can override them, and the console nests dates under their main event (Task 6).
 
 **Architecture:** A generic mail-log primitive in `includes/email/` (table + capture API + Mailgun webhook + view/resend endpoints + panel renderer). Anchor Events is the first consumer: its one sender `send_html_email()` and WooCommerce customer emails feed the log, and the roster's two seat-edit views render the panel. A WP-CLI importer backfills from WP Mail Logging.
 
@@ -176,37 +176,42 @@
 - [ ] **Step 4: Run** → PASS, then all `Mail_Log` tests.
 - [ ] **Step 5: Commit** `feat(events): backfill registrant emails from WP Mail Logging`.
 
-### Task 6: The main event's editor shows (and owns) what its dates actually send
+### Task 6: Dates inherit the main event's emails and can override them; the console nests dates under their main event
 
-**Why:** Toronto is a group parent (1119878) with one date child (1119879). The custom confirmation subject + opening lines were stored only on the child. The parent's editor read the parent's own (empty) rows, so every field looked blank, and a parent save runs `Occurrences::sync_shared_meta()`, which DELETES a child row the parent lacks — so saving the screen that showed "nothing" would have wiped the live wording. Fix: the parent editor shows the wording the dates hold, and a date's editor no longer offers fields the parent will overwrite.
+**Why:** Toronto is a group parent (1119878) with one date child (1119879). Today every email setting is COPIED parent → dates on each parent save (`Occurrences::sync_shared_meta()`), and a parent with no row DELETES the date's row. The custom confirmation wording was stored only on the date, so the main event's editor looked blank and saving it would have wiped live wording. The console list also shows dates and main events as unrelated flat items — and on Live it shows **1 of 8 events**, because the theme passes `limit="-1"` and `render_event_manager_list()` clamps with `max( 1, … )`.
+
+**Joel's model (verbatim intent):** "For events with children, you should see it as an expandable item where you can click into the main event or expand the dropdown and edit the individual event. The confirmation email should inherit the main template but be overwritable."
 
 **Files:**
-- Modify: `anchor-events-manager/class-occurrences.php` (new public method; make `authored_child_meta_keys()` public as `authored_keys()` or add a public wrapper — one list, no copy)
-- Modify: `anchor-events-manager/anchor-events-manager.php` — every editor read of an authored key (console `render_event_manager_form()` ~9343: email subject/preheader/intro/CTA/off switch per type, sender fields, registration questions; wp-admin `render_email_builder_metabox()` ~5201: per-type `tpl`) goes through one helper. Send-time reads (`get_email_field()`, `email_headers()`, `is_email_enabled()`) are NOT changed.
-- Create if it keeps the main file from growing: `anchor-events-manager/class-group-editor.php`
-- Test: `tests/test-events-group-editor.php`
+- Create: `anchor-events-manager/class-email-inheritance.php` (class `Email_Inheritance`: the resolver + the one-time migration)
+- Modify: `anchor-events-manager/class-occurrences.php` — remove the per-type email override keys and `EMAIL_SENDER_KEYS` from what `sync_shared_meta()` copies/deletes (registration questions keep today's copy behaviour); keep the constants (the resolver uses them).
+- Modify: `anchor-events-manager/anchor-events-manager.php` — every READ of an email override or sender key (send time: `get_email_field()`, `is_email_enabled()`, `email_headers()`'s `$ev`, the per-event `tpl` lookup; editor: console form ~9343 and wp-admin `render_email_builder_metabox()` ~5201) goes through the resolver; console list + item (~9198–9300).
+- Modify: `anchor-events-manager/assets/*` (console CSS/JS that styles `.anchor-event-admin-item`) for the nested dates.
+- Test: `tests/test-events-email-inheritance.php`, `tests/test-events-console-groups.php`
 
 **Interfaces:**
-- `Occurrences::editor_value( int $event_id, string $meta_key ): array` → `['value' => mixed|null, 'state' => 'own'|'from_dates'|'dates_differ'|'none', 'dates' => [child_id => value]]`:
-  - `own` — the event has its own row (any event, parent or not): value = that row.
-  - For a group parent with no row: look at its live children (`children( $id, false )`) that have a row. All rows identical (strict `===` after `maybe_unserialize`) → `from_dates`, value = it. Rows differ → `dates_differ`, value null, `dates` lists them. No child has one → `none`.
-- `Module::editor_meta( int $event_id, string $meta_key )` returns `editor_value()['value']` (or the raw `get_post_meta` single value when not a parent). All editor reads above use it.
-- Console form, Emails section and Registration questions section of a **group parent**:
-  - any `from_dates` key → one hint above the section: "Some of this wording was set on the dates of this event (Nov 13, 2026). It is shown here so saving keeps it." (date labels from the children's start dates, `wp_date( get_option('date_format') )`).
-  - any `dates_differ` key → a warning (class `anchor-event-hint is-warning`): "The dates of this event use different wording for: Confirmation subject, … Saving here gives every date the wording in these fields." and that field renders empty.
-- Console form for a **group child** (`is_group_child()`): above the form a notice "This is one date of <Parent title>. Emails, registration questions and the sender are set on the main event, and saving the main event replaces them here." with an **Edit main event** link (`event_action=edit&event_id=<parent>`); the Emails, sender and Registration-questions sections are not rendered for the child, and the child save handler leaves those keys untouched (it must not delete them just because the fields were absent from POST). wp-admin `render_email_builder_metabox()` for a child: the same notice instead of the editor.
-- [ ] **Step 1: Failing tests** (`class Test_Events_Group_Editor extends Anchor_Events_TestCase`), building a parent with two dates through the existing group helpers/`reconcile()`:
-  - `test_parent_without_row_shows_agreed_date_value` — set `_anchor_event_email_intro_confirmation` = `<p>Hi</p>` on both children only → `editor_value(parent)` state `from_dates`, value `<p>Hi</p>`; rendered console form for the parent contains `&lt;p&gt;Hi&lt;/p&gt;` inside the intro textarea and the "set on the dates" hint.
-  - `test_dates_differ_warns_and_leaves_field_empty`.
-  - `test_parent_own_row_wins` — parent row `A`, children `B` → `own`, `A`.
-  - `test_saving_parent_after_prefill_keeps_child_wording` — simulate the console POST built from the prefilled form (field value posted as shown) → after save + reconcile, both children still hold `<p>Hi</p>` and the parent now holds it too. (This is the regression that nearly hit Live.)
-  - `test_child_form_hides_inherited_sections_and_links_parent` — rendered child form contains the parent edit URL and no `anchor_event_email_intro_confirmation` field.
-  - `test_child_save_does_not_delete_inherited_keys` — POST a child save without email fields → its `_anchor_event_email_subject_confirmation` row survives.
-  - `test_send_time_reads_unchanged` — `get_email_field(child, 'confirmation','intro')` still returns the child's own row.
-- [ ] **Step 2: Run** `--filter Test_Events_Group_Editor` → FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** it, then the existing occurrences/group tests (`--filter 'Occurrence|Group|Series'`) → PASS.
-- [ ] **Step 5: Commit** `fix(events): main event editor shows its dates' wording; dates link back instead of offering fields the main event overwrites`.
+- `Email_Inheritance::resolve( int $event_id, string $meta_key ): array` → `['value' => string, 'source' => 'own'|'main'|'none']`. Own non-empty row → `own`; else, when `is_group_child()`, the parent's non-empty row → `main`; else `none` with `''`. (`off` switch: a date's own `'1'` turns it off; a date with no row follows the main event.)
+- `Module::email_meta( int $event_id, string $meta_key ): string` → `resolve()['value']`. The ONLY way any code reads `_anchor_event_email_*` override/sender meta after this task. Grep proves it: no remaining `get_post_meta( …, '_anchor_event_email_` outside `Email_Inheritance` and the save handlers.
+- **Save rules:** main event saves exactly as today (its own rows) and no longer touches dates. A date save writes only fields that differ from what it would inherit; a field equal to the main event's value, or emptied, deletes the date's own row (so it goes back to inheriting). Each per-field override is independent (a date can override just the subject).
+- **Date editor (console + wp-admin metabox):** same Emails UI as a main event. Inherited fields render EMPTY with the main event's value as the grey placeholder/preview and the hint "Inherited from Adjunct Mini Residency — type here to change it for this date only." An overridden field shows its value plus a **Use main event's wording** link that clears it (no dialog). Header notice: "This is one date of <Main title>. Edit the main event" (link). The preview shows the resolved result.
+- **Main event editor:** unchanged fields; under the Emails heading, when any date overrides anything: "Nov 13, 2026 has its own Confirmation subject, Confirmation opening lines" (each date linked to its editor).
+- **Console list:** a group parent renders as one `<details>` item; its summary links the title to the main event's editor (as today) and shows "N dates". Expanding it shows, before the existing actions, a list of its dates (all statuses the list already shows; closed dates marked), each with date label, status, seat count and **Edit** / **Roster** links — the same actions a flat item has. Date children are NOT rendered as separate top-level items. A child whose parent is missing/trashed still renders top-level (never hidden). `limit <= 0` means "all" (cap 200), so the theme's `limit="-1"` lists every event.
+- **Migration** (`Email_Inheritance::migrate()`, run once on `admin_init` behind option `anchor_events_email_inheritance_v1`, also exposed as `wp anchor-events email-inheritance migrate [--dry-run]` if Task 5's CLI file exists): for each date child and each email override/sender key, delete the child's row when it is byte-identical to the parent's row (it was a sync copy); when the parent has NO row and every date of that parent holds the same value, MOVE it up to the parent (Toronto's case is already fixed on Live, but other sites may have it); otherwise keep it (a real override). Log counts via `Events_Log::info`.
+- [ ] **Step 1: Failing tests** — `Test_Events_Email_Inheritance`:
+  - `test_date_without_row_inherits_main` / `test_date_override_wins` / `test_non_group_event_reads_own_row`.
+  - `test_override_subject_only_inherits_intro` — date overrides subject; `get_email_field(child,'confirmation','intro')` returns the main event's intro.
+  - `test_main_save_no_longer_touches_dates` — date has an override, main event saved with that field empty → date's override survives and is what the date sends.
+  - `test_date_save_equal_to_main_stores_nothing` and `test_date_save_empty_reverts_to_inherit`.
+  - `test_off_switch_inherits_and_overrides`.
+  - `test_sender_headers_inherit` — main sets Reply-To, date none → `email_headers([], child)` contains the main's Reply-To.
+  - `test_migration_removes_copies_keeps_overrides_lifts_agreed` — three cases in one fixture, then running it twice changes nothing the second time.
+  - `test_confirmation_send_uses_inherited_wording` — `send_confirmation_email` for a seat on the date → captured mail body contains the main event's intro.
+  `Test_Events_Console_Groups`:
+  - `test_parent_lists_dates_nested_children_not_top_level`, `test_orphan_child_still_listed`, `test_limit_minus_one_lists_all` (create 3 events, render with `limit="-1"`, 3 items), `test_date_editor_shows_inherited_placeholder_and_main_link`, `test_main_editor_lists_date_overrides`.
+- [ ] **Step 2: Run** `--filter 'Test_Events_Email_Inheritance|Test_Events_Console_Groups'` → FAIL.
+- [ ] **Step 3: Implement.** Keep `anchor-events-manager.php` from growing: list/item rendering for groups goes in a new `class-console-list.php` if it adds more than ~40 lines.
+- [ ] **Step 4: Run** them, then `--filter 'Occurrence|Group|Series|Email|Roster'` → PASS. Any existing test asserting the old copy-down of email keys is updated to the new rule and named in the report (do not delete tests silently).
+- [ ] **Step 5: Commit** `feat(events): dates inherit and can override the main event's emails; console nests dates under their main event`.
 
 ---
 

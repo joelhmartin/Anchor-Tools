@@ -181,6 +181,18 @@ class Test_Mail_Log_Admin extends WP_Ajax_UnitTestCase {
 		$this->assertStringContainsString( 'Hello Pat', $out );
 	}
 
+	public function test_view_strips_sign_in_token_but_not_stored_row() {
+		$html              = '<a href="https://x.test/live/?aek=abc&amp;x=1">Join</a> <a href=\'https://x.test/live/?aek=zzz\'>J2</a>';
+		$old               = $this->seed( [ 'html' => $html ] );
+		$_GET['id']        = $old;
+		$_GET['_wpnonce']  = wp_create_nonce( 'anchor_mail_log' );
+		$out               = $this->ajax( 'anchor_mail_log_view' );
+		$this->assertStringNotContainsString( 'aek', $out );
+		$this->assertStringContainsString( 'https://x.test/live/?x=1', $out );
+		$this->assertStringContainsString( "href='https://x.test/live/'", $out );
+		$this->assertSame( $html, Anchor_Mail_Log::get( $old )['html'], 'Stored row is untouched.' );
+	}
+
 	public function test_filter_can_grant_manage() {
 		$this->_setRole( 'subscriber' );
 		$this->assertFalse( Anchor_Mail_Log_Admin::can_manage( [] ) );

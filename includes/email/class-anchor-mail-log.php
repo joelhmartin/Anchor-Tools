@@ -264,10 +264,16 @@ if ( ! class_exists( 'Anchor_Mail_Log' ) ) {
             }
             if ( ! empty( $where['seat_or_order'] ) ) {
                 list( $seat, $order, $event ) = array_map( 'intval', array_pad( (array) $where['seat_or_order'], 3, 0 ) );
-                $parts[]  = '(seat_id = %d OR (order_id = %d AND seat_id = 0 AND event_id IN (%d, 0)))';
-                $params[] = $seat;
-                $params[] = $order;
-                $params[] = $event;
+                if ( $order > 0 ) {
+                    $parts[]  = '(seat_id = %d OR (order_id = %d AND seat_id = 0 AND event_id IN (%d, 0)))';
+                    $params[] = $seat;
+                    $params[] = $order;
+                    $params[] = $event;
+                } else {
+                    // A seat with no order: only its own rows, never other order-less, seat-less rows.
+                    $parts[]  = 'seat_id = %d';
+                    $params[] = $seat;
+                }
             }
 
             $sql = "SELECT * FROM {$table} WHERE " . implode( ' AND ', $parts ) . ' ORDER BY created_at DESC, id DESC';

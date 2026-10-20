@@ -324,6 +324,22 @@ class Email_Inheritance {
     }
 
     /**
+     * Operator entry point (WP-CLI). Ignores MIGRATION_OPTION so an operator who
+     * pre-set it (to hold off the automatic admin_init run) can dry-run and then
+     * run for real. A dry run writes nothing, not even the option; a real run
+     * records the option when done.
+     *
+     * @return array{mains:int,removed:int,lifted:int,kept:int}
+     */
+    public function run_manual( $dry_run = false ) {
+        $result = $this->migrate( $dry_run );
+        if ( ! $dry_run ) {
+            \update_option( self::MIGRATION_OPTION, [ 'time' => \gmdate( 'Y-m-d H:i:s' ) ] + $result, false );
+        }
+        return $result;
+    }
+
+    /**
      * Undo the copy-down on existing data. For every main event, every date and
      * every inheritable key:
      *
@@ -459,7 +475,7 @@ if ( \defined( 'WP_CLI' ) && \WP_CLI ) {
          */
         public function migrate( $args, $assoc_args ) {
             $dry    = ! empty( $assoc_args['dry-run'] );
-            $result = Module::instance()->email_inheritance->migrate( $dry );
+            $result = Module::instance()->email_inheritance->run_manual( $dry );
             \WP_CLI::log( \sprintf(
                 'Main events: %d. Copies removed: %d. Lifted to main event: %d. Date overrides kept: %d.',
                 $result['mains'],
@@ -471,7 +487,6 @@ if ( \defined( 'WP_CLI' ) && \WP_CLI ) {
                 \WP_CLI::log( 'Dry run. Re-run without --dry-run to write.' );
                 return;
             }
-            \update_option( Email_Inheritance::MIGRATION_OPTION, [ 'time' => \gmdate( 'Y-m-d H:i:s' ) ] + $result, false );
             \WP_CLI::success( 'Done.' );
         }
     }

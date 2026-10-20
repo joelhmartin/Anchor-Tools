@@ -195,8 +195,11 @@ if ( \defined( 'WP_CLI' ) && \WP_CLI ) {
          *
          * ## EXAMPLES
          *
-         *     wp anchor-events email-log import-wpml --event=1119878
-         *     wp anchor-events email-log import-wpml --event=1119878 --apply
+         *     wp anchor-events email-log import-wpml --event=<id>
+         *     wp anchor-events email-log import-wpml --event=<id> --apply
+         *
+         * Seats belong to the dated event (the child), not the main event, so pass a
+         * date's id. A main event's id matches no seats.
          *
          * @subcommand import-wpml
          */

@@ -385,6 +385,25 @@ class Test_Events_Email_Inheritance extends Anchor_Events_TestCase {
 		$this->assertSame( 'Same', get_post_meta( $dates[0], self::SUBJECT, true ) );
 	}
 
+	public function test_manual_run_ignores_the_option_and_dry_run_writes_nothing() {
+		list( $main, $dates ) = $this->group();
+		update_post_meta( $main, self::SUBJECT, 'Same' );
+		update_post_meta( $dates[0], self::SUBJECT, 'Same' );
+		update_option( Email_Inheritance::MIGRATION_OPTION, [ 'time' => 'deferred' ], false );
+
+		$dry = $this->inheritance()->run_manual( true );
+		$this->assertSame( 1, $dry['removed'] );
+		$this->assertSame( 'Same', get_post_meta( $dates[0], self::SUBJECT, true ) );
+		$this->assertSame( [ 'time' => 'deferred' ], get_option( Email_Inheritance::MIGRATION_OPTION ), 'Dry run leaves the option alone.' );
+
+		$real = $this->inheritance()->run_manual();
+		$this->assertSame( 1, $real['removed'] );
+		$this->assertFalse( metadata_exists( 'post', $dates[0], self::SUBJECT ) );
+		$opt = get_option( Email_Inheritance::MIGRATION_OPTION );
+		$this->assertNotSame( 'deferred', $opt['time'] );
+		$this->assertSame( 1, $opt['removed'] );
+	}
+
 	public function test_migration_runs_once_behind_its_option() {
 		list( $main, $dates ) = $this->group();
 		update_post_meta( $main, self::SUBJECT, 'Same' );

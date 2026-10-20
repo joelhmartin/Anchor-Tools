@@ -142,6 +142,15 @@ class Test_Mail_Log extends WP_UnitTestCase {
 		$this->assertSame( [ $a, $b, $c ], $ids );
 	}
 
+	public function test_query_seat_without_order_ignores_orderless_seatless_rows() {
+		$mine  = Anchor_Mail_Log::insert( [ 'seat_id' => 7, 'order_id' => 0 ] );
+		$stray = Anchor_Mail_Log::insert( [ 'seat_id' => 0, 'order_id' => 0, 'event_id' => 0 ] );
+		$this->assertNotSame( $mine, $stray );
+
+		$ids = array_map( 'intval', wp_list_pluck( Anchor_Mail_Log::query( [ 'seat_or_order' => [ 7, 0, 5 ] ] ), 'id' ) );
+		$this->assertSame( [ $mine ], $ids );
+	}
+
 	public function test_apply_event_is_single_statement_rank_guarded() {
 		global $wpdb;
 		$id = Anchor_Mail_Log::insert( [ 'status' => 'delivered', 'recipient' => 'a@example.com' ] );

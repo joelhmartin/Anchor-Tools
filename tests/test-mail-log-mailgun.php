@@ -34,9 +34,17 @@ class Test_Mail_Log_Mailgun extends WP_UnitTestCase {
 		parent::tear_down();
 	}
 
-	private function post( array $event, array $sig_over = [], $ts_offset = 0, $key = self::KEY ) {
+	public function test_replayed_token_is_rejected() {
+		$first  = $this->post( [ 'event' => 'delivered' ], [], 0, self::KEY, 'replay-tok' );
+		$second = $this->post( [ 'event' => 'opened' ], [], 0, self::KEY, 'replay-tok' );
+		$this->assertSame( 200, $first->get_status() );
+		$this->assertSame( 401, $second->get_status() );
+		$this->assertSame( 'delivered', Anchor_Mail_Log::get( $this->id )['status'] );
+	}
+
+	private function post( array $event, array $sig_over = [], $ts_offset = 0, $key = self::KEY, $token = '' ) {
 		$ts    = (string) ( time() + $ts_offset );
-		$token = 'tok123';
+		$token = '' !== $token ? $token : uniqid( 'tok', true );
 		$sig   = array_merge(
 			[
 				'timestamp' => $ts,

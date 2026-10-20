@@ -76,6 +76,14 @@ if ( ! class_exists( 'Anchor_Mail_Log_Mailgun' ) ) {
                 return new WP_REST_Response( [ 'ok' => false ], 401 );
             }
 
+            // Mailgun signs only timestamp+token, so a captured request could be replayed
+            // with a different body: accept each token once inside the skew window.
+            $seen = 'anchor_mg_tok_' . md5( (string) $sig['token'] );
+            if ( false !== get_transient( $seen ) ) {
+                return new WP_REST_Response( [ 'ok' => false ], 401 );
+            }
+            set_transient( $seen, 1, self::MAX_SKEW + 300 );
+
             $data    = isset( $body['event-data'] ) && is_array( $body['event-data'] ) ? $body['event-data'] : [];
             $applied = self::apply( $data );
             return new WP_REST_Response( [ 'ok' => true, 'applied' => $applied ], 200 );

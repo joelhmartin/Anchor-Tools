@@ -142,8 +142,29 @@ if ( ! class_exists( 'Anchor_Mail_Log_Admin' ) ) {
                 header( 'X-Content-Type-Options: nosniff' );
                 header( 'X-Robots-Tag: noindex' );
             }
-            echo (string) $row['html']; // phpcs:ignore WordPress.Security.EscapeOutput -- stored email body, served sandboxed by CSP.
+            echo self::strip_sign_in_tokens( (string) $row['html'] ); // phpcs:ignore WordPress.Security.EscapeOutput -- stored email body, served sandboxed by CSP.
             wp_die();
+        }
+
+        /**
+         * Remove the one-click sign-in parameter (`aek`, room-link token) from every
+         * href so viewing a stored email cannot sign a viewer in as the recipient.
+         * View output only; the stored row is untouched.
+         */
+        public static function strip_sign_in_tokens( $html ) {
+            return (string) preg_replace_callback(
+                '/(href\s*=\s*)(["\'])(.*?)\2/is',
+                static function ( $m ) {
+                    $url = html_entity_decode( $m[3], ENT_QUOTES );
+                    if ( false === strpos( $url, 'aek=' ) ) {
+                        return $m[0];
+                    }
+                    $url = preg_replace( '/([?&])aek=[^&#]*(&|(?=#)|$)/', '$1', $url );
+                    $url = preg_replace( '/[?&]$/', '', str_replace( '?&', '?', $url ) );
+                    return $m[1] . $m[2] . htmlspecialchars( $url, ENT_QUOTES ) . $m[2];
+                },
+                $html
+            );
         }
 
         /* ───────── Rendering ───────── */

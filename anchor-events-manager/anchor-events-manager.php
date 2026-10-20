@@ -298,6 +298,9 @@ class Module {
     /** @var Registrations Seat data-access layer (always loaded). */
     public $registrations = null;
 
+    /** @var Email_Log Mail-log integration (always loaded). */
+    public $email_log = null;
+
     /** @var WooCommerce|null WC integration; null when WooCommerce is inactive. */
     public $woocommerce = null;
 
@@ -420,6 +423,7 @@ class Module {
         require_once $dir . 'class-outcome.php';
         require_once $dir . 'class-admin-email-answers.php';
         require_once $dir . 'class-registrations.php';
+        require_once $dir . 'class-email-log.php';
         require_once $dir . 'class-roster.php';
         require_once $dir . 'class-ticket-types.php';
         require_once $dir . 'class-series.php';
@@ -436,6 +440,7 @@ class Module {
         require_once $dir . 'class-feed.php';
         require_once $dir . 'class-app-auth.php';
         $this->registrations = new Registrations( $this );
+        $this->email_log = new Email_Log( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
         // Ticket-tier model (spec §3.2) — free + paid; no WooCommerce dependency.
@@ -1545,7 +1550,7 @@ class Module {
         // finding-13 — the seat identity keeps two different attendees on the
         // same event (and the same email domain) from collapsing into one
         // deduped error row; see send_html_email()'s docblock.
-        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ] );
+        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ], [ 'kind' => 'events.reminder' ] );
 
         // Retry bookkeeping lives at the point of the actual send (audit
         // REG-D5) so the pre-flight bails above — reminders off for this
@@ -1642,7 +1647,7 @@ class Module {
         ];
         $html = $this->build_registration_email_html( $ctx );
         // Delivery failure is send_html_email()'s to log (email_send_returned_false).
-        return Outcome::from_bool( $this->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
+        return Outcome::from_bool( $this->send_html_email( $to, $subject, $html, [], $event_id, [], [ 'kind' => 'events.roster', 'audience' => 'organizer' ] ), 'wp_mail' );
     }
 
     /**
@@ -1890,7 +1895,7 @@ class Module {
      *              indistinguishable to the dedupe window.
      * @return bool True on success.
      */
-    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0, array $identity = [] ) {
+    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0, array $identity = [], array $log = [] ) {
         if ( empty( $headers ) ) {
             // Apply the sender identity: the event's own where it sets one,
             // the site-wide setting otherwise (From / Reply-To / Cc / Bcc).
@@ -1922,7 +1927,16 @@ class Module {
 
         $previous_error        = $this->last_mail_error;
         $this->last_mail_error = null;
-        $sent                  = \wp_mail( $to, $subject, $html, $headers );
+        $armed                 = Email_Log::begin_for_send( $log, $event_id, $identity );
+        $sent                  = false;
+        try {
+            $sent = \wp_mail( $to, $subject, $html, $headers );
+        } finally {
+            if ( $armed ) {
+                // Always disarm, even if wp_mail threw, so the context cannot leak.
+                \Anchor_Mail_Log::finish( (bool) $sent, \is_array( $this->last_mail_error ) ? (string) $this->last_mail_error['message'] : '' );
+            }
+        }
         if ( ! $sent ) {
             // REG-D63 — ONE row per failed send, carrying the mailer's own
             // reason when there is one. wp_mail() can answer false without ever
@@ -11869,6 +11883,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $email_text_field( 'email_bcc', 'text', 'one@example.com, two@example.com' );
         }, 'anchor_events_settings', 'anchor_events_email_sender' );
 
+        \add_settings_field( 'mailgun_signing_key', __( 'Mailgun webhook signing key', 'anchor-schema' ), [ Email_Log::class, 'render_signing_key_field' ], 'anchor_events_settings', 'anchor_events_email_sender' );
+
         \add_settings_section( 'anchor_events_email_appearance', __( 'Email Appearance', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Basic branding for event confirmation, reminder, cancellation, and roster emails.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -12219,6 +12235,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function sanitize_settings( $input ) {
+        Email_Log::save_signing_key_from_input( $input );
         // MODEL-D29 — two different questions, two different arrays.
         //
         //   $defaults = what this plugin SHIPS. A cleared text field or an
@@ -15480,7 +15497,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         ] );
         // finding-13 — the seat identity keeps two different attendees on the
         // same event from collapsing into one deduped error row.
-        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => (int) $seat_id ] ), 'wp_mail' );
+        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => (int) $seat_id ], [ 'kind' => 'events.confirmation' ] ), 'wp_mail' );
     }
 
     // -------------------------------------------------------------------------
@@ -15658,7 +15675,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $html = $this->build_registration_email_html( $ctx );
         // finding-13 — the seat identity keeps two different attendees on the
         // same event from collapsing into one deduped error row.
-        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => $seat_id ] );
+        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => $seat_id ], [ 'kind' => 'events.cancellation' ] );
         if ( $sent ) {
             // WHEN it was emailed, not merely THAT it was: the value is what
             // survives a later un-cancel/re-cancel cycle being distinguishable

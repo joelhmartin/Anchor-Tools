@@ -563,6 +563,7 @@ class Roster {
         \submit_button( \__( 'Save seat', 'anchor-schema' ) );
         echo ' <a class="button" href="' . \esc_url( $this->roster_url( $event_id ) ) . '">' . \esc_html__( 'Cancel', 'anchor-schema' ) . '</a>';
         echo '</form>';
+        echo $this->module->email_log->panel_for_seat( $event_id, $seat_id ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in the panel.
         echo '</div>';
     }
 
@@ -2594,6 +2595,7 @@ class Roster {
                 <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Save seat', 'anchor-schema' ); ?></button>
                 <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $self_url ); ?>"><?php \esc_html_e( 'Cancel', 'anchor-schema' ); ?></a>
             </form>
+            <?php echo $this->module->email_log->panel_for_seat( $event_id, $seat_id ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in the panel. ?>
         </div>
         <?php
         return (string) \ob_get_clean();

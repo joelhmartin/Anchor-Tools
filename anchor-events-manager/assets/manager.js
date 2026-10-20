@@ -316,7 +316,7 @@
 
     $field.on('click', '.anchor-event-gallery-clear', function(e){
       e.preventDefault();
-      if(!confirm('Clear all gallery images?')){ return; }
+      if(!armed($(this), 'Click again to clear')){ return; }
       $list.empty();
       syncInput();
     });
@@ -361,10 +361,34 @@
     rows.find('.anchor-event-question-row').each(function(){ toggleChoices($(this)); });
   }
 
+  // Arm-then-confirm, never a native dialog: the first click relabels the
+  // control "Click again to confirm" for 4 seconds; a second click inside that
+  // window goes through. Returns true when this click should proceed.
+  function armed($el, label){
+    var until = $el.data('armedUntil');
+    if(until && Date.now() < until){
+      window.clearTimeout($el.data('armedTimer'));
+      $el.removeData('armedUntil').removeClass('is-armed').html($el.data('armedOriginal'));
+      return true;
+    }
+    // innerHTML, not text(): a control's own markup (an icon, a <strong>)
+    // must come back intact after the armed label.
+    if(!$el.data('armedOriginal')){ $el.data('armedOriginal', $el.html()); }
+    $el.text(label).addClass('is-armed').data('armedUntil', Date.now() + 4000);
+    window.clearTimeout($el.data('armedTimer'));
+    $el.data('armedTimer', window.setTimeout(function(){
+      $el.removeData('armedUntil').removeClass('is-armed').html($el.data('armedOriginal'));
+    }, 4000));
+    return false;
+  }
+
   function initConfirms(){
     $(document).on('click', '[data-confirm]', function(e){
-      var msg = $(this).data('confirm') || 'Are you sure?';
-      if(!confirm(msg)){ e.preventDefault(); }
+      // data-confirm still names what is being confirmed (screen readers get it
+      // as the title); the visible prompt is the armed label.
+      var $el = $(this);
+      if(!$el.attr('title')){ $el.attr('title', $el.data('confirm') || ''); }
+      if(!armed($el, 'Click again to confirm')){ e.preventDefault(); e.stopImmediatePropagation(); }
     });
   }
 

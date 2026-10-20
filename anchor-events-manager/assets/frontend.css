@@ -2317,3 +2317,98 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
 .anchor-event-other-dates-list{
   margin-top:4px;
 }
+
+/* ------------------------------------------------------------------------
+   A main event with dates: one list item, its dates nested (Console_List).
+   ------------------------------------------------------------------------ */
+.anchor-event-admin-item--group > .anchor-event-admin-summary .anchor-event-admin-name{
+  text-decoration:none;
+}
+.anchor-event-admin-item--group > .anchor-event-admin-summary .anchor-event-admin-name:hover{
+  text-decoration:underline;
+}
+.anchor-event-admin-date-count{
+  color:var(--anchor-event-muted);
+  font-weight:400;
+  font-size:14px;
+}
+.anchor-event-admin-dates{
+  list-style:none;
+  margin:0 0 12px;
+  padding:0;
+  border:1px solid var(--anchor-event-border);
+  border-radius:6px;
+}
+.anchor-event-admin-date-row{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:baseline;
+  gap:8px 12px;
+  padding:10px 12px;
+}
+.anchor-event-admin-date-row + .anchor-event-admin-date-row{
+  border-top:1px solid var(--anchor-event-border);
+}
+.anchor-event-admin-date-row.is-closed .anchor-event-admin-date-label{
+  color:var(--anchor-event-muted);
+}
+.anchor-event-admin-date-label{ font-weight:500; }
+.anchor-event-admin-date-status,
+.anchor-event-admin-date-closed{
+  color:var(--anchor-event-muted);
+  font-size:13px;
+}
+.anchor-event-admin-date-row .anchor-event-admin-count{ font-size:13px; }
+.anchor-event-admin-date-actions{ white-space:nowrap; }
+@media (max-width:600px){
+  .anchor-event-admin-date-row .anchor-event-admin-count{ margin-left:0; }
+}
+
+/* ------------------------------------------------------------------------
+   A date's email fields inherit the main event's (Email_Inheritance).
+   ------------------------------------------------------------------------ */
+.anchor-event-email-inherit-notice{ margin-bottom:8px; }
+.anchor-event-email-overrides{
+  margin:0 0 12px;
+  padding-left:18px;
+  color:var(--anchor-event-muted);
+  font-size:14px;
+}
+.anchor-event-email-reset{
+  display:block;
+  margin:2px 0 0 auto;
+  padding:0 6px;
+  min-width:28px;
+  min-height:24px;
+  border:1px solid var(--anchor-event-border);
+  border-radius:6px;
+  background:#fff;
+  color:var(--anchor-event-muted);
+  font-size:15px;
+  line-height:22px;
+  cursor:pointer;
+}
+.anchor-event-email-reset:hover,
+.anchor-event-email-reset:focus-visible{ color:var(--anchor-event-text); border-color:currentColor; }
+.anchor-event-email-reset[hidden]{ display:none; }
+/* In the two-column button row each input gets a reset slot; a hidden one
+   keeps its slot so the grid does not reflow when it appears. */
+.anchor-event-email-cta:has(.anchor-event-email-reset){ grid-template-columns:1fr auto 1fr auto; }
+.anchor-event-email-cta .anchor-event-email-reset{ align-self:center; margin:0; }
+.anchor-event-email-cta .anchor-event-email-reset[hidden]{ display:block; visibility:hidden; }
+.anchor-event-email-intro-wrap{ position:relative; }
+.anchor-event-email-inherited{
+  position:absolute;
+  left:1px;
+  right:1px;
+  padding:8px 10px;
+  color:var(--anchor-event-muted);
+  opacity:.75;
+  pointer-events:none;
+  max-height:170px;
+  overflow:hidden;
+  font-size:14px;
+}
+.anchor-event-email-inherited p{ margin:0 0 8px; }
+.anchor-event-email-intro-wrap:not(.has-editor) .anchor-event-email-inherited,
+.anchor-event-email-inherited[hidden]{ display:none; }

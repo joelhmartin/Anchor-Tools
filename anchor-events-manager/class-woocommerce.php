@@ -4124,7 +4124,7 @@ class WooCommerce {
         // finding-13 — the order identity keeps two different buyers on the
         // same event from collapsing into one deduped mail-failure row.
         return Outcome::from_bool(
-            $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => $order_id ] ),
+            $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => $order_id ], [ 'kind' => 'events.wc_confirmation' ] ),
             'wp_mail'
         );
     }
@@ -4256,7 +4256,7 @@ class WooCommerce {
         $html = $this->module->build_registration_email_html( $ctx );
         // finding-13 — the order identity keeps two different orders' notices
         // on the same event from collapsing into one deduped mail-failure row.
-        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => (int) $order->get_id() ] ), 'wp_mail' );
+        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => (int) $order->get_id() ], [ 'kind' => 'events.organizer_notice', 'audience' => 'organizer' ] ), 'wp_mail' );
     }
 
     /**

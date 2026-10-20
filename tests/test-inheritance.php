@@ -82,17 +82,23 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * Updated 2026-10-20 (Email_Inheritance): the parent's email rows are no
+	 * longer COPIED onto the child — the child has no row of its own and
+	 * resolves the parent's at read time. What this test protects is
+	 * unchanged: the child's confirmation goes out with the parent's wording.
+	 */
 	public function test_parent_email_subject_override_reaches_the_child() {
 		$parent_id = $this->make_parent();
 		update_post_meta( $parent_id, '_anchor_event_email_subject_confirmation', 'Your seat at the Workshop' );
 
 		$child_id = $this->one_child( $parent_id );
 
-		$this->assertSame(
-			'Your seat at the Workshop',
-			get_post_meta( $child_id, '_anchor_event_email_subject_confirmation', true )
+		$this->assertFalse(
+			metadata_exists( 'post', $child_id, '_anchor_event_email_subject_confirmation' ),
+			'Nothing is copied down; the date inherits at read time.'
 		);
-		// And the accessor the senders actually read must resolve it, so the
+		// The accessor the senders actually read must resolve it, so the
 		// child's confirmation goes out with the parent's wording rather than
 		// the site-wide fallback.
 		$this->assertSame(
@@ -195,11 +201,15 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * …and when the value it clears is AUTHORED content, the author hears
-	 * about it. The delete itself is the intended semantics; being silent
-	 * about it is how a date quietly stopped asking for a licence number.
+	 * Updated 2026-10-20 (Email_Inheritance). This was
+	 * test_deleting_a_childs_authored_email_override_queues_a_notice: a parent
+	 * with no row DELETED the date's email override on reconcile and queued a
+	 * notice. That delete is exactly what nearly wiped Toronto's live wording,
+	 * so email settings are no longer synced: the date's override survives and
+	 * nothing needs announcing. Registration questions keep the old
+	 * delete-and-notify rule (next test).
 	 */
-	public function test_deleting_a_childs_authored_email_override_queues_a_notice() {
+	public function test_a_childs_authored_email_override_survives_reconcile() {
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 
 		$parent_id = $this->make_parent();
@@ -211,14 +221,15 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 
 		$this->occurrences()->reconcile( $parent_id );
 
-		$this->assertFalse(
-			metadata_exists( 'post', $child_id, '_anchor_event_email_subject_confirmation' ),
-			'Inheritance stays symmetric: the parent has none, so the date has none.'
+		$this->assertSame(
+			'See you Tuesday',
+			get_post_meta( $child_id, '_anchor_event_email_subject_confirmation', true ),
+			'A date\'s own email wording is an override, not a stale copy.'
 		);
-		$this->assertContains(
+		$this->assertNotContains(
 			'inherited_child_data_removed',
 			wp_list_pluck( $this->module()->queued_group_notices( $parent_id ), 'code' ),
-			'…but the author is told that it went.'
+			'Nothing was removed, so there is nothing to announce.'
 		);
 	}
 
@@ -289,14 +300,18 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 		$this->module()->save_meta( $parent_id );
 		unset( $_POST );
 
+		// Updated 2026-10-20 (Email_Inheritance): the date holds no copy and
+		// resolves the parent's template, so one save is still enough for the
+		// parent and its dates to agree.
+		$this->assertFalse( metadata_exists( 'post', $child_id, '_anchor_event_email_tpl_confirmation' ) );
 		$this->assertSame(
-			get_post_meta( $parent_id, '_anchor_event_email_tpl_confirmation', true ),
-			get_post_meta( $child_id, '_anchor_event_email_tpl_confirmation', true ),
+			$this->module()->resolve_email_template( 'confirmation', $parent_id ),
+			$this->module()->resolve_email_template( 'confirmation', $child_id ),
 			'One save must be enough for the parent and its dates to agree.'
 		);
 		$this->assertStringContainsString(
 			'Booked:',
-			get_post_meta( $child_id, '_anchor_event_email_tpl_confirmation', true )
+			$this->module()->resolve_email_template( 'confirmation', $child_id )
 		);
 	}
 
@@ -320,9 +335,10 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 		$method->invoke( $this->module(), $parent_id, '2027-05-04', $this->module()->registration_mode( $parent_id ) );
 		unset( $_POST );
 
+		// Updated 2026-10-20 (Email_Inheritance): reached by resolution, not by copy.
 		$this->assertSame(
 			'Your seat at the Workshop',
-			get_post_meta( $child_id, '_anchor_event_email_subject_confirmation', true ),
+			$this->module()->get_email_field( $child_id, 'confirmation', 'subject', 'SITE DEFAULT' ),
 			'The subject written by this save must reach the date this save reconciled.'
 		);
 		$this->assertSame(

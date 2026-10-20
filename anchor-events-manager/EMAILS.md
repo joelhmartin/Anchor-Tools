@@ -383,3 +383,11 @@ All reminder, cancellation, and roster emails work identically on sites with or 
   - `apply_filters('anchor_events_should_send_reminder', $bool, $seat, $offset)` — per-recipient reminder suppression (e.g., honor CRM opt-out).
   - `apply_filters('anchor_events_email_template_allowed_html', $default_allowed)` — extend the `wp_kses()` allowlist used to sanitize custom email template HTML on save and on the "Preview with real data" endpoint.
   - `apply_filters('anchor_events_registration_email_html', $html, $ctx)` — final filter on the fully-rendered HTML of any registration/lifecycle email before send.
+
+## Email log
+
+Every email sent through `Module::send_html_email()` with a `kind` is recorded in the shared mail log (`Anchor_Mail_Log`) and shown on the registrant's Edit view (wp-admin roster `?edit_seat=` and the front-end console `?seat_id=`) with delivery, open and click status, View and Resend.
+
+Kinds: `events.confirmation`, `events.reminder`, `events.cancellation`, `events.roster` (organizer), `events.wc_confirmation`, `events.organizer_notice` (organizer). WooCommerce customer emails (`wc.<email id>`, e.g. `wc.customer_processing_order`) are captured for orders that hold event seats. Raw `wp_mail()` calls (not via `send_html_email`) are not logged. Event managers (`Module::events_capability()`) can view and resend `events` rows.
+
+Webhook setup: in Mailgun add a webhook (delivered, opened, clicked, temporary/permanent failure, complained) pointing at the URL shown under Events settings > Email Sender, then paste Mailgun's HTTP webhook signing key into "Mailgun webhook signing key". The saved key is never shown again; leave the field blank to keep it.

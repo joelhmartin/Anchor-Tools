@@ -68,6 +68,7 @@ if ( ! class_exists( 'Anchor_Email_Tokens' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-kit.php';
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-mail-log.php';
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-mail-log-mailgun.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-mail-log-admin.php';
 }
 if ( ! class_exists( 'Anchor_Groups' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-groups.php';

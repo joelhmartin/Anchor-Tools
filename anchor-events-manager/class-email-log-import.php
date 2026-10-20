@@ -203,6 +203,9 @@ if ( \defined( 'WP_CLI' ) && \WP_CLI ) {
         public function import_wpml( $args, $assoc_args ) {
             global $wpdb;
             $apply    = ! empty( $assoc_args['apply'] );
+            if ( isset( $assoc_args['before'] ) && ! \preg_match( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string) $assoc_args['before'] ) ) {
+                \WP_CLI::error( '--before must be a UTC datetime like "2026-10-08 00:00:00".' );
+            }
             $importer = new Email_Log_Import();
             $table    = \Anchor_Mail_Log::table();
             $count    = static function () use ( $wpdb, $table ) {

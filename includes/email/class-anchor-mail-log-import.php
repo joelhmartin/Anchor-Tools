@@ -147,7 +147,39 @@ if ( ! class_exists( 'Anchor_Mail_Log_Import' ) ) {
                 ),
                 ARRAY_A
             );
-            return $rows ? $rows : [];
+            if ( ! $rows ) {
+                return [];
+            }
+            // The LIKE is only a prefilter: require exact address equality.
+            $want = strtolower( trim( $recipient ) );
+            return array_values(
+                array_filter(
+                    $rows,
+                    static function ( $row ) use ( $want ) {
+                        return in_array( $want, self::receiver_addresses( (string) $row['receiver'] ), true );
+                    }
+                )
+            );
+        }
+
+        /**
+         * Addresses in a WPML receiver value (comma separated, each possibly `Name <addr>`).
+         *
+         * @return string[] lowercased.
+         */
+        public static function receiver_addresses( $receiver ) {
+            $out = [];
+            foreach ( explode( ',', (string) $receiver ) as $part ) {
+                $part = trim( $part );
+                if ( preg_match( '/<([^>]+)>/', $part, $m ) ) {
+                    $part = $m[1];
+                }
+                $part = strtolower( trim( $part ) );
+                if ( '' !== $part ) {
+                    $out[] = $part;
+                }
+            }
+            return $out;
         }
 
         /** Whether this WPML row is already imported for the recipient. */

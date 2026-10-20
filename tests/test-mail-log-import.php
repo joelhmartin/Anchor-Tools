@@ -131,6 +131,15 @@ class Test_Mail_Log_Import extends Anchor_Events_TestCase {
 		$this->assertCount( 0, Anchor_Mail_Log_Import::wpml_rows( 'a@example.test', '2026-09-01 10:59:00', '2026-09-01 11:01:00' ) );
 	}
 
+	public function test_receiver_match_is_exact() {
+		$this->wpml_insert( '2026-09-01 10:00:00', 'joann@x.com', 'a' );
+		$this->wpml_insert( '2026-09-01 10:00:00', 'ann@x.com.au', 'b' );
+		$this->wpml_insert( '2026-09-01 10:00:00', 'Ann <ANN@x.com>', 'c' );
+		$this->wpml_insert( '2026-09-01 10:00:00', 'bob@x.com, ann@x.com', 'd' );
+		$rows = Anchor_Mail_Log_Import::wpml_rows( 'ann@x.com', '2026-09-01 16:00:00', '2026-09-01 18:00:00' );
+		$this->assertSame( [ 'c', 'd' ], wp_list_pluck( $rows, 'subject' ) );
+	}
+
 	public function test_kind_for_subject() {
 		$this->assertSame( 'wc.customer_processing_order', Anchor_Mail_Log_Import::kind_for_subject( 'Thank You For Registering!' ) );
 		$this->assertSame( 'legacy.funnelkit', Anchor_Mail_Log_Import::kind_for_subject( 'Mini Residency Course Details' ) );

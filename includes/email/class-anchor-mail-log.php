@@ -137,6 +137,9 @@ if ( ! class_exists( 'Anchor_Mail_Log' ) ) {
             $ctx    = self::$ctx;
             $id     = self::$row_id;
             $detail = '' !== $error ? $error : self::$error;
+            if ( ! $sent && '' === $detail ) {
+                $detail = 'wp_mail returned false';
+            }
 
             self::$ctx    = null;
             self::$row_id = 0;
@@ -180,7 +183,7 @@ if ( ! class_exists( 'Anchor_Mail_Log' ) ) {
             $to  = isset( $atts['to'] ) ? $atts['to'] : '';
             $row = self::row_from_ctx( self::$ctx );
 
-            $row['recipient'] = self::first_address( $to );
+            $row['recipient'] = substr( self::first_address( $to ), 0, 190 );
             $row['subject']   = isset( $atts['subject'] ) ? (string) $atts['subject'] : '';
             $row['html']      = isset( $atts['message'] ) ? (string) $atts['message'] : '';
             $row['headers']   = wp_json_encode( $headers );
@@ -276,62 +279,67 @@ if ( ! class_exists( 'Anchor_Mail_Log' ) ) {
         }
 
         /**
-         * Fold a Mailgun event into a row. Opens/clicks never change status; status
-         * only moves up in rank. Every call stamps last_event_at.
+         * Fold a Mailgun event into a row with ONE atomic UPDATE, so concurrent webhooks
+         * cannot lose a count or let a lower-rank status overwrite a higher one. Opens
+         * and clicks never change status. Every call stamps last_event_at.
+         *
+         * MySQL evaluates SET assignments left to right and sees already-updated
+         * columns, so every assignment that reads `status` comes before the status one.
          *
          * @param string $type delivered|opened|clicked|temporary_fail|permanent_fail|complained
+         * @return bool True when a row matched.
          */
         public static function apply_event( $id, $type, $when_utc, $detail = '' ) {
             global $wpdb;
-            $row = self::get( (int) $id );
-            if ( ! $row ) {
+            $table = self::table();
+            $sets  = [];
+            $args  = [];
+
+            $status_for = [
+                'delivered'      => 'delivered',
+                'temporary_fail' => 'deferred',
+                'permanent_fail' => 'bounced',
+                'complained'     => 'complained',
+            ];
+
+            if ( 'opened' === $type ) {
+                $sets[] = 'open_count = open_count + 1';
+                $sets[] = 'opened_at = COALESCE(opened_at, %s)';
+                $args[] = $when_utc;
+            } elseif ( 'clicked' === $type ) {
+                $sets[] = 'click_count = click_count + 1';
+                $sets[] = 'clicked_at = COALESCE(clicked_at, %s)';
+                $args[] = $when_utc;
+            } elseif ( isset( $status_for[ $type ] ) ) {
+                $status = $status_for[ $type ];
+                $rank   = (int) self::RANKS[ $status ];
+                $lower  = '(CASE status WHEN \'sent\' THEN 0 WHEN \'deferred\' THEN 1 WHEN \'delivered\' THEN 2 ELSE 3 END) < ' . $rank;
+                if ( 'delivered' === $status ) {
+                    $sets[] = "delivered_at = IF({$lower}, COALESCE(delivered_at, %s), delivered_at)";
+                    $args[] = $when_utc;
+                }
+                $sets[] = "status_detail = IF({$lower}, %s, status_detail)";
+                $args[] = $detail;
+                $sets[] = "status = IF({$lower}, %s, status)";
+                $args[] = $status;
+            } else {
                 return false;
             }
 
-            $update = [ 'last_event_at' => $when_utc ];
-            $status = null;
+            $sets[] = 'last_event_at = %s';
+            $args[] = $when_utc;
+            $args[] = (int) $id;
 
-            switch ( $type ) {
-                case 'delivered':
-                    $status = 'delivered';
-                    if ( empty( $row['delivered_at'] ) ) {
-                        $update['delivered_at'] = $when_utc;
-                    }
-                    break;
-                case 'opened':
-                    $update['open_count'] = (int) $row['open_count'] + 1;
-                    if ( empty( $row['opened_at'] ) ) {
-                        $update['opened_at'] = $when_utc;
-                    }
-                    break;
-                case 'clicked':
-                    $update['click_count'] = (int) $row['click_count'] + 1;
-                    if ( empty( $row['clicked_at'] ) ) {
-                        $update['clicked_at'] = $when_utc;
-                    }
-                    break;
-                case 'temporary_fail':
-                    $status = 'deferred';
-                    break;
-                case 'permanent_fail':
-                    $status = 'bounced';
-                    break;
-                case 'complained':
-                    $status = 'complained';
-                    break;
-                default:
-                    return false;
+            $sql    = $wpdb->prepare( "UPDATE {$table} SET " . implode( ', ', $sets ) . ' WHERE id = %d', $args ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $result = $wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            if ( false === $result ) {
+                return false;
             }
-
-            if ( $status ) {
-                $current = isset( self::RANKS[ $row['status'] ] ) ? self::RANKS[ $row['status'] ] : 0;
-                if ( self::RANKS[ $status ] > $current ) {
-                    $update['status']        = $status;
-                    $update['status_detail'] = $detail;
-                }
+            if ( $result > 0 ) {
+                return true;
             }
-
-            return false !== $wpdb->update( self::table(), $update, [ 'id' => (int) $id ] );
+            // 0 changed rows: still a match if the row exists (identical values rewritten).
+            return (bool) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE id = %d", (int) $id ) );
         }
 
         private static function row_from_ctx( array $ctx ) {

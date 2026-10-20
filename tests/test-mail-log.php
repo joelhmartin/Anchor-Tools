@@ -141,4 +141,29 @@ class Test_Mail_Log extends WP_UnitTestCase {
 		sort( $ids );
 		$this->assertSame( [ $a, $b, $c ], $ids );
 	}
+
+	public function test_apply_event_is_single_statement_rank_guarded() {
+		global $wpdb;
+		$id = Anchor_Mail_Log::insert( [ 'status' => 'delivered', 'recipient' => 'a@example.com' ] );
+
+		// Stale lower-rank event against a row we never read first.
+		$this->assertTrue( Anchor_Mail_Log::apply_event( $id, 'temporary_fail', '2026-01-01 10:00:00', 'late' ) );
+		$row = $wpdb->get_row( 'SELECT status, status_detail FROM ' . Anchor_Mail_Log::table() . ' WHERE id = ' . (int) $id, ARRAY_A ); // phpcs:ignore
+		$this->assertSame( 'delivered', $row['status'] );
+		$this->assertNotSame( 'late', $row['status_detail'] );
+
+		Anchor_Mail_Log::apply_event( $id, 'opened', '2026-01-01 10:00:01' );
+		Anchor_Mail_Log::apply_event( $id, 'opened', '2026-01-01 10:00:02' );
+		$row = Anchor_Mail_Log::get( $id );
+		$this->assertSame( '2', $row['open_count'] );
+		$this->assertSame( '2026-01-01 10:00:01', $row['opened_at'] );
+
+		$this->assertFalse( Anchor_Mail_Log::apply_event( 999999, 'opened', '2026-01-01 10:00:00' ) );
+	}
+
+	public function test_failed_send_without_message_gets_default_detail() {
+		Anchor_Mail_Log::begin( [ 'context' => 'test' ] );
+		$id = Anchor_Mail_Log::finish( false );
+		$this->assertSame( 'wp_mail returned false', Anchor_Mail_Log::get( $id )['status_detail'] );
+	}
 }

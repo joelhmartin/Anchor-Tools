@@ -85,12 +85,22 @@ if ( ! class_exists( 'Anchor_Mail_Log_Mailgun' ) ) {
             $name = 'anchor_mg_tok_' . md5( (string) $sig['token'] );
             $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s AND option_value < %d", $wpdb->esc_like( 'anchor_mg_tok_' ) . '%', time() - self::MAX_SKEW - 300 ) ); // phpcs:ignore
             $claimed = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, (string) time() ) ); // phpcs:ignore
+            if ( false === $claimed ) {
+                // A DB error is not a duplicate: answer non-2xx so Mailgun retries.
+                return new WP_REST_Response( [ 'ok' => false ], 503 );
+            }
             if ( 1 !== (int) $claimed ) {
                 return new WP_REST_Response( [ 'ok' => true, 'applied' => false ], 200 );
             }
 
             $data    = isset( $body['event-data'] ) && is_array( $body['event-data'] ) ? $body['event-data'] : [];
+            $wpdb->last_error = '';
             $applied = self::apply( $data );
+            if ( '' !== $wpdb->last_error ) {
+                // The update failed: release the token so Mailgun's retry is not refused as a duplicate.
+                $wpdb->delete( $wpdb->options, [ 'option_name' => $name ] );
+                return new WP_REST_Response( [ 'ok' => false ], 503 );
+            }
             return new WP_REST_Response( [ 'ok' => true, 'applied' => $applied ], 200 );
         }
 

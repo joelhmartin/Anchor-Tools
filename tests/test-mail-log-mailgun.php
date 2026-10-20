@@ -45,6 +45,38 @@ class Test_Mail_Log_Mailgun extends WP_UnitTestCase {
 		$this->assertSame( 0, (int) ( $row['open_count'] ?? 0 ) );
 	}
 
+	public function test_token_claim_db_error_is_retryable() {
+		$break = static function ( $q ) {
+			return ( false !== strpos( $q, 'INSERT IGNORE' ) && false !== strpos( $q, 'anchor_mg_tok_' ) ) ? 'INSERT INTO anchor_no_such_table VALUES (1)' : $q;
+		};
+		global $wpdb;
+		$suppress = $wpdb->suppress_errors( true );
+		add_filter( 'query', $break );
+		$res = $this->post( [ 'event' => 'delivered' ] );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( $suppress );
+		$this->assertSame( 503, $res->get_status() );
+		$this->assertSame( 'sent', Anchor_Mail_Log::get( $this->id )['status'] );
+	}
+
+	public function test_apply_db_error_releases_token_for_retry() {
+		$table = Anchor_Mail_Log::table();
+		$break = static function ( $q ) use ( $table ) {
+			return ( 0 === strpos( ltrim( $q ), 'UPDATE' ) && false !== strpos( $q, $table ) ) ? 'UPDATE anchor_no_such_table SET x = 1' : $q;
+		};
+		global $wpdb;
+		$suppress = $wpdb->suppress_errors( true );
+		add_filter( 'query', $break );
+		$first = $this->post( [ 'event' => 'delivered' ], [], 0, self::KEY, 'retry-tok' );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( $suppress );
+		$this->assertSame( 503, $first->get_status() );
+		$retry = $this->post( [ 'event' => 'delivered' ], [], 0, self::KEY, 'retry-tok' );
+		$this->assertSame( 200, $retry->get_status() );
+		$this->assertTrue( $retry->get_data()['applied'] );
+		$this->assertSame( 'delivered', Anchor_Mail_Log::get( $this->id )['status'] );
+	}
+
 	private function post( array $event, array $sig_over = [], $ts_offset = 0, $key = self::KEY, $token = '' ) {
 		$ts    = (string) ( time() + $ts_offset );
 		$token = '' !== $token ? $token : uniqid( 'tok', true );

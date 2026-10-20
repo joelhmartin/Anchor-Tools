@@ -195,6 +195,70 @@
     picker.open();
   }
 
+  // ---------------------------------------- date <- main event inheritance
+  //
+  // On a date, every inheritable field is empty unless the date overrides it,
+  // with the main event's value as the placeholder. The ↺ button beside a
+  // field empties it (back to inheriting); it shows only while there is
+  // something to reset. TinyMCE has no placeholder, so the opening lines show
+  // the main event's wording as a muted overlay on the empty editor — a <div>,
+  // never a form field, so it is never submitted.
+
+  function editorFor(id) {
+    var ed = window.tinymce && window.tinymce.get(id);
+    return (ed && !ed.isHidden()) ? ed : null;
+  }
+
+  function hasValue(id) {
+    var ed = editorFor(id);
+    if (ed) {
+      return ed.getContent().replace(/<(?!img)[^>]*>/gi, '').replace(/&nbsp;/g, '').trim() !== '';
+    }
+    var el = document.getElementById(id);
+    return !!(el && el.value.trim() !== '');
+  }
+
+  function syncInherit(id, focused) {
+    var has = hasValue(id);
+    var btn = document.querySelector('.anchor-event-email-reset[data-reset-for="' + id + '"]');
+    if (btn) { btn.hidden = !has; }
+    var overlay = document.querySelector('[data-inherited-for="' + id + '"]');
+    if (overlay) { overlay.hidden = has || !!focused; }
+  }
+
+  /** Line the overlay up with the editor's content area, below its toolbar. */
+  function placeInheritedOverlay(ed, id) {
+    var overlay = document.querySelector('[data-inherited-for="' + id + '"]');
+    var frame = ed.getContainer && ed.getContainer() && ed.getContainer().querySelector('iframe');
+    if (!overlay || !frame) { return; }
+    var wrapEl = overlay.parentNode;
+    wrapEl.classList.add('has-editor');
+    overlay.style.top = (frame.getBoundingClientRect().top - wrapEl.getBoundingClientRect().top) + 'px';
+  }
+
+  function initInheritance() {
+    document.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('.anchor-event-email-reset') : null;
+      if (!btn) { return; }
+      e.preventDefault();
+      var id = btn.getAttribute('data-reset-for');
+      var ed = editorFor(id);
+      if (ed) { ed.setContent(''); ed.save(); }
+      var el = document.getElementById(id);
+      if (el) {
+        el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));  // live preview
+      }
+      syncInherit(id, false);
+    });
+    document.addEventListener('input', function (e) {
+      var el = e.target;
+      if (el && el.id && el.hasAttribute && el.hasAttribute('data-inheritable')) {
+        syncInherit(el.id, false);
+      }
+    });
+  }
+
   function init(wrap) {
     var eventId = wrap.getAttribute('data-event') || '0';
     var form    = wrap.closest('form');
@@ -324,8 +388,11 @@
                 ed.on('keyup change SetContent ExecCommand NodeChange', function () {
                   ed.save();
                   renderSoon();
+                  syncInherit(id, ed.hasFocus());
                 });
-                ed.on('focus', function () { lastFocused = intro; });
+                ed.on('focus', function () { lastFocused = intro; syncInherit(id, true); });
+                ed.on('blur', function () { syncInherit(id, false); });
+                ed.on('init', function () { placeInheritedOverlay(ed, id); syncInherit(id, false); });
               }
             }
           });
@@ -434,11 +501,28 @@
       // body is something to edit rather than something to invent. It replaces
       // what is there, so it asks first when that would throw work away.
       var starter = modal.querySelector('.anchor-event-email-starter');
+      var starterLabel = starter ? starter.textContent : '';
+      var starterArmed = 0;
+      var starterTimer = null;
+      function armStarter() {
+        window.clearTimeout(starterTimer);
+        if (Date.now() < starterArmed) {
+          starterArmed = 0;
+          starter.textContent = starterLabel;
+          return true;
+        }
+        starterArmed = Date.now() + 4000;
+        starter.textContent = 'Click again to replace';
+        starterTimer = window.setTimeout(function () { starterArmed = 0; starter.textContent = starterLabel; }, 4000);
+        return false;
+      }
       if (starter) {
         starter.addEventListener('click', function () {
           var html = starter.getAttribute('data-starter') || '';
           var current = introValue().replace(/<[^>]*>/g, '').trim();
-          if (current !== '' && !window.confirm('Replace the opening lines with the draft?')) { return; }
+          // Arm-then-confirm instead of a native dialog: replacing typed work
+          // takes a second click within 4 seconds.
+          if (current !== '' && !armStarter()) { return; }
           if (mce && !mce.isHidden()) { mce.setContent(html); mce.save(); }
           else if (intro) { intro.value = html; }
           renderSoon();
@@ -476,5 +560,6 @@
 
   ready(function () {
     document.querySelectorAll('.anchor-event-emails').forEach(init);
+    initInheritance();
   });
 })();

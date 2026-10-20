@@ -243,12 +243,16 @@ class Test_Listing_Exclusions extends Anchor_Events_TestCase {
 
 		$html = do_shortcode( '[event_manager limit="50"]' );
 
-		$this->assertStringContainsString(
-			esc_html( get_the_title( $closed ) ),
+		// Updated 2026-10-20 (Console_List): dates are drawn nested under their
+		// main event as rows with their own Edit / Attendees links, labelled by
+		// date rather than by post title. The protection is the same: the
+		// cancelled date is still listed, marked closed, with its roster link.
+		$this->assertMatchesRegularExpression(
+			'#<li class="anchor-event-admin-date-row is-closed">.*?event_action=roster&\#038;event_id=' . $closed . '#s',
 			$html,
 			'The Events Manager console must still show a cancelled date so its roster can be emailed or refunded.'
 		);
-		$this->assertStringContainsString( esc_html( get_the_title( $live[0] ) ), $html );
+		$this->assertStringContainsString( 'event_action=edit&#038;event_id=' . $live[0], $html );
 	}
 
 	/** The staff exemption is for occurrence_closed ONLY — hide_from_archive still binds. */

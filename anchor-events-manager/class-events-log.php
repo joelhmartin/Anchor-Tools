@@ -78,6 +78,19 @@ class Events_Log {
     const ORDER_LOG_CAP = 50;
 
     /**
+     * Record something that is not a failure (a migration's counts). Debug log
+     * only — never the error option, which is for things an editor must act on.
+     *
+     * @param string $code
+     * @param array  $context
+     */
+    public static function info( $code, array $context = [] ) {
+        if ( \class_exists( '\\Anchor_Schema_Logger' ) ) {
+            \Anchor_Schema_Logger::log( 'events:' . $code, self::redact( $context ) );
+        }
+    }
+
+    /**
      * Record an error. Forwards to Anchor_Schema_Logger (when debug logging is on)
      * and always appends to the capped site-wide option log so failures are
      * inspectable without enabling global debug.

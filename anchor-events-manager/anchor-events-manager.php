@@ -301,6 +301,9 @@ class Module {
     /** @var Email_Log Mail-log integration (always loaded). */
     public $email_log = null;
 
+    /** @var Email_Inheritance Date ← main event email resolver (always loaded). */
+    public $email_inheritance = null;
+
     /** @var WooCommerce|null WC integration; null when WooCommerce is inactive. */
     public $woocommerce = null;
 
@@ -431,6 +434,8 @@ class Module {
         require_once $dir . 'class-ticket-types.php';
         require_once $dir . 'class-series.php';
         require_once $dir . 'class-occurrences.php';
+        require_once $dir . 'class-email-inheritance.php';
+        require_once $dir . 'class-console-list.php';
         require_once $dir . 'class-event-schema.php';
         // Stream embed normaliser (virtual-events spec §5.4) — static, no
         // instance: it holds no state and hooks nothing.
@@ -455,6 +460,8 @@ class Module {
         // child-event reconcile for "Pick-one offerings". No hooks of its own;
         // driven explicitly (metabox wiring is a later task).
         $this->occurrences = new Occurrences( $this );
+        // Dates read their main event's email settings (Email_Inheritance).
+        $this->email_inheritance = new Email_Inheritance( $this );
         // Event JSON-LD data builder (Phase 4, Task 4.1) — free + paid; pure
         // read-only data projection, no hooks of its own. Front-end emission
         // (wp_head) is a later task.
@@ -1982,8 +1989,9 @@ class Module {
             if ( ! $event_id ) {
                 return $default;
             }
-            $value = \get_post_meta( (int) $event_id, '_anchor_event_' . $key, true );
-            return ( \is_string( $value ) && \trim( $value ) !== '' ) ? $value : $default;
+            // A date inherits its main event's sender identity (Email_Inheritance).
+            $value = $this->email_meta( (int) $event_id, '_anchor_event_' . $key );
+            return \trim( $value ) !== '' ? $value : $default;
         };
 
         $from_email = \sanitize_email( $ev( 'email_from_address', $settings['email_from_address'] ?? '' ) );
@@ -2009,7 +2017,7 @@ class Module {
         foreach ( [ 'Cc' => 'email_cc', 'Bcc' => 'email_bcc' ] as $header => $key ) {
             $list = \array_merge(
                 $this->email_address_list( $settings[ $key ] ?? '' ),
-                $this->email_address_list( $event_id ? \get_post_meta( (int) $event_id, '_anchor_event_' . $key, true ) : '' )
+                $this->email_address_list( $event_id ? $this->email_meta( (int) $event_id, '_anchor_event_' . $key ) : '' )
             );
             foreach ( \array_unique( $list ) as $address ) {
                 $headers[] = $header . ': ' . $address;
@@ -4678,15 +4686,37 @@ class Module {
         $field = \in_array( $field, [ 'subject', 'intro', 'preheader' ], true ) ? $field : 'intro';
         $type  = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
 
+        $key = '_anchor_event_email_' . $field . '_' . $type;
+
         // A live preview passes unsaved values so the panel reflects typing.
         if ( \is_array( $this->preview_field_override )
             && ( $this->preview_field_override['type'] ?? '' ) === $type
             && isset( $this->preview_field_override[ $field ] ) ) {
-            return (string) $this->preview_field_override[ $field ];
+            $typed = (string) $this->preview_field_override[ $field ];
+            // On a date an empty field means "inherit", so preview what the
+            // main event would send rather than an empty line.
+            if ( $typed !== '' || ! $this->email_inheritance->is_date( $event_id ) ) {
+                return $typed;
+            }
+            $main = $this->email_meta( $this->email_inheritance->main_of( $event_id ), $key );
+            return $main !== '' ? $main : (string) $fallback;
         }
 
-        $meta = \get_post_meta( (int) $event_id, '_anchor_event_email_' . $field . '_' . $type, true );
-        return ( \is_string( $meta ) && $meta !== '' ) ? $meta : (string) $fallback;
+        $meta = $this->email_meta( (int) $event_id, $key );
+        return $meta !== '' ? $meta : (string) $fallback;
+    }
+
+    /**
+     * The one read of a per-event email override or sender row
+     * (`_anchor_event_email_*`). A date (group child) with no non-empty row of
+     * its own gets its main event's value — see Email_Inheritance::resolve().
+     *
+     * @param int    $event_id
+     * @param string $meta_key Full meta key.
+     * @return string
+     */
+    public function email_meta( $event_id, $meta_key ) {
+        return $this->email_inheritance->resolve( (int) $event_id, (string) $meta_key )['value'];
     }
 
     /**
@@ -4702,7 +4732,9 @@ class Module {
      */
     public function is_email_enabled( $event_id, $type ) {
         $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
-        return \get_post_meta( (int) $event_id, '_anchor_event_email_off_' . $type, true ) !== '1';
+        // '1' = off. A date with no row follows its main event; a date's own
+        // '0' switches it back on (Email_Inheritance::save_date_switch()).
+        return $this->email_meta( (int) $event_id, '_anchor_event_email_off_' . $type ) !== '1';
     }
 
     /**
@@ -4719,9 +4751,12 @@ class Module {
         if ( empty( $src['anchor_event_email_switches_present'] ) ) {
             return;
         }
+        $date = $this->email_inheritance->is_date( $post_id );
         foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
             $on = ! empty( $src[ 'anchor_event_email_on_' . $type ] );
-            if ( $on ) {
+            if ( $date ) {
+                $this->email_inheritance->save_date_switch( $post_id, $type, $on );
+            } elseif ( $on ) {
                 \delete_post_meta( $post_id, '_anchor_event_email_off_' . $type );
             } else {
                 \update_post_meta( $post_id, '_anchor_event_email_off_' . $type, '1' );
@@ -4989,11 +5024,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $out = [];
         foreach ( [ 'label', 'url' ] as $field ) {
-            $key   = $prefix . $field . '_' . $type;
-            $saved = \get_post_meta( (int) $event_id, $key, true );
-            // metadata_exists(), not a truthiness check: '' is a real answer here.
-            $out[ $field ] = \metadata_exists( 'post', (int) $event_id, $key )
-                ? (string) $saved
+            // An existing empty row is a real answer here ("no button"), which
+            // the resolver reports as source 'own'/'main' with value ''. A date
+            // inherits its main event's button, including its "no button".
+            $resolved      = $this->email_inheritance->resolve( (int) $event_id, $prefix . $field . '_' . $type );
+            $out[ $field ] = $resolved['source'] !== 'none'
+                ? $resolved['value']
                 : (string) ( $defaults[ $field ] ?? '' );
         }
         return $out;
@@ -5041,6 +5077,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             } else {
                 $value = \call_user_func( '\\' . $clean, $raw );
             }
+            if ( $this->email_inheritance->is_date( $post_id ) ) {
+                // A date: empty inherits the main event's sender.
+                $this->email_inheritance->write_date_value( $post_id, '_anchor_event_' . $key, $value );
+                continue;
+            }
             // wp_slash(): see persist_event_authoring()'s docblock — a From
             // name is free text and may legitimately contain a backslash.
             \update_post_meta( $post_id, '_anchor_event_' . $key, \wp_slash( $value ) );
@@ -5081,6 +5122,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     }
                     $value    = (string) \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
                     $meta_key = $prefix . $field . '_' . $type;
+
+                    if ( $this->email_inheritance->is_date( $post_id ) ) {
+                        // A date: empty inherits the main event's button,
+                        // anything typed is this date's own.
+                        $this->email_inheritance->write_date_value( $post_id, $meta_key, $value );
+                        continue;
+                    }
 
                     if ( ! $this->cta_field_is_authored( $post_id, $meta_key, $value ) ) {
                         // An untouched placeholder — leave the field unset so the
@@ -5127,6 +5175,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     private function cta_field_is_authored( $event_id, $meta_key, $value ) {
         if ( (string) $value !== '' ) {
             return true;
+        }
+        if ( $this->email_inheritance->is_date( $event_id ) ) {
+            return false; // On a date an empty field inherits; it is never "no button".
         }
         return \metadata_exists( 'post', (int) $event_id, (string) $meta_key );
     }
@@ -5193,7 +5244,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /** Human labels for the Emails builder's outer (email-type) tab bar. */
-    private function email_type_labels() {
+    public function email_type_labels() {
         return [
             'confirmation' => __( 'Confirmation', 'anchor-schema' ),
             'reminder'     => __( 'Reminder', 'anchor-schema' ),
@@ -5232,6 +5283,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <p class="description">
                 <?php echo esc_html__( 'Subject lines, opening lines, the on/off switch, the buttons, the sender identity and the attendee questions are edited in the Events Manager console. Saving here leaves all of them exactly as the console set them.', 'anchor-schema' ); ?>
             </p>
+            <?php
+            // A date's templates come from its main event unless changed here;
+            // a main event lists the dates that override it (Email_Inheritance).
+            $admin_edit_url = function ( $id ) {
+                return (string) \get_edit_post_link( (int) $id, 'raw' );
+            };
+            echo $this->email_inheritance->date_notice( $post->ID, $admin_edit_url( $this->email_inheritance->main_of( $post->ID ) ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside.
+            echo $this->email_inheritance->overrides_summary( $post->ID, $admin_edit_url ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside.
+            ?>
             <div class="anchor-email-tabs">
                 <?php $first = true; foreach ( $labels as $type => $label ) : ?>
                     <button type="button" class="anchor-email-tab<?php echo $first ? ' is-active' : ''; ?>" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html( $label ); ?></button>
@@ -5397,6 +5457,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // a pasted doctype would be stored as a redundant literal override.
             $raw      = self::strip_email_doctype( (string) \wp_unslash( $src[ $field ] ) );
             $fallback = $this->resolve_email_template( $type, 0 ); // default constant, no per-event lookup.
+
+            $main = $this->email_inheritance->main_of( $post_id );
+            if ( $main > 0 ) {
+                // A date's editor is pre-filled with what it inherits; posting
+                // that back unchanged must not freeze a copy of the main event's
+                // template onto the date.
+                $inherited = $this->resolve_email_template( $type, $main );
+                $this->email_inheritance->write_date_value(
+                    $post_id,
+                    '_anchor_event_email_tpl_' . $type,
+                    \trim( $raw ) === \trim( $inherited ) ? '' : $this->sanitize_email_template_html( $raw )
+                );
+                continue;
+            }
 
             if ( \trim( $raw ) === \trim( $fallback ) ) {
                 // Unmodified (or explicitly reset by the JS "Reset to default"
@@ -9221,10 +9295,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $meta_query[] = $this->build_visibility_clause();
         }
 
+        $statuses = [ 'publish', 'draft', 'future', 'private', 'pending' ];
         $args = [
             'post_type' => self::CPT,
-            'post_status' => [ 'publish', 'draft', 'future', 'private', 'pending' ],
-            'posts_per_page' => max( 1, min( 200, (int) $atts['limit'] ) ),
+            'post_status' => $statuses,
+            // limit <= 0 means "all" (capped): the theme renders limit="-1",
+            // which max( 1, … ) used to turn into a one-event list.
+            'posts_per_page' => Console_List::per_page( $atts['limit'] ),
             'meta_query' => $meta_query,
             'orderby' => 'meta_value_num',
             'meta_key' => $this->meta_key( 'start_ts' ),
@@ -9244,16 +9321,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $output;
         }
 
+        // A main event with dates is one item with its dates nested inside.
+        $console_list = new Console_List( $this );
         $output .= '<div class="anchor-event-admin-list">';
-        foreach ( $events as $event ) {
-            $output .= $this->render_event_manager_item( $event );
+        foreach ( $console_list->entries( $events, $statuses ) as $entry ) {
+            $output .= $this->render_event_manager_item( $entry['event'], $entry['dates'], $console_list );
         }
         $output .= '</div>';
 
         return $output;
     }
 
-    private function render_event_manager_item( $event ) {
+    /**
+     * @param \WP_Post          $event
+     * @param int[]             $dates        A main event's dates, drawn nested (Console_List).
+     * @param Console_List|null $console_list Renders those dates.
+     */
+    private function render_event_manager_item( $event, array $dates = [], $console_list = null ) {
         $meta = $this->get_meta( $event->ID );
         $registrations = $this->get_registrations( $event->ID, 0 );
         $external = $this->uses_external_signup( $event->ID );
@@ -9279,9 +9363,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // when the daily sweep next runs.
         $status = $this->status_label( $this->get_event_status( $event->ID, $meta ) );
 
-        $output = '<details class="anchor-event-admin-item">';
+        $group  = ! empty( $dates ) && $console_list;
+        $title  = esc_html( \get_the_title( $event->ID ) ?: __( '(untitled)', 'anchor-schema' ) );
+        $output = '<details class="anchor-event-admin-item' . ( $group ? ' anchor-event-admin-item--group' : '' ) . '">';
         $output .= '<summary class="anchor-event-admin-summary">';
-        $output .= '<span class="anchor-event-admin-name">' . esc_html( \get_the_title( $event->ID ) ?: __( '(untitled)', 'anchor-schema' ) ) . '</span>';
+        $output .= $group
+            ? '<a class="anchor-event-admin-name" href="' . esc_url( $edit_url ) . '">' . $title . '</a>'
+                . ' <span class="anchor-event-admin-date-count">' . esc_html( sprintf( _n( '%d date', '%d dates', \count( $dates ), 'anchor-schema' ), \count( $dates ) ) ) . '</span>'
+            : '<span class="anchor-event-admin-name">' . $title . '</span>';
         if ( $date_label ) {
             $output .= ' <span class="anchor-event-admin-date">' . esc_html( $date_label ) . '</span>';
         }
@@ -9292,6 +9381,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output .= '</summary>';
 
         $output .= '<div class="anchor-event-admin-body">';
+        if ( $group ) {
+            $output .= $console_list->render_dates( $dates, $base_url );
+        }
         $output .= '<p class="anchor-event-admin-meta">';
         if ( $status ) {
             $output .= '<strong>' . esc_html__( 'Status', 'anchor-schema' ) . ':</strong> ' . esc_html( $status ) . ' &middot; ';
@@ -9698,6 +9790,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc free" data-step="5">
                 <h3><?php echo esc_html__( 'Email Settings', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'The emails people get when they sign up, and the reminder before the event. Leave one alone and it keeps using the standard wording.', 'anchor-schema' ); ?></p>
+                <?php
+                // A date says whose emails it inherits; a main event says which
+                // of its dates override what (Email_Inheritance).
+                $console_edit_url = function ( $id ) {
+                    return \add_query_arg( [ 'event_action' => 'edit', 'event_id' => (int) $id ], \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] ) );
+                };
+                echo $this->email_inheritance->date_notice( $event_id, $console_edit_url( $this->email_inheritance->main_of( $event_id ) ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside.
+                echo $this->email_inheritance->overrides_summary( $event_id, $console_edit_url ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped inside.
+                ?>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_reminder_offsets"><?php echo esc_html__( 'Reminder offsets (days)', 'anchor-schema' ); ?></label>
@@ -9729,14 +9830,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     <div class="anchor-event-grid">
                         <?php foreach ( $sender_fields as $key => $meta_field ) :
                             list( $label, $input_type, $placeholder ) = $meta_field;
-                            $value = (string) \get_post_meta( $event_id, '_anchor_event_' . $key, true ); ?>
+                            $sender = $this->email_inheritance->field( $event_id, '_anchor_event_' . $key, $placeholder ); ?>
                             <div class="anchor-event-field">
                                 <label for="anchor_event_<?php echo esc_attr( $key ); ?>"><?php echo esc_html( $label ); ?></label>
                                 <input type="<?php echo esc_attr( $input_type ); ?>"
                                     id="anchor_event_<?php echo esc_attr( $key ); ?>"
                                     name="anchor_event_<?php echo esc_attr( $key ); ?>"
-                                    value="<?php echo esc_attr( $value ); ?>"
-                                    placeholder="<?php echo esc_attr( $placeholder ); ?>" />
+                                    value="<?php echo esc_attr( $sender['value'] ); ?>"
+                                    placeholder="<?php echo esc_attr( $sender['placeholder'] ); ?>" data-inheritable="1" />
+                                <?php echo $this->email_inheritance->reset_button( $event_id, 'anchor_event_' . $key, $sender['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                             </div>
                         <?php endforeach; ?>
                     </div>
@@ -9763,8 +9865,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     <p class="anchor-event-hint"><?php echo esc_html__( 'Untick an email to stop this event sending it. All four are on by default.', 'anchor-schema' ); ?></p>
 
                     <?php foreach ( $this->email_type_labels() as $type => $label ) :
-                        $subject_default = $this->email_field_default( $type, 'subject' );
-                        $intro_default   = $this->email_field_default( $type, 'intro' );
+                        // Own value as the value; on a date, the main event's
+                        // value as the placeholder (Email_Inheritance::field()).
+                        $subject_f   = $this->email_inheritance->field( $event_id, '_anchor_event_email_subject_' . $type, $this->email_field_default( $type, 'subject' ) );
+                        $preheader_f = $this->email_inheritance->field( $event_id, '_anchor_event_email_preheader_' . $type, __( 'Shown after the subject in the inbox', 'anchor-schema' ) );
+                        $intro_f     = $this->email_inheritance->field( $event_id, '_anchor_event_email_intro_' . $type, $this->email_field_default( $type, 'intro' ) );
+                        $intro_id    = 'anchor_event_email_intro_' . $type;
                         ?>
                         <?php
                         /**
@@ -9785,15 +9891,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     <label for="anchor_event_email_subject_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Subject', 'anchor-schema' ); ?></label>
                                     <input type="text" id="anchor_event_email_subject_<?php echo esc_attr( $type ); ?>"
                                         name="anchor_event_email_subject_<?php echo esc_attr( $type ); ?>"
-                                        value="<?php echo esc_attr( (string) \get_post_meta( $event_id, '_anchor_event_email_subject_' . $type, true ) ); ?>"
-                                        placeholder="<?php echo esc_attr( $subject_default ); ?>" data-email-field="subject" />
+                                        value="<?php echo esc_attr( $subject_f['value'] ); ?>"
+                                        placeholder="<?php echo esc_attr( $subject_f['placeholder'] ); ?>" data-email-field="subject" data-inheritable="1" />
+                                    <?php echo $this->email_inheritance->reset_button( $event_id, 'anchor_event_email_subject_' . $type, $subject_f['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 
                                     <label for="anchor_event_email_preheader_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Preview text', 'anchor-schema' ); ?></label>
                                     <input type="text" id="anchor_event_email_preheader_<?php echo esc_attr( $type ); ?>"
                                         name="anchor_event_email_preheader_<?php echo esc_attr( $type ); ?>"
-                                        value="<?php echo esc_attr( (string) \get_post_meta( $event_id, '_anchor_event_email_preheader_' . $type, true ) ); ?>"
-                                        placeholder="<?php echo esc_attr__( 'Shown after the subject in the inbox', 'anchor-schema' ); ?>"
-                                        data-email-field="preheader" />
+                                        value="<?php echo esc_attr( $preheader_f['value'] ); ?>"
+                                        placeholder="<?php echo esc_attr( $preheader_f['placeholder'] ); ?>"
+                                        data-email-field="preheader" data-inheritable="1" />
+                                    <?php echo $this->email_inheritance->reset_button( $event_id, 'anchor_event_email_preheader_' . $type, $preheader_f['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                     <p class="anchor-event-hint"><?php echo esc_html__( 'Hidden inside the email itself. Tokens work here, and in the subject.', 'anchor-schema' ); ?></p>
 
                                     <label for="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Opening lines', 'anchor-schema' ); ?></label>
@@ -9805,10 +9913,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                      * instances (one per email type) would load on every event edit.
                                      */
                                     ?>
-                                    <textarea id="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>"
+                                    <?php echo $this->email_inheritance->reset_button( $event_id, $intro_id, $intro_f['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                                    <div class="anchor-event-email-intro-wrap">
+                                    <textarea id="<?php echo esc_attr( $intro_id ); ?>"
                                         class="anchor-event-email-intro"
-                                        name="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>" rows="8"
-                                        placeholder="<?php echo esc_attr( $intro_default ); ?>" data-email-field="intro"><?php echo esc_textarea( (string) \get_post_meta( $event_id, '_anchor_event_email_intro_' . $type, true ) ); ?></textarea>
+                                        name="<?php echo esc_attr( $intro_id ); ?>" rows="8"
+                                        placeholder="<?php echo esc_attr( wp_strip_all_tags( $intro_f['placeholder'] ) ); ?>" data-email-field="intro" data-inheritable="1"><?php echo esc_textarea( $intro_f['value'] ); ?></textarea>
+                                    <?php if ( $intro_f['date'] && $intro_f['placeholder'] !== '' ) : ?>
+                                        <?php // TinyMCE has no placeholder: the inherited wording is shown over the empty editor (email-modal.js) and is never submitted. ?>
+                                        <div class="anchor-event-email-inherited" data-inherited-for="<?php echo esc_attr( $intro_id ); ?>" aria-hidden="true"<?php echo $intro_f['overridden'] ? ' hidden' : ''; ?>><?php echo wp_kses_post( wpautop( $intro_f['placeholder'] ) ); ?></div>
+                                    <?php endif; ?>
+                                    </div>
                                     <p class="anchor-event-hint"><?php echo esc_html__( 'This is the body of the email. Leave it blank to use the site-wide wording shown in grey.', 'anchor-schema' ); ?></p>
                                     <button type="button" class="anchor-event-button-secondary anchor-event-email-starter"
                                         data-starter="<?php echo esc_attr( $this->email_starter_copy( $type ) ); ?>">
@@ -9829,12 +9944,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         $cta_prefix   = '_anchor_event_email_cta' . ( $cta_slot === 2 ? '2' : '' ) . '_';
                                         $cta_defaults = $this->email_cta_defaults( $event_id, $cta_slot );
                                         foreach ( [ 'label', 'url' ] as $cta_field ) {
-                                            $cta_key = $cta_prefix . $cta_field . '_' . $type;
-                                            $cta_set = $event_id && \metadata_exists( 'post', (int) $event_id, $cta_key );
-                                            $cta_fields[ $cta_slot ][ $cta_field ] = [
-                                                'value'       => $cta_set ? (string) \get_post_meta( (int) $event_id, $cta_key, true ) : '',
-                                                'placeholder' => (string) ( $cta_defaults[ $cta_field ] ?? '' ),
-                                            ];
+                                            $cta_fields[ $cta_slot ][ $cta_field ] = $this->email_inheritance->field(
+                                                (int) $event_id,
+                                                $cta_prefix . $cta_field . '_' . $type,
+                                                (string) ( $cta_defaults[ $cta_field ] ?? '' )
+                                            );
                                         }
                                     }
                                     $cta_hint = [
@@ -9847,11 +9961,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         <input type="text" id="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
                                             value="<?php echo esc_attr( $cta_fields[1]['label']['value'] ); ?>"
-                                            placeholder="<?php echo esc_attr( $cta_fields[1]['label']['placeholder'] !== '' ? $cta_fields[1]['label']['placeholder'] : $cta_hint['label'] ); ?>" />
+                                            placeholder="<?php echo esc_attr( $cta_fields[1]['label']['placeholder'] !== '' ? $cta_fields[1]['label']['placeholder'] : $cta_hint['label'] ); ?>" data-inheritable="1" />
+                                        <?php echo $this->email_inheritance->reset_button( $event_id, 'anchor_event_email_cta_label_' . $type, $cta_fields[1]['label']['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                         <input type="url" id="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
                                             value="<?php echo esc_attr( $cta_fields[1]['url']['value'] ); ?>"
-                                            placeholder="<?php echo esc_attr( $cta_fields[1]['url']['placeholder'] !== '' ? $cta_fields[1]['url']['placeholder'] : $cta_hint['url'] ); ?>" />
+                                            placeholder="<?php echo esc_attr( $cta_fields[1]['url']['placeholder'] !== '' ? $cta_fields[1]['url']['placeholder'] : $cta_hint['url'] ); ?>" data-inheritable="1" />
+                                        <?php echo $this->email_inheritance->reset_button( $event_id, 'anchor_event_email_cta_url_' . $type, $cta_fields[1]['url']['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                     </div>
 
                                     <label for="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Second button', 'anchor-schema' ); ?></label>
@@ -9859,11 +9975,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         <input type="text" id="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
                                             value="<?php echo esc_attr( $cta_fields[2]['label']['value'] ); ?>"
-                                            placeholder="<?php echo esc_attr( $cta_hint['label'] ); ?>" />
+                                            placeholder="<?php echo esc_attr( $cta_fields[2]['label']['placeholder'] !== '' ? $cta_fields[2]['label']['placeholder'] : $cta_hint['label'] ); ?>" data-inheritable="1" />
+                                        <?php echo $this->email_inheritance->reset_button( $event_id, 'anchor_event_email_cta2_label_' . $type, $cta_fields[2]['label']['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                         <input type="url" id="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
                                             value="<?php echo esc_attr( $cta_fields[2]['url']['value'] ); ?>"
-                                            placeholder="<?php echo esc_attr( $cta_hint['url'] ); ?>" />
+                                            placeholder="<?php echo esc_attr( $cta_fields[2]['url']['placeholder'] !== '' ? $cta_fields[2]['url']['placeholder'] : $cta_hint['url'] ); ?>" data-inheritable="1" />
+                                        <?php echo $this->email_inheritance->reset_button( $event_id, 'anchor_event_email_cta2_url_' . $type, $cta_fields[2]['url']['overridden'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                     </div>
                                     <p class="anchor-event-hint"><?php echo esc_html__( 'A button shows only when it has both text and a link. Grey text is the default this event falls back to — fill a field in to override it, or clear a filled-in field to remove the button.', 'anchor-schema' ); ?></p>
 
@@ -13736,7 +13854,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param string $status
      * @return string
      */
-    private function status_label( $status ) {
+    public function status_label( $status ) {
         $status = $this->normalize_status( $status );
         $labels = $this->get_status_labels();
         return $labels[ $status ] ?? ucfirst( $status );
@@ -14771,7 +14889,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param int $event_id
      * @return string
      */
-    private function render_registrant_counts( $event_id ) {
+    public function render_registrant_counts( $event_id ) {
         if ( $this->uses_external_signup( (int) $event_id ) ) {
             return ' <span class="anchor-event-admin-count anchor-event-admin-count--external">' . esc_html__( 'External signup form', 'anchor-schema' ) . '</span>';
         }
@@ -16034,7 +16152,8 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // of them can disagree about whether a template carries a doctype.
         $template = '';
         if ( $event_id > 0 ) {
-            $template = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
+            // A date with no template of its own uses its main event's.
+            $template = $this->email_meta( $event_id, '_anchor_event_email_tpl_' . $type );
         }
         if ( $template === '' ) {
             $template = $this->default_email_template( $type );

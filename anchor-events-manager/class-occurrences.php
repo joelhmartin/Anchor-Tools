@@ -35,8 +35,9 @@
  *     timezone, all_day, registration policy, price, gallery, labels,
  *     external_*, organizer_email, reminder_offsets) plus the event meta that
  *     lives outside the schema and so was invisible to the old
- *     "schema minus exclusions" definition: the registration questions and
- *     every per-event email override. inherited_meta_keys() assembles the
+ *     "schema minus exclusions" definition: the registration questions.
+ *     (Email settings are NOT copied: a date reads its main event's at send
+ *     time — Email_Inheritance.) inherited_meta_keys() assembles the
  *     full list and `anchor_events_inherited_meta_keys` filters it.
  *     Only keys the parent has a REAL row for are copied — never a default
  *     get_meta() synthesized at read time — and a key the parent no longer
@@ -205,9 +206,10 @@ class Occurrences {
 
     /**
      * The `_anchor_event_` suffixes of the per-event email overrides, one set
-     * per EMAIL_TEMPLATE_TYPES entry. Assembled in inherited_meta_keys() from
-     * the module's own type list rather than written out, so a fifth email
-     * type inherits the day it is added.
+     * per EMAIL_TEMPLATE_TYPES entry. Enumerated by Email_Inheritance::keys()
+     * from the module's own type list rather than written out, so a fifth
+     * email type inherits (at read time — nothing is copied) the day it is
+     * added.
      *
      * Sender identity (From / Reply-To / Cc / Bcc) is per event, not per
      * type, so it is listed separately.
@@ -1508,10 +1510,8 @@ class Occurrences {
      * child inherits from its parent: the shared schema facts
      * (INHERITED_KEYS) plus the event meta that lives outside
      * get_meta_defaults() and therefore never used to be copied at all —
-     * the registration questions and every per-event email override.
-     *
-     * The email keys are enumerated from Module::EMAIL_TEMPLATE_TYPES rather
-     * than written out, so the list cannot drift from the save handlers.
+     * the registration questions. (Email settings are inherited at READ time
+     * instead; see Email_Inheritance.)
      *
      * @param int $parent_id
      * @param int $child_id
@@ -1550,42 +1550,29 @@ class Occurrences {
 
     /**
      * The inherited keys a CHILD could plausibly have authored for itself: the
-     * registration questions and every per-event email override.
+     * registration questions.
      *
      * They are the destructive half of inheritance. The rest of the allow-list
      * is shared schema fact — a venue, a price — and a date carrying its own is
-     * an anomaly nobody misses. These two families are different: they are
-     * edited on the event screen like any other content, so a child can hold a
-     * question set or an email subject somebody typed ON THAT DATE, and a
-     * parent with no row of its own DELETES it (sync_shared_meta()). That is
-     * the intended semantics — inheritance has to be symmetric or a cleared
-     * parent value could never be cleared on the children — but it must not be
-     * silent, hence the notice.
+     * an anomaly nobody misses. Questions are edited on the event screen like
+     * any other content, so a child can hold a question set somebody typed ON
+     * THAT DATE, and a parent with no row of its own DELETES it
+     * (sync_shared_meta()). That is the intended semantics — inheritance has to
+     * be symmetric or a cleared parent value could never be cleared on the
+     * children — but it must not be silent, hence the notice.
      *
-     * Enumerated from Module::EMAIL_TEMPLATE_TYPES rather than written out, so
-     * the list cannot drift from the save handlers, and shared with
-     * inherited_meta_keys() so "what inherits" and "what the notice is about"
-     * are read from one place.
+     * The per-event email settings are NOT here and are not synced at all any
+     * more (2026-10-20): a date reads its main event's email rows at send time
+     * and its own non-empty row overrides one field — see Email_Inheritance.
+     * EMAIL_OVERRIDE_PER_TYPE / EMAIL_SENDER_KEYS stay defined above because
+     * that resolver enumerates them.
      *
      * @return string[] Prefixed meta keys.
      */
     private function authored_child_meta_keys() {
         // Registration questions: a child asks the same questions as its
         // parent, or a booking on one date collects nothing.
-        $keys = [ Module::QUESTIONS_META ];
-
-        // Per-event email overrides. Without these a child sent the site-wide
-        // confirmation while the parent's own wording sat one post away.
-        foreach ( Module::EMAIL_TEMPLATE_TYPES as $type ) {
-            foreach ( self::EMAIL_OVERRIDE_PER_TYPE as $suffix ) {
-                $keys[] = $this->module->meta_key( 'email_' . $suffix . '_' . $type );
-            }
-        }
-        foreach ( self::EMAIL_SENDER_KEYS as $key ) {
-            $keys[] = $this->module->meta_key( $key );
-        }
-
-        return $keys;
+        return [ Module::QUESTIONS_META ];
     }
 
     /**
@@ -1609,8 +1596,8 @@ class Occurrences {
      * screen. The child then falls back to the same default its parent reads,
      * which is what "inherited" means.
      *
-     * When that delete takes AUTHORED content — a question set or an email
-     * override somebody typed on one date (authored_child_meta_keys()) — the
+     * When that delete takes AUTHORED content — a question set somebody typed
+     * on one date (authored_child_meta_keys()) — the
      * author is told once for the save, through the same notice queue every
      * other save-time message uses. The behaviour is deliberate and stays;
      * what it must not be is invisible, which is how a date can quietly stop

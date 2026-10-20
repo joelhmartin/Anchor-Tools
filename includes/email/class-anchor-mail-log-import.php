@@ -30,7 +30,14 @@ if ( ! class_exists( 'Anchor_Mail_Log_Import' ) ) {
 
         public static function wpml_exists() {
             global $wpdb;
-            return self::wpml_table() === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', self::wpml_table() ) );
+            // SHOW TABLES omits temporary tables on MySQL 8; a zero-row SELECT sees both kinds.
+            $table  = self::wpml_table();
+            $prev   = $wpdb->suppress_errors( true );
+            $wpdb->last_error = '';
+            $wpdb->query( "SELECT 1 FROM `{$table}` LIMIT 0" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $exists = '' === $wpdb->last_error;
+            $wpdb->suppress_errors( $prev );
+            return $exists;
         }
 
         public static function is_excluded( $subject ) {

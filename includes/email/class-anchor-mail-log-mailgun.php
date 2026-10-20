@@ -78,13 +78,14 @@ if ( ! class_exists( 'Anchor_Mail_Log_Mailgun' ) ) {
 
             // Mailgun signs only timestamp+token, so a captured request could be replayed
             // with a different body: accept each token once inside the skew window.
-            // add_option() is a unique insert, so two concurrent deliveries of one token
+            // INSERT IGNORE on the unique option_name is atomic, so two concurrent deliveries of one token
             // cannot both win. A seen token answers 200/applied:false: Mailgun retries
             // non-2xx, and a legitimate retry must not be refused forever.
             global $wpdb;
             $name = 'anchor_mg_tok_' . md5( (string) $sig['token'] );
             $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s AND option_value < %d", $wpdb->esc_like( 'anchor_mg_tok_' ) . '%', time() - self::MAX_SKEW - 300 ) ); // phpcs:ignore
-            if ( ! add_option( $name, time(), '', false ) ) {
+            $claimed = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, (string) time() ) ); // phpcs:ignore
+            if ( 1 !== (int) $claimed ) {
                 return new WP_REST_Response( [ 'ok' => true, 'applied' => false ], 200 );
             }
 

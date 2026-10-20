@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.38.3
+Stable tag: 3.39.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,13 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.39.0 =
+* Events: every email sent to a registrant is logged on their seat (wp-admin roster and front-end console) with delivery, open and click status from Mailgun webhooks, a View link and a Resend button. WooCommerce customer emails for event orders are logged too.
+* Events: `wp anchor-events email-log import-wpml` backfills a registrant's past emails from WP Mail Logging (dry-run by default).
+* Events: dates inherit the main event's emails; an empty field on a date means "use the main event's", typing overrides that field, and a reset icon clears it. Saving the main event no longer overwrites or deletes a date's email settings.
+* Events: the console lists a main event as one expandable item with its dates nested; `limit="-1"` lists every event.
+* Events: Delete, Cancel seat and gallery Clear all use a click-twice confirm instead of a browser dialog.
 
 = 3.38.3 =
 * Events: attendee questions can be marked "Include in admin email"; ticked answers are listed as "Question: answer" under each attendee in the admin and organizer notifications.

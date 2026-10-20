@@ -47,29 +47,37 @@ class Console_List {
      */
     public function entries( array $events, array $statuses ) {
         $occurrences = $this->module->occurrences;
-        $listed      = [];
+
+        // First decide what each listed main event nests. A date is hidden at
+        // the top level ONLY when it is actually drawn under its main event;
+        // children_any_status() returns one canonical child per occurrence key
+        // and skips a child with no key, so a duplicate-key date, a keyless
+        // one, or a child of an event that is no longer a group parent must
+        // stay a top-level item or it would be reachable nowhere.
+        $nested_by_main = [];
+        $nested         = [];
         foreach ( $events as $event ) {
-            $listed[ (int) $event->ID ] = true;
+            $id = (int) $event->ID;
+            if ( ! $occurrences || ! $occurrences->is_group_parent( $id ) ) {
+                continue;
+            }
+            $dates = [];
+            foreach ( $occurrences->children_any_status( $id ) as $date_id ) {
+                if ( \in_array( \get_post_status( $date_id ), $statuses, true ) ) {
+                    $dates[]                   = (int) $date_id;
+                    $nested[ (int) $date_id ] = true;
+                }
+            }
+            $nested_by_main[ $id ] = $dates;
         }
 
         $entries = [];
         foreach ( $events as $event ) {
             $id = (int) $event->ID;
-            if ( $occurrences && $occurrences->is_group_child( $id ) ) {
-                $main = (int) $occurrences->parent_of( $id );
-                if ( $main > 0 && isset( $listed[ $main ] ) ) {
-                    continue; // Drawn inside its main event's item.
-                }
+            if ( isset( $nested[ $id ] ) ) {
+                continue; // Drawn inside its main event's item.
             }
-            $dates = [];
-            if ( $occurrences && $occurrences->is_group_parent( $id ) ) {
-                foreach ( $occurrences->children_any_status( $id ) as $date_id ) {
-                    if ( \in_array( \get_post_status( $date_id ), $statuses, true ) ) {
-                        $dates[] = (int) $date_id;
-                    }
-                }
-            }
-            $entries[] = [ 'event' => $event, 'dates' => $dates ];
+            $entries[] = [ 'event' => $event, 'dates' => $nested_by_main[ $id ] ?? [] ];
         }
         return $entries;
     }

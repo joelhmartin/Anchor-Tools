@@ -368,14 +368,16 @@
     var until = $el.data('armedUntil');
     if(until && Date.now() < until){
       window.clearTimeout($el.data('armedTimer'));
-      $el.removeData('armedUntil').removeClass('is-armed').text($el.data('armedOriginal'));
+      $el.removeData('armedUntil').removeClass('is-armed').html($el.data('armedOriginal'));
       return true;
     }
-    if(!$el.data('armedOriginal')){ $el.data('armedOriginal', $el.text()); }
+    // innerHTML, not text(): a control's own markup (an icon, a <strong>)
+    // must come back intact after the armed label.
+    if(!$el.data('armedOriginal')){ $el.data('armedOriginal', $el.html()); }
     $el.text(label).addClass('is-armed').data('armedUntil', Date.now() + 4000);
     window.clearTimeout($el.data('armedTimer'));
     $el.data('armedTimer', window.setTimeout(function(){
-      $el.removeData('armedUntil').removeClass('is-armed').text($el.data('armedOriginal'));
+      $el.removeData('armedUntil').removeClass('is-armed').html($el.data('armedOriginal'));
     }, 4000));
     return false;
   }

@@ -118,4 +118,60 @@ class Test_Events_Console_Groups extends Anchor_Events_TestCase {
 		);
 		$this->assertStringNotContainsString( 'Nov 20, 2027</a> has its own', $html, 'A date with no overrides is not listed.' );
 	}
+
+	/** How many times the console links to this event's editor. */
+	private function edit_links( $html, $id ) {
+		return substr_count( $html, 'event_action=edit&#038;event_id=' . $id . '"' );
+	}
+
+	/** A child of $main that children_any_status() will not return as canonical. */
+	private function stray_child( $main, $occurrence_key ) {
+		$id = $this->make_event( [
+			'title'          => 'Stray date',
+			'group_role'     => 'child',
+			'group_id'       => $main,
+			'occurrence_key' => $occurrence_key,
+			'start_date'     => '2027-11-13',
+			'start_time'     => '09:00',
+			'start_ts'       => strtotime( '2027-11-13 09:00 UTC' ) + 60,
+		] );
+		return $id;
+	}
+
+	/** A second child for an occurrence key that already has one: never hidden. */
+	public function test_duplicate_key_child_stays_reachable() {
+		list( $main, $dates ) = $this->group( 1 );
+		$key = $this->module()->occurrences->stored_occurrence_key( $dates[0] );
+		$this->assertNotSame( '', $key, 'Precondition: the canonical date has a key.' );
+		$dupe = $this->stray_child( $main, $key );
+		$this->assertNotContains( $dupe, $this->module()->occurrences->children_any_status( $main ), 'Precondition: the duplicate is not the canonical child.' );
+
+		$html = $this->render_list();
+
+		$this->assertSame( 1, $this->edit_links( $html, $dupe ), 'The duplicate is listed exactly once.' );
+		$this->assertSame( 1, $this->edit_links( $html, $dates[0] ) );
+	}
+
+	/** A child with no occurrence key is skipped by children_any_status(): never hidden. */
+	public function test_empty_key_child_stays_reachable() {
+		list( $main, $dates ) = $this->group( 1 );
+		$keyless = $this->stray_child( $main, '' );
+		$this->assertNotContains( $keyless, $this->module()->occurrences->children_any_status( $main ) );
+
+		$html = $this->render_list();
+
+		$this->assertSame( 1, $this->edit_links( $html, $keyless ) );
+		$this->assertSame( 1, $this->edit_links( $html, $dates[0] ) );
+	}
+
+	/** A child whose main event is no longer a group parent is listed on its own. */
+	public function test_child_of_a_demoted_parent_stays_reachable() {
+		list( $main, $dates ) = $this->group( 1 );
+		update_post_meta( $main, '_anchor_event_group_role', '' );
+
+		$html = $this->render_list();
+
+		$this->assertSame( 1, $this->edit_links( $html, $dates[0] ) );
+		$this->assertSame( 2, $this->count_items( $html ) );
+	}
 }

@@ -424,6 +424,9 @@ class Module {
         require_once $dir . 'class-admin-email-answers.php';
         require_once $dir . 'class-registrations.php';
         require_once $dir . 'class-email-log.php';
+        if ( \defined( 'WP_CLI' ) && \WP_CLI ) {
+            require_once $dir . 'class-email-log-import.php';
+        }
         require_once $dir . 'class-roster.php';
         require_once $dir . 'class-ticket-types.php';
         require_once $dir . 'class-series.php';

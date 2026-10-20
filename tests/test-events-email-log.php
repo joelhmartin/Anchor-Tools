@@ -118,7 +118,9 @@ class Test_Events_Email_Log extends Anchor_Events_TestCase {
 	}
 
 	public function test_signing_key_saved_not_echoed() {
-		$this->module()->sanitize_settings( [ 'mailgun_signing_key' => 'key-abc' ] );
+		$out = $this->module()->sanitize_settings( [ 'mailgun_signing_key' => 'key-abc' ] );
+		$this->assertArrayNotHasKey( 'mailgun_signing_key', $out );
+		$this->assertStringNotContainsString( 'key-abc', (string) wp_json_encode( $out ) );
 		$this->assertSame( 'key-abc', Anchor_Mail_Log_Mailgun::signing_key() );
 		$this->assertStringNotContainsString( 'key-abc', (string) wp_json_encode( get_option( Module::OPTION_KEY ) ) );
 		ob_start();

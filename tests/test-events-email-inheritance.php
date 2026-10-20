@@ -86,6 +86,16 @@ class Test_Events_Email_Inheritance extends Anchor_Events_TestCase {
 		return (string) $method->invoke( $this->module(), $event_id );
 	}
 
+	public function test_date_label_uses_the_event_timezone() {
+		update_option( 'timezone_string', 'UTC' );
+		update_option( Module::OPTION_KEY, [ 'timezone_mode' => 'event' ], false );
+		$this->module()->clear_caches();
+		$id = $this->make_event( [ 'timezone' => 'America/Toronto' ] );
+		$ts = ( new DateTimeImmutable( '2026-11-13 21:00', new DateTimeZone( 'America/Toronto' ) ) )->getTimestamp();
+		update_post_meta( $id, $this->module()->meta_key( 'start_ts' ), $ts );
+		$this->assertSame( 'Nov 13, 2026', $this->inheritance()->date_label( $id ) );
+	}
+
 	/* ------------------------------------------------------------------ resolver */
 
 	public function test_date_without_row_inherits_main() {

@@ -270,10 +270,11 @@ class Email_Inheritance {
         return $lines ? '<ul class="anchor-event-email-overrides">' . \implode( '', $lines ) . '</ul>' : '';
     }
 
-    /** "Nov 13, 2026" for a date, from its start timestamp (site timezone). */
+    /** "Nov 13, 2026" for a date, from its start timestamp in the event's own timezone. */
     public function date_label( $date_id ) {
         $ts = (int) \get_post_meta( (int) $date_id, $this->module->meta_key( 'start_ts' ), true );
-        return $ts > 0 ? \wp_date( 'M j, Y', $ts ) : \html_entity_decode( \get_the_title( (int) $date_id ), ENT_QUOTES, 'UTF-8' );
+        $tz = $this->module->event_timezone( $this->module->get_meta( (int) $date_id ) );
+        return $ts > 0 ? \wp_date( 'M j, Y', $ts, $tz ) : \html_entity_decode( \get_the_title( (int) $date_id ), ENT_QUOTES, 'UTF-8' );
     }
 
     /** "Confirmation subject", "From email", … for one key. */

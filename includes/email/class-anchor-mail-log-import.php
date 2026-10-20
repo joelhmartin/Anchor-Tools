@@ -163,13 +163,13 @@ if ( ! class_exists( 'Anchor_Mail_Log_Import' ) ) {
         }
 
         /**
-         * Addresses in a WPML receiver value (comma separated, each possibly `Name <addr>`).
+         * Addresses in a WPML receiver value (separated by commas, semicolons, real or literal backslash-n newlines; each possibly `Name <addr>`).
          *
          * @return string[] lowercased.
          */
         public static function receiver_addresses( $receiver ) {
             $out = [];
-            foreach ( explode( ',', (string) $receiver ) as $part ) {
+            foreach ( preg_split( '/(?:\\\\n|[\r\n,;])+/', html_entity_decode( (string) $receiver, ENT_QUOTES, 'UTF-8' ) ) as $part ) {
                 $part = trim( $part );
                 if ( preg_match( '/<([^>]+)>/', $part, $m ) ) {
                     $part = $m[1];

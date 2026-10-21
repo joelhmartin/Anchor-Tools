@@ -20,7 +20,7 @@ defined( 'ABSPATH' ) || exit;
 
 class Email_Preview {
 
-    const AJAX_ACTION = 'anchor_events_email_preview';
+    const AJAX_ACTION = 'anchor_events_catalog_email_view'; // Not anchor_events_email_preview: that is the template builder's "Preview with real data".
 
     /** @var Module */
     private $module;

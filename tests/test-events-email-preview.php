@@ -303,4 +303,34 @@ class Test_Events_Email_Preview extends WP_Ajax_UnitTestCase {
 		$this->assertCount( 1, Anchor_Mail_Log::query( [ 'seat_id' => $free ] ) );
 		$this->assertSame( 'events.confirmation', Anchor_Mail_Log::query( [ 'seat_id' => $free ] )[0]['kind'] );
 	}
+
+	/**
+	 * The template builder's "Preview with real data" (wp_ajax_anchor_events_email_preview)
+	 * through the real AJAX hook, as the browser calls it: the catalog View must not
+	 * be registered on the same action (it was, and answered 404 first).
+	 */
+	public function test_builder_real_data_preview_of_a_reminder_shows_the_event_title() {
+		$event_id = $this->make_event( [ 'title' => 'E2E Test Event' ] );
+		$_POST    = [
+			'action'       => 'anchor_events_email_preview',
+			'nonce'        => wp_create_nonce( 'anchor_events_email_preview' ),
+			'event_id'     => $event_id,
+			'type'         => 'reminder',
+			'template_b64' => base64_encode( 'E2E-MARKER-1 <h1>{event_title}</h1>{intro}' ),
+		];
+		$this->_last_response = '';
+		try {
+			$this->_handleAjax( 'anchor_events_email_preview' );
+		} catch ( WPAjaxDieContinueException $e ) {
+			// Expected.
+		} catch ( WPAjaxDieStopException $e ) {
+			// Expected.
+		}
+		$out = json_decode( (string) $this->_last_response, true );
+		$this->assertIsArray( $out, (string) $this->_last_response );
+		$this->assertTrue( $out['success'] );
+		$this->assertStringContainsString( 'E2E Test Event', $out['data']['html'] );
+		$this->assertStringContainsString( 'E2E-MARKER-1', $out['data']['html'] );
+		$this->assertNotSame( 'anchor_events_email_preview', Email_Preview::AJAX_ACTION );
+	}
 }

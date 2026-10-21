@@ -4,14 +4,15 @@
  *
  * Rows, in order: Order receipt (WooCommerce seats only), Registration
  * confirmation, one Reminder per configured offset, and Cancellation notice
- * (cancelled/refunded seats only). Each row says whether that email has been
- * sent (latest logged send, or the scheduler's own marker when nothing was
- * logged), its delivery/open/click state from the mail log, a View link to the
- * latest copy, and a Send button that runs the module's own sender for today's
- * version of the email.
+ * (cancelled/refunded seats only). Each row says whether THIS system has sent
+ * that email (a live or resend mail-log row; imported history from before the
+ * Events Manager, and the scheduler's own markers, never count), its
+ * delivery/open/click state from that send, a View link to the email as it
+ * would be sent now (Email_Preview, never a stored copy), and a Send button
+ * that runs the module's own sender for today's version of the email.
  *
- * Built on the generic mail log (Anchor_Mail_Log::query(), the view endpoint,
- * the arm-then-confirm script and its CSS); everything events-specific lives here.
+ * Built on the generic mail log (Anchor_Mail_Log::query(), the arm-then-confirm
+ * script and its CSS); everything events-specific lives here.
  *
  * @package Anchor\Events
  */
@@ -19,6 +20,8 @@
 namespace Anchor\Events;
 
 defined( 'ABSPATH' ) || exit;
+
+require_once __DIR__ . '/class-email-preview.php';
 
 class Email_Catalog {
 
@@ -30,14 +33,21 @@ class Email_Catalog {
     const CANCELLATION_KINDS = [ 'events.cancellation' ];
     const REMINDER_KIND      = 'events.reminder:';
 
+    /** Mail-log sources that are sends by this system. 'import' (WP Mail Logging backfill) is not. */
+    const OWN_SOURCES = [ 'live', 'resend' ];
+
     /** The WooCommerce email the Order receipt row sends. */
     const WC_RECEIPT_EMAIL = 'WC_Email_Customer_Processing_Order';
 
     /** @var Module */
     private $module;
 
+    /** @var Email_Preview The View endpoint. */
+    public $preview;
+
     public function __construct( Module $module ) {
-        $this->module = $module;
+        $this->module  = $module;
+        $this->preview = new Email_Preview( $module );
         \add_action( 'wp_ajax_' . self::AJAX_ACTION, [ $this, 'ajax_send' ] );
     }
 
@@ -49,7 +59,7 @@ class Email_Catalog {
      * @param int   $event_id
      * @param array $seat Seat DTO (Registrations::get_seat()).
      * @return array[] key, label, off (reason text, '' when on), sent (log row|null),
-     *                 failed (log row|null), marker_ts (int).
+     *                 failed (log row|null). Only this system's own sends count.
      */
     public function entries( $event_id, array $seat ) {
         $event_id = (int) $event_id;
@@ -59,35 +69,45 @@ class Email_Catalog {
             'seat_or_order' => [ $seat_id, $order_id, $event_id ],
             'audience'      => 'attendee',
         ] ) : [];
+        $logged   = \array_values( \array_filter( $logged, static function ( $row ) {
+            return \in_array( (string) ( $row['source'] ?? '' ), self::OWN_SOURCES, true );
+        } ) );
         $settings = $this->module->get_settings();
         $external = $this->module->uses_external_signup( $event_id );
         $out      = [];
 
         if ( $order_id > 0 ) {
-            $wc    = $this->wc_receipt_email();
+            $wc    = self::wc_receipt_email();
             $out[] = $this->entry( 'receipt', \__( 'Order receipt', 'anchor-schema' ), $logged, self::RECEIPT_KINDS,
                 $this->receipt_off_reason( $order_id, $wc ) );
         }
 
+        // A WooCommerce seat's confirmation is the order's buyer confirmation
+        // (events.wc_confirmation), which has no site-wide notify_user switch.
+        $buyer = self::buyer_order_id( $this->module, $seat ) > 0;
         $out[] = $this->entry( 'confirmation', \__( 'Registration confirmation', 'anchor-schema' ), $logged, self::CONFIRMATION_KINDS,
-            $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'confirmation', $external, ! empty( $settings['notify_user'] ) ) );
+            $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'confirmation', $external, $buyer || ! empty( $settings['notify_user'] ) ) );
 
-        $start   = (int) ( $this->module->get_meta( $event_id )['start_ts'] ?? 0 );
-        $markers = $start > 0 ? $this->module->reminder_markers( $seat_id, $start ) : [];
-        $off     = $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'reminder', $external, true );
+        $off = $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'reminder', $external, true );
         foreach ( $this->module->effective_offsets( $event_id, $settings ) as $offset ) {
-            $entry              = $this->entry( 'reminder:' . $offset, self::reminder_label( $offset ), $logged, [ self::REMINDER_KIND . $offset ], $off );
-            $entry['marker_ts'] = \max( 0, (int) ( $markers[ $offset ] ?? 0 ) ); // 0 = superseded, -1 = abandoned: neither was sent.
-            $out[]              = $entry;
+            $out[] = $this->entry( 'reminder:' . $offset, self::reminder_label( $offset ), $logged, [ self::REMINDER_KIND . $offset ], $off );
         }
 
         if ( \in_array( (string) ( $seat['status'] ?? '' ), Registrations::TERMINAL_STATUSES, true ) ) {
-            $entry              = $this->entry( 'cancellation', \__( 'Cancellation notice', 'anchor-schema' ), $logged, self::CANCELLATION_KINDS,
+            $out[] = $this->entry( 'cancellation', \__( 'Cancellation notice', 'anchor-schema' ), $logged, self::CANCELLATION_KINDS,
                 $this->off_reason( $event_id, 'cancellation', $external, ! empty( $settings['notify_cancellation'] ) ) );
-            $entry['marker_ts'] = \max( 0, (int) \get_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, true ) );
-            $out[]              = $entry;
         }
         return $out;
+    }
+
+    /**
+     * The order whose buyer confirmation IS this seat's Registration
+     * confirmation in the sequence (WooCommerce::send_customer_confirmation()),
+     * or 0 for a seat that did not come from a WooCommerce order.
+     */
+    public static function buyer_order_id( Module $module, array $seat ) {
+        $order_id = (int) ( $seat['order_id'] ?? 0 );
+        return ( $order_id > 0 && $module->woocommerce && \function_exists( 'wc_get_order' ) && \wc_get_order( $order_id ) ) ? $order_id : 0;
     }
 
     /** "Reminder · 7 days before" / "Reminder · 1 day before". */
@@ -125,7 +145,6 @@ class Email_Catalog {
             'off'       => (string) $off,
             'sent'      => $sent,
             'failed'    => $failed,
-            'marker_ts' => 0,
         ];
     }
 
@@ -160,8 +179,8 @@ class Email_Catalog {
         return $site_on ? '' : \__( 'Off for this site', 'anchor-schema' );
     }
 
-    /** @return \WC_Email|null */
-    private function wc_receipt_email() {
+    /** @return \WC_Email|null The WooCommerce email the Order receipt row sends and previews. */
+    public static function wc_receipt_email() {
         if ( ! \function_exists( 'WC' ) || ! \is_object( \WC() ) ) {
             return null;
         }
@@ -197,8 +216,6 @@ class Email_Catalog {
         $sent = $entry['sent'];
         if ( $sent ) {
             $status = \sprintf( /* translators: %s: date and time */ \__( 'Sent %s', 'anchor-schema' ), \Anchor_Mail_Log_Admin::when( $sent['created_at'] ) );
-        } elseif ( $entry['marker_ts'] > 0 ) {
-            $status = \sprintf( /* translators: %s: date and time */ \__( 'Sent %s', 'anchor-schema' ), \wp_date( 'M j, g:i A', (int) $entry['marker_ts'] ) );
         } elseif ( $entry['failed'] ) {
             $status = \sprintf( /* translators: %s: date and time */ \__( 'Failed %s', 'anchor-schema' ), \Anchor_Mail_Log_Admin::when( $entry['failed']['created_at'] ) );
         } else {
@@ -213,12 +230,12 @@ class Email_Catalog {
             $email .= '<br><span class="anchor-mail-log__to">' . \esc_html( $sent['recipient'] ) . '</span>';
         }
 
-        $actions = $sent ? '<a href="' . \esc_url( \Anchor_Mail_Log_Admin::view_url( (int) $sent['id'] ) ) . '" target="_blank" rel="noopener">' . \esc_html__( 'View', 'anchor-schema' ) . '</a>' : '';
+        $actions = '<a href="' . \esc_url( Email_Preview::url( $event_id, $seat_id, $entry['key'] ) ) . '" target="_blank" rel="noopener" title="' . \esc_attr__( 'This email as it would be sent to this registrant now', 'anchor-schema' ) . '">' . \esc_html__( 'View', 'anchor-schema' ) . '</a>';
         if ( '' !== $entry['off'] ) {
             $actions .= '<span class="anchor-mail-log__off">' . \esc_html( $entry['off'] ) . '</span>';
         } else {
             $args     = [ 'event_id' => (int) $event_id, 'seat_id' => (int) $seat_id, 'email' => $entry['key'] ];
-            $label    = ( $sent || $entry['marker_ts'] > 0 ) ? \__( 'Send again', 'anchor-schema' ) : \__( 'Send', 'anchor-schema' );
+            $label    = $sent ? \__( 'Send again', 'anchor-schema' ) : \__( 'Send', 'anchor-schema' );
             $actions .= '<button type="button" class="button anchor-mail-log__send" data-mail-action="' . \esc_attr( self::AJAX_ACTION ) . '" data-mail-args="' . \esc_attr( (string) \wp_json_encode( $args ) ) . '">' . \esc_html( $label ) . '</button>';
         }
         $actions .= '<span class="anchor-mail-log__msg" role="status"></span>';
@@ -243,6 +260,9 @@ class Email_Catalog {
         $event_id = (int) $event_id;
         if ( 'receipt' === $key ) {
             return $this->send_receipt( (int) $seat['order_id'] );
+        }
+        if ( 'confirmation' === $key && self::buyer_order_id( $this->module, $seat ) > 0 ) {
+            return $this->module->woocommerce->resend_customer_confirmation( (int) $seat['order_id'], $event_id );
         }
         if ( 'confirmation' === $key ) {
             return $this->module->send_confirmation_email(
@@ -269,7 +289,7 @@ class Email_Catalog {
      * note); it changes no status or stock. Email_Log::wc_begin() logs it.
      */
     private function send_receipt( $order_id ) {
-        $wc = $this->wc_receipt_email();
+        $wc = self::wc_receipt_email();
         if ( ! $wc || $order_id <= 0 || ! \wc_get_order( $order_id ) ) {
             return Outcome::skipped( 'no_order' );
         }

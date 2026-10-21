@@ -85,16 +85,6 @@ class Test_Events_Email_Log extends Anchor_Events_TestCase {
 		$this->assertCount( 0, $this->rows() );
 	}
 
-	public function test_events_capability_gates_rows() {
-		$cap  = Module::events_capability();
-		$user = self::factory()->user->create( [ 'role' => 'subscriber' ] );
-		get_user_by( 'id', $user )->add_cap( $cap );
-		wp_set_current_user( $user );
-		$this->assertFalse( current_user_can( 'manage_options' ) );
-		$this->assertTrue( Anchor_Mail_Log_Admin::can_manage( [ 'context' => 'events' ] ) );
-		$this->assertFalse( Anchor_Mail_Log_Admin::can_manage( [ 'context' => 'other' ] ) );
-	}
-
 	public function test_signing_key_saved_not_echoed() {
 		$out = $this->module()->sanitize_settings( [ 'mailgun_signing_key' => 'key-abc' ] );
 		$this->assertArrayNotHasKey( 'mailgun_signing_key', $out );

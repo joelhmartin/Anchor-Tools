@@ -1,6 +1,6 @@
 <?php
 /**
- * Mail log admin: view endpoint, cell helpers and assets.
+ * Mail log admin: sign-in token stripping, cell helpers and assets.
  *
  * @package Anchor_Tools\Tests
  */
@@ -67,53 +67,13 @@ class Test_Mail_Log_Admin extends WP_Ajax_UnitTestCase {
 		);
 	}
 
-	private function ajax( $action ) {
-		$this->_last_response = '';
-		try {
-			$this->_handleAjax( $action );
-		} catch ( WPAjaxDieContinueException $e ) {
-			// Expected.
-		} catch ( WPAjaxDieStopException $e ) {
-			return $e->getMessage();
-		}
-		return $this->_last_response;
-	}
-
-	public function test_view_requires_capability() {
-		$old               = $this->seed();
-		$this->_setRole( 'subscriber' );
-		$_GET['id']        = $old;
-		$_GET['_wpnonce']  = wp_create_nonce( 'anchor_mail_log' );
-		$out               = $this->ajax( 'anchor_mail_log_view' );
-		$this->assertStringNotContainsString( 'Hello Pat', $out );
-	}
-
-	public function test_view_returns_html_for_admin() {
-		$old               = $this->seed();
-		$_GET['id']        = $old;
-		$_GET['_wpnonce']  = wp_create_nonce( 'anchor_mail_log' );
-		$out               = $this->ajax( 'anchor_mail_log_view' );
-		$this->assertStringContainsString( 'Hello Pat', $out );
-	}
-
-	public function test_view_strips_sign_in_token_but_not_stored_row() {
-		$html              = '<a href="https://x.test/live/?aek=abc&amp;x=1">Join</a> <a href=\'https://x.test/live/?aek=zzz\'>J2</a>';
-		$old               = $this->seed( [ 'html' => $html ] );
-		$_GET['id']        = $old;
-		$_GET['_wpnonce']  = wp_create_nonce( 'anchor_mail_log' );
-		$out               = $this->ajax( 'anchor_mail_log_view' );
+	public function test_strip_sign_in_tokens_removes_aek_only() {
+		$html = '<a href="https://x.test/live/?aek=abc&amp;x=1">Join</a> <a href=\'https://x.test/live/?aek=zzz\'>J2</a> <a href="https://x.test/?a=1">Plain</a>';
+		$out  = Anchor_Mail_Log_Admin::strip_sign_in_tokens( $html );
 		$this->assertStringNotContainsString( 'aek', $out );
 		$this->assertStringContainsString( 'https://x.test/live/?x=1', $out );
 		$this->assertStringContainsString( "href='https://x.test/live/'", $out );
-		$this->assertSame( $html, Anchor_Mail_Log::get( $old )['html'], 'Stored row is untouched.' );
-	}
-
-	public function test_filter_can_grant_manage() {
-		$this->_setRole( 'subscriber' );
-		$this->assertFalse( Anchor_Mail_Log_Admin::can_manage( [] ) );
-		add_filter( 'anchor_mail_log_can_manage', '__return_true' );
-		$this->assertTrue( Anchor_Mail_Log_Admin::can_manage( [] ) );
-		remove_filter( 'anchor_mail_log_can_manage', '__return_true' );
+		$this->assertStringContainsString( 'href="https://x.test/?a=1"', $out );
 	}
 
 	public function test_cell_helpers() {
@@ -123,7 +83,6 @@ class Test_Mail_Log_Admin extends WP_Ajax_UnitTestCase {
 		$this->assertSame( [ '—', '' ], Anchor_Mail_Log_Admin::delivery( [ 'status' => 'sent' ] ) );
 		$this->assertSame( '—', Anchor_Mail_Log_Admin::engagement( null, 0 ) );
 		$this->assertStringContainsString( '(×2)', Anchor_Mail_Log_Admin::engagement( '2026-10-20 20:04:00', 2 ) );
-		$this->assertStringContainsString( 'action=anchor_mail_log_view', Anchor_Mail_Log_Admin::view_url( 5 ) );
 	}
 
 	public function test_enqueue_registers_assets_and_localizes_url() {

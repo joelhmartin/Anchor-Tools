@@ -34,13 +34,12 @@ class Email_Log {
             'events.reminder'         => \__( 'Event reminder', 'anchor-schema' ),
             'events.cancellation'     => \__( 'Cancellation notice', 'anchor-schema' ),
             'events.roster'           => \__( 'Roster to organizer', 'anchor-schema' ),
-            'events.wc_confirmation'  => \__( 'Order confirmation (events)', 'anchor-schema' ),
+            'events.wc_confirmation'  => \__( 'Registration confirmation', 'anchor-schema' ),
             'events.organizer_notice' => \__( 'Organizer notice', 'anchor-schema' ),
-            'wc.customer_processing_order' => \__( 'Order received (WooCommerce)', 'anchor-schema' ),
-            'wc.customer_completed_order'  => \__( 'Order complete (WooCommerce)', 'anchor-schema' ),
-            'wc.customer_invoice'     => \__( 'Invoice (WooCommerce)', 'anchor-schema' ),
-            'legacy.funnelkit'        => \__( 'Course details (old FunnelKit email)', 'anchor-schema' ),
-            'imported'                => \__( 'Imported email', 'anchor-schema' ),
+            'wc.customer_processing_order' => \__( 'Order received', 'anchor-schema' ),
+            'wc.customer_completed_order'  => \__( 'Order complete', 'anchor-schema' ),
+            'wc.customer_invoice'     => \__( 'Invoice', 'anchor-schema' ),
+            'legacy.funnelkit'        => \__( 'Course details', 'anchor-schema' ),
         ];
     }
 

@@ -113,7 +113,7 @@ class Test_Events_Email_Log extends Anchor_Events_TestCase {
 
 	public function test_kind_labels_filter_includes_events_kinds() {
 		$labels = apply_filters( 'anchor_mail_log_kind_labels', [] );
-		$this->assertSame( 'Order received (WooCommerce)', $labels['wc.customer_processing_order'] );
+		$this->assertSame( 'Order received', $labels['wc.customer_processing_order'] );
 		$this->assertArrayHasKey( 'events.confirmation', $labels );
 	}
 

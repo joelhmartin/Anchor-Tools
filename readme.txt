@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.39.3
+Stable tag: 3.39.4
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.39.4 =
+* Events: the console Registered list has a search box that matches any column (name, email, phone, status, ticket, answers, source, order, date; several words narrow it) and click-to-sort column headers (Party sorts as a number).
 
 = 3.39.3 =
 * Emails panel: View shows the email as it would be sent now; Sent counts only emails this system sent.

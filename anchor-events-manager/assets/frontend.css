@@ -2425,3 +2425,83 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
 }
 .anchor-event-email-devices .anchor-email-device:focus-visible{ outline:2px solid currentColor; outline-offset:2px; }
 .anchor-event-email-frame.is-device-frame{ border:1px solid var(--anchor-event-border,#c9ccd1); box-shadow:0 1px 6px rgba(0,0,0,.12); background:#fff; }
+
+/* Registered list: search + sortable headers (assets/roster-table.js). */
+.anchor-roster-fe-filter{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px 14px;
+  margin:0 0 12px;
+}
+.anchor-roster-fe-filter .anchor-roster-fe-search{
+  flex:1 1 320px;
+  max-width:520px;
+  min-height:0;
+  margin:0;
+  padding:9px 12px;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:8px;
+  font-size:14px;
+  line-height:1.4;
+  background:#fff;
+}
+.anchor-roster-fe-count{
+  font-size:13px;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-roster-fe-table thead th[data-sort]{
+  padding:0;
+}
+.anchor-roster-fe-table .anchor-roster-fe-sort{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  width:100%;
+  margin:0;
+  padding:10px 12px;
+  border:0;
+  border-radius:0;
+  background:none;
+  box-shadow:none;
+  color:inherit;
+  font:inherit;
+  letter-spacing:inherit;
+  text-transform:inherit;
+  text-align:left;
+  cursor:pointer;
+  min-height:0;
+}
+.anchor-roster-fe-table .anchor-roster-fe-sort:hover{
+  color:var(--anchor-event-text,#111827);
+}
+.anchor-roster-fe-table .anchor-roster-fe-sort:focus-visible{
+  outline:2px solid currentColor;
+  outline-offset:-2px;
+}
+.anchor-roster-fe-table .anchor-roster-fe-sort::after{
+  content:"";
+  width:0;
+  height:0;
+  border-left:4px solid transparent;
+  border-right:4px solid transparent;
+  border-top:5px solid currentColor;
+  opacity:.25;
+}
+.anchor-roster-fe-table th[aria-sort="ascending"] .anchor-roster-fe-sort,
+.anchor-roster-fe-table th[aria-sort="descending"] .anchor-roster-fe-sort{
+  color:var(--anchor-event-text,#111827);
+}
+.anchor-roster-fe-table th[aria-sort="ascending"] .anchor-roster-fe-sort::after{
+  border-top:0;
+  border-bottom:5px solid currentColor;
+  opacity:1;
+}
+.anchor-roster-fe-table th[aria-sort="descending"] .anchor-roster-fe-sort::after{
+  opacity:1;
+}
+.anchor-roster-fe-nomatch td{
+  padding:18px 12px;
+  color:var(--anchor-event-muted,#6b7280);
+  font-style:italic;
+}

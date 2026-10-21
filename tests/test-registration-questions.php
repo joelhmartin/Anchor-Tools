@@ -370,7 +370,7 @@ class Test_Registration_Questions extends Anchor_Events_TestCase {
 		$html = $this->module()->roster->render_frontend( $event_id, 'https://example.org/manage/' );
 		$this->assertStringContainsString( 'New Practice', $html );
 		$this->assertStringContainsString( 'Old Practice', $html );
-		$this->assertSame( 1, substr_count( $html, '<th scope="col">Practice name</th>' ), 'One question, one column.' );
+		$this->assertSame( 1, substr_count( $html, '<th scope="col" data-sort="text">Practice name</th>' ), 'One question, one column.' );
 	}
 
 	public function test_export_collapses_both_spellings_into_one_column() {
@@ -452,7 +452,7 @@ class Test_Registration_Questions extends Anchor_Events_TestCase {
 
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 		$html = $this->module()->roster->render_frontend( $event_id, 'https://example.org/manage/' );
-		$this->assertStringContainsString( '<th scope="col">Practice or organization</th>', $html );
+		$this->assertStringContainsString( '<th scope="col" data-sort="text">Practice or organization</th>', $html );
 		$this->assertStringContainsString( 'Anchor Dental', $html );
 	}
 

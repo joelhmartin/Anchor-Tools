@@ -9034,6 +9034,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $this->asset_version( 'anchor-events-manager/assets/manager.js' ),
             true
         );
+        // Registered list: search + sortable columns (Roster::frontend roster table).
+        \wp_enqueue_script( 'anchor-events-roster-table', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/roster-table.js' ), [], $this->asset_version( 'anchor-events-manager/assets/roster-table.js' ), true );
         // The per-event email builder: modal, live preview, media picker, and the
         // visual editor for the opening lines.
         //

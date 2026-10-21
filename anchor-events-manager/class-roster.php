@@ -2283,19 +2283,43 @@ class Roster {
             <?php if ( empty( $seats['items'] ) ) : ?>
                 <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'Nobody is registered yet.', 'anchor-schema' ); ?></p>
             <?php else : ?>
+            <?php
+            /*
+             * Search and column sorting run in the browser (assets/roster-table.js):
+             * the list is loaded whole (query_seats per_page 500), so filtering
+             * and re-ordering need no round trip. Without JS the table is the
+             * same list, ordered by attendee.
+             */
+            $search_id = $this->field_id( 'roster_search', $event_id );
+            ?>
+            <div class="anchor-roster-fe-filter">
+                <label for="<?php echo \esc_attr( $search_id ); ?>" class="screen-reader-text"><?php \esc_html_e( 'Search registrants', 'anchor-schema' ); ?></label>
+                <input type="search" id="<?php echo \esc_attr( $search_id ); ?>" class="anchor-roster-fe-search" data-roster-search
+                    placeholder="<?php \esc_attr_e( 'Search name, email, phone, status, ticket, answers, order…', 'anchor-schema' ); ?>" autocomplete="off" />
+                <span class="anchor-roster-fe-count" data-roster-count aria-live="polite"></span>
+            </div>
             <div class="anchor-roster-fe-tablewrap">
-                <table class="anchor-roster-fe-table">
+                <table class="anchor-roster-fe-table" data-roster-table
+                    data-i18n="<?php echo \esc_attr( (string) \wp_json_encode( [
+                        /* translators: %d: number of registrants. */
+                        'all'     => \__( '%d registrants', 'anchor-schema' ),
+                        /* translators: 1: rows shown, 2: total rows. */
+                        'some'    => \__( 'Showing %1$d of %2$d', 'anchor-schema' ),
+                        'none'    => \__( 'No registrants match your search.', 'anchor-schema' ),
+                        /* translators: %s: column name. */
+                        'sortBy'  => \__( 'Sort by %s', 'anchor-schema' ),
+                    ] ) ); ?>">
                     <thead>
                         <tr>
-                            <th scope="col"><?php \esc_html_e( 'Attendee', 'anchor-schema' ); ?></th>
-                            <th scope="col"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></th>
-                            <th scope="col"><?php \esc_html_e( 'Ticket', 'anchor-schema' ); ?></th>
-                            <th scope="col"><?php \esc_html_e( 'Party', 'anchor-schema' ); ?></th>
+                            <th scope="col" data-sort="text"><?php \esc_html_e( 'Attendee', 'anchor-schema' ); ?></th>
+                            <th scope="col" data-sort="text"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></th>
+                            <th scope="col" data-sort="text"><?php \esc_html_e( 'Ticket', 'anchor-schema' ); ?></th>
+                            <th scope="col" data-sort="number"><?php \esc_html_e( 'Party', 'anchor-schema' ); ?></th>
                             <?php foreach ( $questions as $q ) : ?>
-                                <th scope="col"><?php echo \esc_html( $q['label'] ); ?></th>
+                                <th scope="col" data-sort="text"><?php echo \esc_html( $q['label'] ); ?></th>
                             <?php endforeach; ?>
-                            <th scope="col"><?php \esc_html_e( 'Source', 'anchor-schema' ); ?></th>
-                            <th scope="col"><?php \esc_html_e( 'Added', 'anchor-schema' ); ?></th>
+                            <th scope="col" data-sort="text"><?php \esc_html_e( 'Source', 'anchor-schema' ); ?></th>
+                            <th scope="col" data-sort="text"><?php \esc_html_e( 'Added', 'anchor-schema' ); ?></th>
                             <th scope="col"><?php \esc_html_e( 'Actions', 'anchor-schema' ); ?></th>
                         </tr>
                     </thead>
@@ -2306,7 +2330,7 @@ class Roster {
                         $is_cancelled = \in_array( $seat['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_REFUNDED, Registrations::STATUS_FAILED ], true );
                     ?>
                         <tr>
-                            <td>
+                            <td data-sort-value="<?php echo \esc_attr( $seat['name'] ); ?>">
                                 <strong><?php echo \esc_html( $seat['name'] ); ?></strong>
                                 <?php if ( $seat['email'] !== '' ) : ?>
                                     <span class="anchor-roster-fe-sub"><a href="mailto:<?php echo \esc_attr( $seat['email'] ); ?>"><?php echo \esc_html( $seat['email'] ); ?></a></span>
@@ -2315,9 +2339,9 @@ class Roster {
                                     <span class="anchor-roster-fe-sub"><?php echo \esc_html( $seat['phone'] ); ?></span>
                                 <?php endif; ?>
                             </td>
-                            <td><span class="anchor-roster-fe-pill" style="background:<?php echo \esc_attr( $this->status_color( $seat['status'] ) ); ?>"><?php echo \esc_html( $this->status_label( $seat['status'] ) ); ?></span></td>
+                            <td data-sort-value="<?php echo \esc_attr( $this->status_label( $seat['status'] ) ); ?>"><span class="anchor-roster-fe-pill" style="background:<?php echo \esc_attr( $this->status_color( $seat['status'] ) ); ?>"><?php echo \esc_html( $this->status_label( $seat['status'] ) ); ?></span></td>
                             <td><?php echo \esc_html( $this->tier_label( $event_id, $seat['ticket_type_id'] ) ); ?></td>
-                            <td><?php echo (int) ( 1 + (int) $seat['guests'] ); ?></td>
+                            <td data-sort-value="<?php echo (int) ( 1 + (int) $seat['guests'] ); ?>"><?php echo (int) ( 1 + (int) $seat['guests'] ); ?></td>
                             <?php $answers = isset( $seat['reg_fields'] ) && \is_array( $seat['reg_fields'] ) ? $seat['reg_fields'] : []; ?>
                             <?php foreach ( $questions as $q ) : ?>
                                 <td><?php echo \esc_html( (string) ( $answers[ $q['key'] ] ?? '' ) ); ?></td>

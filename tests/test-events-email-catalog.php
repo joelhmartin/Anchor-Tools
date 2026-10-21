@@ -64,6 +64,7 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 	private function wc_seat( $event_id, array $extra = [] ) {
 		$order = wc_create_order();
 		$order->set_billing_email( 'buyer@example.test' );
+		$order->set_status( 'processing' );
 		$order->save();
 		return [ $order, $this->make_seat( $event_id, array_merge( [ 'order_id' => $order->get_id(), 'email' => 'pat@example.test', 'name' => 'Pat' ], $extra ) ) ];
 	}
@@ -224,6 +225,54 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 		$this->_setRole( 'subscriber' );
 		$this->assertFalse( $this->send( $event_id, $seat, 'confirmation' )['success'], 'no capability' );
 		$this->assertCount( 0, $this->rows() );
+	}
+
+	public function test_unconfirmed_seat_gets_no_confirmation_or_reminder_send() {
+		$event_id = $this->event();
+		foreach ( [ 'cancelled', 'refunded', 'waitlist', 'pending' ] as $status ) {
+			$seat = $this->make_seat( $event_id, [ 'status' => $status ] );
+			$html = $this->catalog()->panel_for_seat( $event_id, $seat );
+			$this->assertSame( 3, substr_count( $html, 'Seat is ' . $status ), $status . ': confirmation + 2 reminders' );
+			$this->assertStringNotContainsString( 'data-mail-action=', preg_replace( '#data-mail-row="cancellation".*#s', '', $html ) );
+			foreach ( [ 'confirmation', 'reminder:7', 'reminder:1' ] as $key ) {
+				$out = $this->send( $event_id, $seat, $key );
+				$this->assertFalse( $out['success'], "$status $key" );
+				$this->assertSame( 'Seat is ' . $status, $out['data']['message'] );
+			}
+		}
+		$this->assertCount( 0, $this->rows() );
+		$this->assertTrue( $this->send( $event_id, $this->make_seat( $event_id ), 'confirmation' )['success'], 'confirmed seat still sends' );
+	}
+
+	public function test_receipt_send_only_for_processing_or_completed_orders() {
+		$this->require_wc();
+		$event_id = $this->event();
+		foreach ( [ 'refunded', 'cancelled', 'failed', 'pending', 'on-hold' ] as $status ) {
+			list( $order, $seat ) = $this->wc_seat( $event_id );
+			$order->set_status( $status );
+			$order->save();
+			$GLOBALS['wpdb']->query( 'DELETE FROM ' . Anchor_Mail_Log::table() ); // phpcs:ignore -- WooCommerce mails its own status emails on save.
+			$html = $this->catalog()->panel_for_seat( $event_id, $seat );
+			$this->assertMatchesRegularExpression( '#data-mail-row="receipt">(?:(?!</tr>).)*Order is ' . preg_quote( $status, '#' ) . '#s', $html, $status );
+			$this->assertDoesNotMatchRegularExpression( '#data-mail-row="receipt">(?:(?!</tr>).)*data-mail-action#s', $html, $status );
+			$out = $this->send( $event_id, $seat, 'receipt' );
+			$this->assertFalse( $out['success'], $status );
+			$this->assertSame( 'Order is ' . $status, $out['data']['message'] );
+			$this->assertCount( 0, $this->rows(), $status );
+		}
+		list( $order, $seat ) = $this->wc_seat( $event_id );
+		$order->set_status( 'completed' );
+		$order->save();
+		$this->assertMatchesRegularExpression( '#data-mail-row="receipt">(?:(?!</tr>).)*data-mail-action#s', $this->catalog()->panel_for_seat( $event_id, $seat ) );
+	}
+
+	public function test_email_template_textareas_render_enabled_with_data_name_and_no_name() {
+		$event_id = $this->event();
+		ob_start();
+		$this->module()->render_email_builder_metabox( get_post( $event_id ) );
+		$html = ob_get_clean();
+		$this->assertMatchesRegularExpression( '#<textarea id="anchor_email_tpl_confirmation" data-name="anchor_email_tpl_confirmation"(?![^>]*\bdisabled)#', $html );
+		$this->assertDoesNotMatchRegularExpression( '#<textarea[^>]* name="anchor_email_tpl_#', $html );
 	}
 
 	public function test_switched_off_type_has_no_send_button() {

@@ -96,7 +96,7 @@
     var ta = panelTextarea(type);
     if (!ta) { return; }
     var def = (window.AnchorEmailBuilder && AnchorEmailBuilder.defaults && AnchorEmailBuilder.defaults[type]) || '';
-    ta.disabled = false; // a reset must post even if the text is already the default (clears a stored override).
+    window.AnchorEmailPreviewTools.markEdited(ta); // a reset must post even if the text is already the default (clears a stored override).
     var ed = findMonacoEditorFor(ta);
     if (ed) {
       ed.setValue(def); // triggers onDidChangeContent -> ta.value sync + 'input' dispatch.

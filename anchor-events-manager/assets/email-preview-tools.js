@@ -5,10 +5,12 @@
  *  - guardSource(textarea): the template textarea is rendered pre-filled with
  *    the resolved template, so a plain submit would post every full HTML
  *    document on every save (and trip WAF XSS rules on fields the person never
- *    touched). It is disabled -- disabled fields are not submitted, and the
- *    server leaves the stored template alone for a field that is not posted --
- *    and enabled the first time its content is actually edited (an `input`
- *    event: typing, token insert, media insert, "Reset to default").
+ *    touched). It is rendered enabled (so it can be typed into) but WITHOUT a
+ *    `name` -- unnamed fields are not submitted, and the server leaves the
+ *    stored template alone for a field that is not posted -- and takes its
+ *    name from `data-name` the first time its content is actually edited (an
+ *    `input` event: typing, Monaco change, token insert, media insert, "Reset
+ *    to default"). The editor needs JS anyway; with JS off nothing is saved.
  *    Setting .value from script fires no event, so reformatting on open does
  *    not count as an edit.
  *  - bindDevices(group, frame): Desktop / Tablet / Mobile toggles that set the
@@ -19,11 +21,16 @@
 
   var WIDTHS = { desktop: '100%', tablet: '768px', mobile: '375px' };
 
+  // Give the textarea its real field name so it posts. Safe to call repeatedly.
+  function markEdited(ta) {
+    if (ta && ta.dataset.name && !ta.getAttribute('name')) { ta.setAttribute('name', ta.dataset.name); }
+  }
+
   function guardSource(ta) {
     if (!ta || ta.dataset.editGuard) { return; }
     ta.dataset.editGuard = '1';
-    ta.disabled = true;
-    ta.addEventListener('input', function () { ta.disabled = false; });
+    ta.removeAttribute('name'); // belt and braces: markup already omits it
+    ta.addEventListener('input', function () { markEdited(ta); });
   }
 
   function setDevice(group, frame, device) {
@@ -52,5 +59,5 @@
     setDevice(group, frame, 'desktop');
   }
 
-  window.AnchorEmailPreviewTools = { guardSource: guardSource, bindDevices: bindDevices, widths: WIDTHS };
+  window.AnchorEmailPreviewTools = { guardSource: guardSource, markEdited: markEdited, bindDevices: bindDevices, widths: WIDTHS };
 })();

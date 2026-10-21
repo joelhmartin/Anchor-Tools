@@ -66,15 +66,15 @@ class Email_Catalog {
         if ( $order_id > 0 ) {
             $wc    = $this->wc_receipt_email();
             $out[] = $this->entry( 'receipt', \__( 'Order receipt', 'anchor-schema' ), $logged, self::RECEIPT_KINDS,
-                ( $wc && $wc->is_enabled() ) ? '' : \__( 'Off in WooCommerce', 'anchor-schema' ) );
+                $this->receipt_off_reason( $order_id, $wc ) );
         }
 
         $out[] = $this->entry( 'confirmation', \__( 'Registration confirmation', 'anchor-schema' ), $logged, self::CONFIRMATION_KINDS,
-            $this->off_reason( $event_id, 'confirmation', $external, ! empty( $settings['notify_user'] ) ) );
+            $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'confirmation', $external, ! empty( $settings['notify_user'] ) ) );
 
         $start   = (int) ( $this->module->get_meta( $event_id )['start_ts'] ?? 0 );
         $markers = $start > 0 ? $this->module->reminder_markers( $seat_id, $start ) : [];
-        $off     = $this->off_reason( $event_id, 'reminder', $external, true );
+        $off     = $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'reminder', $external, true );
         foreach ( $this->module->effective_offsets( $event_id, $settings ) as $offset ) {
             $entry              = $this->entry( 'reminder:' . $offset, self::reminder_label( $offset ), $logged, [ self::REMINDER_KIND . $offset ], $off );
             $entry['marker_ts'] = \max( 0, (int) ( $markers[ $offset ] ?? 0 ) ); // 0 = superseded, -1 = abandoned: neither was sent.
@@ -127,6 +127,29 @@ class Email_Catalog {
             'failed'    => $failed,
             'marker_ts' => 0,
         ];
+    }
+
+    /**
+     * Confirmation and reminder mail tells the attendee they hold a seat (and the
+     * reminder carries the join link), so it only goes to a confirmed seat.
+     */
+    private function seat_off_reason( array $seat ) {
+        $status = (string) ( $seat['status'] ?? '' );
+        if ( Registrations::STATUS_CONFIRMED === $status ) {
+            return '';
+        }
+        /* translators: %s: seat status such as "cancelled" or "waitlist" */
+        return \sprintf( \__( 'Seat is %s', 'anchor-schema' ), '' === $status ? \__( 'unknown', 'anchor-schema' ) : $status );
+    }
+
+    /** The WooCommerce receipt says "your order is being processed": only for processing/completed orders. */
+    private function receipt_off_reason( $order_id, $wc ) {
+        $order = \function_exists( 'wc_get_order' ) ? \wc_get_order( $order_id ) : null;
+        if ( $order && ! $order->has_status( [ 'processing', 'completed' ] ) ) {
+            /* translators: %s: WooCommerce order status such as "refunded" */
+            return \sprintf( \__( 'Order is %s', 'anchor-schema' ), $order->get_status() );
+        }
+        return ( $wc && $wc->is_enabled() ) ? '' : \__( 'Off in WooCommerce', 'anchor-schema' );
     }
 
     /** Why an email type will not send for this event ('' = it will). */

@@ -5339,7 +5339,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                 [ 'id' => 'anchor_email_tpl_' . $type, 'label' => __( 'HTML', 'anchor-schema' ), 'lang' => 'html' ],
                             ] ) ); ?>'>
                                 <label for="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" class="screen-reader-text"><?php echo esc_html( $label ); ?></label>
-                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code" disabled><?php echo esc_textarea( $email_template ); ?></textarea>
+                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" data-name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code"><?php echo esc_textarea( $email_template ); ?></textarea>
                             </div>
                             <?php if ( ! $this->template_uses_brand_tokens( $email_template ) ) : ?>
                                 <?php
@@ -10135,7 +10135,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                             <?php echo esc_html__( 'This email uses its own HTML, so the colours and logo set in Settings may not reach it. Use the {brand_bg}, {brand_surface}, {brand_heading}, {brand_text}, {brand_button}, {brand_button_text} and {logo} tokens to opt back in.', 'anchor-schema' ); ?>
                                         </p>
                                     <?php endif; ?>
-                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden disabled><?php echo esc_textarea( $email_template ); ?></textarea>
+                                    <textarea class="anchor-event-email-source code" data-name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $email_template ); ?></textarea>
                                 </div>
                             </div>
                             <div class="anchor-event-email-modal__foot">

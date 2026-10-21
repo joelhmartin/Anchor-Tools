@@ -237,7 +237,7 @@ class Test_Shipping_Shop_Manager extends Anchor_Shipping_TestCase {
 		$this->as_role( 'shop_manager' );
 		$order = $this->make_order( [], 'processing' );
 		$html  = $this->console()->render( [ 'order' => $order->get_id() ] );
-		$this->assertStringNotContainsString( 'anchor-shipping-more', $html );
+		$this->assertStringNotContainsString( '<details class="anchor-shipping-more">', $html, 'the label form is not folded (the tracking-number fold is separate)' );
 		$this->assertStringNotContainsString( 'name="additional"', $html );
 		$this->assertStringContainsString( 'anchor-shipping-submit', $html );
 	}

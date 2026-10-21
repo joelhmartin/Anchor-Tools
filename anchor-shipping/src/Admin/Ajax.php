@@ -10,6 +10,7 @@ use Anchor\Shipping\Packing\Packer;
 use Anchor\Shipping\Services\LabelService;
 use Anchor\Shipping\Services\Protection;
 use Anchor\Shipping\Services\LabelStore;
+use Anchor\Shipping\Services\ManualTracking;
 use Anchor\Shipping\Support\ParcelFactory;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -24,9 +25,11 @@ final class Ajax {
 		private ShipmentRepository $shipments,
 		private LabelStore $store,
 		private Packer $packer,
-		private CarrierRegistry $carriers
+		private CarrierRegistry $carriers,
+		private ?ManualTracking $manual = null
 	) {
 		\add_action( 'wp_ajax_anchor_shipping_create_label', [ $this, 'ajax_create' ] );
+		\add_action( 'wp_ajax_anchor_shipping_add_tracking', [ $this, 'ajax_add_tracking' ] );
 		\add_action( 'wp_ajax_anchor_shipping_void_label', [ $this, 'ajax_void' ] );
 		\add_action( 'wp_ajax_anchor_shipping_label', [ $this, 'ajax_download' ] );
 		\add_action( 'wp_ajax_anchor_shipping_bulk_label', [ $this, 'ajax_bulk_download' ] );
@@ -48,6 +51,10 @@ final class Ajax {
 
 	public function ajax_create(): void {
 		$this->json( fn() => $this->handle_create( \wp_unslash( $_POST ) ) ); // phpcs:ignore WordPress.Security.NonceVerification -- checked in json()
+	}
+
+	public function ajax_add_tracking(): void {
+		$this->json( fn() => $this->handle_add_tracking( \wp_unslash( $_POST ) ) ); // phpcs:ignore WordPress.Security.NonceVerification -- checked in json()
 	}
 
 	public function ajax_void(): void {
@@ -114,6 +121,17 @@ final class Ajax {
 			throw new \RuntimeException( $e->getMessage() );
 		}
 		return [ 'html' => $this->panel( $order ) ];
+	}
+
+	/** A tracking number for a package shipped without a label from here. */
+	public function handle_add_tracking( array $post ): array {
+		$order = \wc_get_order( (int) ( $post['order_id'] ?? 0 ) );
+		if ( ! $order ) {
+			throw new \RuntimeException( \__( 'Order not found.', 'anchor-schema' ) );
+		}
+		$manual = $this->manual ?? \Anchor\Shipping\Module::instance()->manual;
+		$manual->add( $order, \sanitize_key( (string) ( $post['track_carrier'] ?? '' ) ), \sanitize_text_field( (string) ( $post['track_number'] ?? '' ) ) );
+		return [ 'html' => $this->panel( \wc_get_order( $order->get_id() ) ) ];
 	}
 
 	public function handle_void( array $post ): array {

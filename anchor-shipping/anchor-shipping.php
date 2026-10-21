@@ -34,6 +34,8 @@ class Module {
 
 	public Services\TrackingPoller $tracking;
 
+	public Services\ManualTracking $manual;
+
 	public Services\BulkLabels $bulk;
 
 	public Frontend\ShopManager $console;
@@ -75,6 +77,7 @@ class Module {
 		$this->labels   = new Services\LabelService( $this->carriers, $this->shipments, $this->store, $this->packer );
 		$this->paid_orders = new Services\PaidOrderHandler( $this->labels, $this->packer );
 		$this->tracking = new Services\TrackingPoller( $this->carriers, $this->shipments, $this->labels );
+		$this->manual   = new Services\ManualTracking( $this->carriers, $this->shipments, $this->tracking );
 		new Services\VoidOnCancel( $this->labels, $this->shipments );
 		new Checkout\ProtectionFields();
 		\add_filter( 'woocommerce_shipping_methods', [ Checkout\RateMethod::class, 'register' ] ); // dormant until an admin adds it to a zone
@@ -88,7 +91,7 @@ class Module {
 		}
 		// The panel and its AJAX endpoints also serve the front-end console; the metabox hooks only ever fire in wp-admin.
 		new Admin\OrderPanel( $this->shipments, $this->packer, $this->carriers );
-		new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers );
+		new Admin\Ajax( $this->labels, $this->shipments, $this->store, $this->packer, $this->carriers, $this->manual );
 		$this->bulk    = new Services\BulkLabels( $this->labels, $this->shipments, $this->store );
 		$this->console = new Frontend\ShopManager( $this->labels, $this->shipments, $this->carriers, $this->packer );
 		new Frontend\ConsoleAjax( $this->bulk );

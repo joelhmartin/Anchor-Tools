@@ -63,9 +63,18 @@
 		send($panel, 'anchor_shipping_create_label', panelData($panel));
 	});
 
+	$(document).on('click', '.anchor-shipping-track-submit', function () {
+		var $panel = $(this).closest('.anchor-shipping-panel'), $form = $(this).closest('.anchor-shipping-track-add');
+		if ($panel.hasClass('is-busy')) { return; }
+		send($panel, 'anchor_shipping_add_tracking', {
+			nonce: cfg.nonce, order_id: $panel.data('order'),
+			track_carrier: $form.find('[name="track_carrier"]').val(), track_number: $form.find('[name="track_number"]').val()
+		});
+	});
+
 	$(document).on('click', '.anchor-shipping-void', function () {
 		var $panel = $(this).closest('.anchor-shipping-panel');
-		if ($panel.hasClass('is-busy') || !arm($(this), cfg.confirmVoid || 'Click again to void')) { return; }
+		if ($panel.hasClass('is-busy') || !arm($(this), $(this).data('confirm') || cfg.confirmVoid || 'Click again to void')) { return; }
 		send($panel, 'anchor_shipping_void_label', { nonce: cfg.nonce, id: $(this).data('id') });
 	});
 

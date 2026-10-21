@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.39.4
+Stable tag: 3.40.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.40.0 =
+* Shipping: add a tracking number to an order by hand (UPS, FedEx or USPS) for packages shipped without a label from here. UPS numbers are tracked like labels made here (shipped email on first scan, complete on delivery); FedEx and USPS get a tracking link and the shipped email straight away. Hand-entered numbers are removed, never voided at the carrier, and survive cancelling the order.
 
 = 3.39.4 =
 * Events: the console Registered list has a search box that matches any column (name, email, phone, status, ticket, answers, source, order, date; several words narrow it) and click-to-sort column headers (Party sorts as a number).

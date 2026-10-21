@@ -297,6 +297,10 @@ final class LabelService {
 		if ( ! $row || 'voided' === $row['status'] ) {
 			return;
 		}
+		if ( ManualTracking::is_manual( $row ) ) {
+			$this->remove_manual( $row ); // nothing was bought here, so there is nothing to void at the carrier
+			return;
+		}
 		$carrier = $this->carriers->get( $row['carrier'] );
 		if ( ! $carrier || ! $carrier->supports( 'void' ) ) {
 			throw new CarrierError( 'unsupported', \__( 'This carrier cannot void labels here.', 'anchor-schema' ) );
@@ -325,6 +329,18 @@ final class LabelService {
 			$order->save();
 		}
 		\do_action( 'anchor_shipping_label_voided', (int) $row['order_id'], $row['shipment_id'] );
+	}
+
+	/** Takes a hand-entered tracking number off its order; the row stays, voided, for the audit trail. */
+	private function remove_manual( array $row ): void {
+		$this->shipments->update( (int) $row['id'], [ 'status' => 'voided', 'voided_at' => \current_time( 'mysql', true ) ] );
+		$order = \wc_get_order( (int) $row['order_id'] );
+		if ( $order ) {
+			/* translators: %s: tracking number */
+			$order->add_order_note( sprintf( \__( 'Tracking number removed: %s.', 'anchor-schema' ), $row['tracking_number'] ) );
+			$this->reset_state_after_void( $order );
+			$order->save();
+		}
 	}
 
 	/**

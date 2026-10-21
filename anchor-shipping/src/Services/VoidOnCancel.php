@@ -7,7 +7,7 @@ use Anchor\Shipping\Database\ShipmentRepository;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
-/** Cancelled or fully refunded → void its labels; if the carrier refuses, tell a person.
+/** Cancelled or fully refunded → void the labels bought here (hand-entered tracking numbers stay); if the carrier refuses, tell a person.
  * Also clears a stale needs_attention flag once an order is completed/cancelled/refunded with no active label. */
 final class VoidOnCancel {
 
@@ -23,6 +23,9 @@ final class VoidOnCancel {
 	public function handle( int $order_id ): void {
 		$done = [];
 		foreach ( $this->shipments->active_for_order( $order_id ) as $row ) {
+			if ( ManualTracking::is_manual( $row ) ) {
+				continue; // a hand-entered number was not bought here: nothing to void, and the package may well be out
+			}
 			$key = $row['carrier'] . '|' . $row['shipment_id'];
 			if ( isset( $done[ $key ] ) ) {
 				continue; // one void covers every package of a shipment

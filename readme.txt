@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.39.2
+Stable tag: 3.39.3
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.39.3 =
+* Emails panel: View shows the email as it would be sent now; Sent counts only emails this system sent.
 
 = 3.39.2 =
 * Events: the registrant Emails panel is laid out in fixed columns with compact Send buttons that a theme cannot restyle; the click-again-to-confirm state is visible.

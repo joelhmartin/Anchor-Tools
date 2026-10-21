@@ -274,6 +274,14 @@ class Module {
      */
     private $preview_samples = false;
 
+    /**
+     * True only inside render_without_side_effects(): building an email must
+     * not resolve or create the recipient's account (Entitlements::ensure_user()
+     * writes the seat, and may create a user), so {room_link} is the plain room
+     * URL, i.e. what strip_sign_in_tokens() leaves of a tokenised link.
+     */
+    private $render_only = false;
+
     /** Unsaved CTA label/url pairs supplied by a live preview request; see get_email_cta(). */
     private $preview_cta_override = null;
 
@@ -1526,9 +1534,44 @@ class Module {
             ] );
             return Outcome::skipped( 'no_address' );
         }
-        if ( ! \is_array( $settings ) ) {
-            $settings = $this->get_settings();
+        $built = $this->build_reminder_email( $seat, $event_id, $settings );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event (and the same email domain) from collapsing into one
+        // deduped error row; see send_html_email()'s docblock.
+        $sent = $this->send_html_email( (string) $seat['email'], $built['subject'], $built['html'], [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ], [ 'kind' => 'events.reminder:' . (int) $offset ] );
+
+        // Retry bookkeeping lives at the point of the actual send (audit
+        // REG-D5) so the pre-flight bails above — reminders off for this
+        // event, no address on the seat — never burn an attempt on something
+        // no retry could fix.
+        $seat_id = (int) ( $seat['id'] ?? 0 );
+        if ( $seat_id > 0 ) {
+            if ( $sent ) {
+                $this->clear_email_retry( $seat_id, 'reminder' );
+            } else {
+                $this->queue_email_retry( $seat_id, [
+                    'type'     => 'reminder',
+                    'event_id' => (int) $event_id,
+                    'offset'   => (int) $offset,
+                    'start_ts' => (int) ( $this->get_meta( (int) $event_id )['start_ts'] ?? 0 ),
+                ] );
+            }
         }
+        // A delivery failure is NOT logged here: send_html_email() already
+        // records email_send_returned_false for it. What was missing was a
+        // record of the refusals ABOVE, which never reached a send at all.
+        return Outcome::from_bool( $sent, 'wp_mail' );
+    }
+
+    /**
+     * One reminder's subject and HTML for a seat, built and not sent. Shared by
+     * send_reminder_email() and the Emails panel's View (Email_Preview). The
+     * offset does not change the content, only which reminder it is.
+     *
+     * @return array{subject:string,html:string}
+     */
+    public function build_reminder_email( array $seat, $event_id, $settings = null ) {
+        $settings = \is_array( $settings ) ? $settings : $this->get_settings();
         $tokens   = $this->email_tokens( [ 'event_id' => (int) $event_id, 'seat' => $seat ] );
         $subject  = $this->expand_email_tokens( $this->get_email_field( $event_id, 'reminder', 'subject', $settings['reminder_subject'] ), $tokens );
         $intro    = $this->expand_email_tokens( $this->get_email_field( $event_id, 'reminder', 'intro', $settings['reminder_intro'] ), $tokens );
@@ -1556,33 +1599,7 @@ class Module {
             'seat_id'       => (int) ( $seat['id'] ?? 0 ),
             'recipient_email' => (string) $seat['email'],
         ];
-        $html = $this->build_registration_email_html( $ctx );
-        // finding-13 — the seat identity keeps two different attendees on the
-        // same event (and the same email domain) from collapsing into one
-        // deduped error row; see send_html_email()'s docblock.
-        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ], [ 'kind' => 'events.reminder:' . (int) $offset ] );
-
-        // Retry bookkeeping lives at the point of the actual send (audit
-        // REG-D5) so the pre-flight bails above — reminders off for this
-        // event, no address on the seat — never burn an attempt on something
-        // no retry could fix.
-        $seat_id = (int) ( $seat['id'] ?? 0 );
-        if ( $seat_id > 0 ) {
-            if ( $sent ) {
-                $this->clear_email_retry( $seat_id, 'reminder' );
-            } else {
-                $this->queue_email_retry( $seat_id, [
-                    'type'     => 'reminder',
-                    'event_id' => (int) $event_id,
-                    'offset'   => (int) $offset,
-                    'start_ts' => (int) ( $this->get_meta( (int) $event_id )['start_ts'] ?? 0 ),
-                ] );
-            }
-        }
-        // A delivery failure is NOT logged here: send_html_email() already
-        // records email_send_returned_false for it. What was missing was a
-        // record of the refusals ABOVE, which never reached a send at all.
-        return Outcome::from_bool( $sent, 'wp_mail' );
+        return [ 'subject' => $subject, 'html' => $this->build_registration_email_html( $ctx ) ];
     }
 
     /**
@@ -15643,9 +15660,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                 | failed (wp_mail).
      */
     public function send_confirmation_email( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
-        $settings   = $this->get_settings();
-        $event_link = \get_permalink( $event_id );
-        $guests     = max( 0, (int) $guests );
+        $settings = $this->get_settings();
 
         if ( $this->uses_external_signup( (int) $event_id ) ) {
             return Outcome::skipped( 'external_signup' );
@@ -15659,6 +15674,39 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( \sanitize_email( (string) $email ) === '' ) {
             return Outcome::skipped( 'no_address' );
         }
+        $built = $this->build_confirmation_email( $event_id, $name, $email, $status, $guests, $seat_id, $settings );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event from collapsing into one deduped error row.
+        return Outcome::from_bool( $this->send_html_email( $email, $built['subject'], $built['html'], [], $event_id, [ 'seat' => (int) $seat_id ], [ 'kind' => 'events.confirmation' ] ), 'wp_mail' );
+    }
+
+    /**
+     * Run an email builder with no side effects (see $render_only).
+     *
+     * @param callable $build Returns the built email.
+     * @return mixed What $build returns.
+     */
+    public function render_without_side_effects( callable $build ) {
+        $was               = $this->render_only;
+        $this->render_only = true;
+        try {
+            return $build();
+        } finally {
+            $this->render_only = $was;
+        }
+    }
+
+    /**
+     * The attendee confirmation's subject and HTML, built and not sent. The one
+     * builder behind send_confirmation_email() and the Emails panel's View
+     * (Email_Preview), so what an admin previews is what the sender mails.
+     *
+     * @return array{subject:string,html:string}
+     */
+    public function build_confirmation_email( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0, $settings = null ) {
+        $settings   = \is_array( $settings ) ? $settings : $this->get_settings();
+        $event_link = \get_permalink( $event_id );
+        $guests     = max( 0, (int) $guests );
         $tokens = $this->email_tokens( [
             'event_id' => $event_id,
             'seat'     => [ 'name' => $name, 'email' => $email, 'status' => $status ],
@@ -15701,9 +15749,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'seat_id'       => (int) $seat_id,
             'recipient_email' => (string) $email,
         ] );
-        // finding-13 — the seat identity keeps two different attendees on the
-        // same event from collapsing into one deduped error row.
-        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => (int) $seat_id ], [ 'kind' => 'events.confirmation' ] ), 'wp_mail' );
+        return [ 'subject' => $subject, 'html' => $html ];
     }
 
     // -------------------------------------------------------------------------
@@ -15837,6 +15883,37 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! $this->is_email_enabled( $event_id, 'cancellation' ) ) {
             return Outcome::skipped( 'disabled' );
         }
+        $built = $this->build_cancellation_email( $info, $settings );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event from collapsing into one deduped error row.
+        $sent = $this->send_html_email( $email, $built['subject'], $built['html'], [], $event_id, [ 'seat' => $seat_id ], [ 'kind' => 'events.cancellation' ] );
+        if ( $sent ) {
+            // WHEN it was emailed, not merely THAT it was: the value is what
+            // survives a later un-cancel/re-cancel cycle being distinguishable
+            // from the marker update_status() cleared.
+            \update_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, \time() );
+            $this->clear_email_retry( $seat_id, 'cancellation' );
+        } else {
+            // The in-memory queue was emptied before this ran, and the seat is
+            // already terminal, so nothing else will ever re-enqueue it
+            // (audit REG-D5). Leave the job for the hourly sweep to drain.
+            $this->queue_email_retry( $seat_id, [ 'type' => 'cancellation' ] );
+        }
+        return Outcome::from_bool( $sent, 'wp_mail' );
+    }
+
+    /**
+     * The cancellation/refund notice's subject and HTML for one seat snapshot
+     * (Registrations::get_seat_info()), built and not sent. Shared by
+     * send_cancellation_email() and the Emails panel's View (Email_Preview).
+     *
+     * @return array{subject:string,html:string}
+     */
+    public function build_cancellation_email( array $info, $settings = null ) {
+        $settings = \is_array( $settings ) ? $settings : $this->get_settings();
+        $event_id = (int) $info['event_id'];
+        $name     = (string) $info['name'];
+        $order_id = (int) $info['order_id'];
         $status   = (string) $info['status']; // cancelled | refunded
         $order    = ( $order_id > 0 && \function_exists( 'wc_get_order' ) ) ? \wc_get_order( $order_id ) : null;
 
@@ -15878,23 +15955,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'cta_url'       => '',
             'type'          => 'cancellation',
         ];
-        $html = $this->build_registration_email_html( $ctx );
-        // finding-13 — the seat identity keeps two different attendees on the
-        // same event from collapsing into one deduped error row.
-        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => $seat_id ], [ 'kind' => 'events.cancellation' ] );
-        if ( $sent ) {
-            // WHEN it was emailed, not merely THAT it was: the value is what
-            // survives a later un-cancel/re-cancel cycle being distinguishable
-            // from the marker update_status() cleared.
-            \update_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, \time() );
-            $this->clear_email_retry( $seat_id, 'cancellation' );
-        } else {
-            // The in-memory queue was emptied before this ran, and the seat is
-            // already terminal, so nothing else will ever re-enqueue it
-            // (audit REG-D5). Leave the job for the hourly sweep to drain.
-            $this->queue_email_retry( $seat_id, [ 'type' => 'cancellation' ] );
-        }
-        return Outcome::from_bool( $sent, 'wp_mail' );
+        return [ 'subject' => $subject, 'html' => $this->build_registration_email_html( $ctx ) ];
     }
 
     /**
@@ -15977,6 +16038,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             : (string) ( $ctx['status'] ?? '' );
         if ( $status !== Registrations::STATUS_CONFIRMED ) {
             return '';
+        }
+        if ( $this->render_only ) {
+            return $this->room_url( $event_id ); // A preview signs nobody in and creates no account.
         }
         $user_id = 0;
         if ( $seat ) {

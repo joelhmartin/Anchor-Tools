@@ -1,7 +1,7 @@
 <?php
 /**
- * Mail log admin: the sandboxed view endpoint, cell helpers for showing a logged
- * send, and the arm-then-confirm send button script.
+ * Mail log admin: serving an email body sandboxed, cell helpers for showing a
+ * logged send, and the arm-then-confirm send button script.
  *
  * Generic primitive; knows nothing about any module. A module renders its own
  * table with the `anchor-mail-log` classes, calls enqueue(), and gives each send
@@ -22,38 +22,26 @@ if ( ! class_exists( 'Anchor_Mail_Log_Admin' ) ) {
         const NONCE  = 'anchor_mail_log';
         const HANDLE = 'anchor-mail-log';
 
-        public static function init() {
-            add_action( 'wp_ajax_anchor_mail_log_view', [ __CLASS__, 'ajax_view' ] );
-        }
-
-        /** Who may view logged mail. Filterable so modules can widen it. */
-        public static function can_manage( array $row ) {
-            return (bool) apply_filters( 'anchor_mail_log_can_manage', current_user_can( 'manage_options' ), $row );
-        }
-
         /* ───────── View ───────── */
 
-        public static function ajax_view() {
-            $id  = isset( $_GET['id'] ) ? absint( wp_unslash( $_GET['id'] ) ) : 0; // phpcs:ignore WordPress.Security.NonceVerification
-            $row = $id ? Anchor_Mail_Log::get( $id ) : null;
-            if ( ! $row || ! self::can_manage( $row ) || ! check_ajax_referer( self::NONCE, '_wpnonce', false ) ) {
-                status_header( 403 );
-                wp_die( esc_html__( 'You are not allowed to view this email.', 'anchor-schema' ), '', [ 'response' => 403 ] );
-            }
+        /**
+         * Serve an email body as a sandboxed, noindexed page and end the request.
+         * One-click sign-in tokens are stripped from its links first.
+         */
+        public static function serve_sandboxed( $html ) {
             if ( ! headers_sent() ) {
                 header( 'Content-Type: text/html; charset=utf-8' );
                 header( "Content-Security-Policy: sandbox; default-src 'none'; img-src * data:; style-src 'unsafe-inline' *" );
                 header( 'X-Content-Type-Options: nosniff' );
                 header( 'X-Robots-Tag: noindex' );
             }
-            echo self::strip_sign_in_tokens( (string) $row['html'] ); // phpcs:ignore WordPress.Security.EscapeOutput -- stored email body, served sandboxed by CSP.
+            echo self::strip_sign_in_tokens( (string) $html ); // phpcs:ignore WordPress.Security.EscapeOutput -- email body, served sandboxed by CSP.
             wp_die();
         }
 
         /**
          * Remove the one-click sign-in parameter (`aek`, room-link token) from every
-         * href so viewing a stored email cannot sign a viewer in as the recipient.
-         * View output only; the stored row is untouched.
+         * href so viewing an email cannot sign a viewer in as the recipient.
          */
         public static function strip_sign_in_tokens( $html ) {
             return (string) preg_replace_callback(
@@ -72,14 +60,6 @@ if ( ! class_exists( 'Anchor_Mail_Log_Admin' ) ) {
         }
 
         /* ───────── Cell helpers ───────── */
-
-        /** Signed URL of the sandboxed view of one logged email. */
-        public static function view_url( $id ) {
-            return add_query_arg(
-                [ 'action' => 'anchor_mail_log_view', 'id' => (int) $id, '_wpnonce' => wp_create_nonce( self::NONCE ) ],
-                admin_url( 'admin-ajax.php' )
-            );
-        }
 
         /**
          * Delivery state of a logged send.
@@ -151,5 +131,4 @@ if ( ! class_exists( 'Anchor_Mail_Log_Admin' ) ) {
         }
     }
 
-    Anchor_Mail_Log_Admin::init();
 }

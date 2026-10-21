@@ -2,9 +2,8 @@
 /**
  * Events side of the mail log.
  *
- * Wires Anchor Events into the generic Anchor_Mail_Log primitive: the capability
- * that lets event managers view those rows, WooCommerce customer-email capture
- * for event orders, the per-seat email catalog (Email_Catalog) and the Mailgun
+ * Wires Anchor Events into the generic Anchor_Mail_Log primitive: WooCommerce
+ * customer-email capture for event orders, the per-seat email catalog (Email_Catalog) and the Mailgun
  * signing-key setting.
  *
  * @package Anchor\Events
@@ -27,17 +26,8 @@ class Email_Log {
     public function __construct( Module $module ) {
         $this->module  = $module;
         $this->catalog = new Email_Catalog( $module );
-        \add_filter( 'anchor_mail_log_can_manage', [ $this, 'filter_can_manage' ], 10, 2 );
         \add_filter( 'woocommerce_mail_callback_params', [ $this, 'wc_begin' ], 10, 2 );
         \add_action( 'woocommerce_email_sent', [ $this, 'wc_finish' ], 10, 3 );
-    }
-
-    /** Events rows are managed by anyone who can manage events, not just admins. */
-    public function filter_can_manage( $can, $row ) {
-        if ( \is_array( $row ) && ( $row['context'] ?? '' ) === 'events' ) {
-            return \current_user_can( Module::events_capability() );
-        }
-        return $can;
     }
 
     /**

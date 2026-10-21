@@ -133,7 +133,7 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 		$this->assertStringContainsString( 'data-mail-row="confirmation"', $out['data']['row_html'] );
 		$this->assertStringContainsString( '>Sent ', $out['data']['row_html'] );
 		$this->assertStringContainsString( 'Send again', $out['data']['row_html'] );
-		$this->assertStringContainsString( 'anchor_mail_log_view', $out['data']['row_html'] );
+		$this->assertStringContainsString( 'action=' . \Anchor\Events\Email_Preview::AJAX_ACTION, $out['data']['row_html'] );
 	}
 
 	public function test_send_receipt_triggers_woocommerce_email_without_touching_the_order() {
@@ -184,14 +184,18 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 		$this->assertGreaterThan( 0, (int) ( $this->markers( $seat, $event_id )[1] ?? 0 ) );
 	}
 
-	public function test_scheduler_marker_counts_as_sent_without_a_log_row() {
+	/**
+	 * Reminder markers predate the mail log (2026-09-04 vs 2026-10-20), so a marker
+	 * alone proves nothing this panel can show: only a logged send counts.
+	 */
+	public function test_scheduler_marker_without_a_log_row_is_not_sent() {
 		$this->require_wc();
 		$event_id       = $this->event();
 		list( , $seat ) = $this->wc_seat( $event_id );
 		$this->module()->mark_reminder_sent( $seat, (int) get_post_meta( $event_id, '_anchor_event_start_ts', true ), 7, time() - 60 );
 
 		$html = $this->catalog()->panel_for_seat( $event_id, $seat );
-		$this->assertMatchesRegularExpression( '#data-mail-row="reminder:7">(?:(?!</tr>).)*>Sent (?:(?!</tr>).)*Send again#s', $html );
+		$this->assertMatchesRegularExpression( '#data-mail-row="reminder:7">(?:(?!</tr>).)*>Not sent<(?:(?!</tr>).)*>Send<#s', $html );
 	}
 
 	public function test_cancellation_row_only_for_cancelled_seat_and_sends_despite_marker() {
@@ -205,10 +209,11 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 		update_post_meta( $seat, Registrations::META_CANCEL_EMAILED, $was );
 		$html = $this->catalog()->panel_for_seat( $event_id, $seat );
 		$this->assertStringContainsString( 'Cancellation notice', $html );
-		$this->assertMatchesRegularExpression( '#data-mail-row="cancellation">(?:(?!</tr>).)*>Sent #s', $html );
+		$this->assertMatchesRegularExpression( '#data-mail-row="cancellation">(?:(?!</tr>).)*>Not sent<#s', $html, 'The marker alone is not a logged send.' );
 
 		$out = $this->send( $event_id, $seat, 'cancellation' );
 		$this->assertTrue( $out['success'] );
+		$this->assertStringContainsString( '>Sent ', $out['data']['row_html'] );
 		$this->assertCount( 1, $this->rows( 'events.cancellation' ) );
 		$this->assertGreaterThanOrEqual( $was, (int) get_post_meta( $seat, Registrations::META_CANCEL_EMAILED, true ) );
 	}
@@ -288,7 +293,7 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 		$this->assertCount( 0, $this->rows() );
 	}
 
-	public function test_imported_send_counts_as_sent_with_untracked_columns() {
+	public function test_imported_send_is_ignored() {
 		$this->require_wc();
 		$event_id           = $this->event();
 		list( $order, $seat ) = $this->wc_seat( $event_id );
@@ -301,10 +306,41 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 			'recipient' => 'pat@example.test',
 			'subject'   => 'You are registered',
 			'source'    => 'import',
+			'status'    => 'delivered',
 		] );
 		$html = $this->catalog()->panel_for_seat( $event_id, $seat );
-		$this->assertMatchesRegularExpression( '#data-mail-row="confirmation">(?:(?!</tr>).)*>Sent (?:(?!</tr>).)*<td>—</td><td>—</td><td>—</td>(?:(?!</tr>).)*View#s', $html );
-		$this->assertStringNotContainsString( 'before tracking', $html );
-		$this->assertStringNotContainsString( 'not tracked', $html );
+		$this->assertMatchesRegularExpression( '#data-mail-row="confirmation">(?:(?!</tr>).)*>Not sent<(?:(?!</tr>).)*<td>—</td><td>—</td><td>—</td>(?:(?!</tr>).)*View(?:(?!</tr>).)*>Send<#s', $html );
+		$this->assertStringNotContainsString( 'pat@example.test', $html, 'No recipient from an imported row.' );
+	}
+
+	public function test_live_send_counts_as_sent_with_its_tracking() {
+		$this->require_wc();
+		$event_id             = $this->event();
+		list( $order, $seat ) = $this->wc_seat( $event_id );
+		Anchor_Mail_Log::insert( [
+			'context'      => 'events',
+			'kind'         => 'events.confirmation',
+			'audience'     => 'attendee',
+			'event_id'     => $event_id,
+			'seat_id'      => $seat,
+			'order_id'     => $order->get_id(),
+			'recipient'    => 'pat@example.test',
+			'subject'      => 'You are registered',
+			'source'       => 'live',
+			'status'       => 'delivered',
+			'delivered_at' => '2026-10-20 20:00:00',
+		] );
+		$html = $this->catalog()->panel_for_seat( $event_id, $seat );
+		$this->assertMatchesRegularExpression( '#data-mail-row="confirmation">(?:(?!</tr>).)*>Sent (?:(?!</tr>).)*<td>Yes · (?:(?!</tr>).)*Send again#s', $html );
+	}
+
+	public function test_every_row_links_view_to_the_live_preview_never_a_stored_copy() {
+		$this->require_wc();
+		$event_id       = $this->event();
+		list( , $seat ) = $this->wc_seat( $event_id, [ 'status' => Registrations::STATUS_CANCELLED ] );
+		$html           = $this->catalog()->panel_for_seat( $event_id, $seat );
+		$this->assertSame( 5, substr_count( $html, 'action=' . \Anchor\Events\Email_Preview::AJAX_ACTION ), 'receipt, confirmation, 2 reminders, cancellation — including switched-off rows' );
+		$this->assertSame( 5, substr_count( $html, 'target="_blank"' ) );
+		$this->assertStringNotContainsString( 'anchor_mail_log_view', $html );
 	}
 }

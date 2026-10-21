@@ -34,12 +34,12 @@
 }
 
 /* Columns: Email | Status | Delivered | Opened | Clicked | Actions */
-.anchor-mail-log .anchor-mail-log__table th:nth-child(1) { width: 32%; }
-.anchor-mail-log .anchor-mail-log__table th:nth-child(2) { width: 19%; }
+.anchor-mail-log .anchor-mail-log__table th:nth-child(1) { width: 30%; }
+.anchor-mail-log .anchor-mail-log__table th:nth-child(2) { width: 18%; }
 .anchor-mail-log .anchor-mail-log__table th:nth-child(3),
 .anchor-mail-log .anchor-mail-log__table th:nth-child(4),
 .anchor-mail-log .anchor-mail-log__table th:nth-child(5) { width: 10%; }
-.anchor-mail-log .anchor-mail-log__table th:nth-child(6) { width: 19%; }
+.anchor-mail-log .anchor-mail-log__table th:nth-child(6) { width: 22%; }
 .anchor-mail-log .anchor-mail-log__table th:nth-child(n+3):nth-child(-n+5),
 .anchor-mail-log .anchor-mail-log__table td:nth-child(n+3):nth-child(-n+5) { text-align: center; }
 
@@ -118,5 +118,5 @@
 
 @media (max-width: 720px) {
 	.anchor-mail-log .anchor-mail-log__scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-	.anchor-mail-log .anchor-mail-log__table { min-width: 680px; }
+	.anchor-mail-log .anchor-mail-log__table { min-width: 860px; }
 }

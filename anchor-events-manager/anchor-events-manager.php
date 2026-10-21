@@ -5339,7 +5339,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                 [ 'id' => 'anchor_email_tpl_' . $type, 'label' => __( 'HTML', 'anchor-schema' ), 'lang' => 'html' ],
                             ] ) ); ?>'>
                                 <label for="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" class="screen-reader-text"><?php echo esc_html( $label ); ?></label>
-                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code"><?php echo esc_textarea( $email_template ); ?></textarea>
+                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code" disabled><?php echo esc_textarea( $email_template ); ?></textarea>
                             </div>
                             <?php if ( ! $this->template_uses_brand_tokens( $email_template ) ) : ?>
                                 <?php
@@ -5363,6 +5363,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                         </div>
                         <div class="anchor-email-preview-col">
                             <p class="description"><?php echo esc_html__( 'Live preview (tokens shown literally until you click "Preview with real data").', 'anchor-schema' ); ?></p>
+                            <?php $this->render_email_device_toggles( 'anchor-email-devices' ); ?>
                             <iframe class="anchor-email-preview-frame" data-email-type="<?php echo esc_attr( $type ); ?>"></iframe>
                         </div>
                     </div>
@@ -5371,6 +5372,31 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php endforeach; ?>
         </div>
         <?php
+    }
+
+    /**
+     * Desktop / Tablet / Mobile toggles for an email preview iframe. Behaviour
+     * lives in assets/email-preview-tools.js (AnchorEmailPreviewTools.bindDevices),
+     * shared by the metabox and the console modal.
+     *
+     * @param string $class Wrapper class the surface's script looks up.
+     */
+    private function render_email_device_toggles( $class ) {
+        $devices = [
+            'desktop' => __( 'Desktop', 'anchor-schema' ),
+            'tablet'  => __( 'Tablet', 'anchor-schema' ),
+            'mobile'  => __( 'Mobile', 'anchor-schema' ),
+        ];
+        echo '<span class="anchor-email-devices-group ' . \esc_attr( $class ) . '" role="group" aria-label="' . \esc_attr__( 'Preview width', 'anchor-schema' ) . '">';
+        foreach ( $devices as $key => $label ) {
+            echo '<button type="button" class="anchor-email-device" data-email-device="' . \esc_attr( $key ) . '" aria-pressed="' . ( 'desktop' === $key ? 'true' : 'false' ) . '">' . \esc_html( $label ) . '</button>';
+        }
+        echo '</span>';
+    }
+
+    /** Register + enqueue the helpers both email editors share (template edit-guard, device toggles). */
+    private function enqueue_email_preview_tools() {
+        \wp_enqueue_script( 'anchor-events-email-preview-tools', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-preview-tools.js' ), [], $this->asset_version( 'anchor-events-manager/assets/email-preview-tools.js' ), true );
     }
 
     /**
@@ -5481,7 +5507,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // assembly), so drop it before the "is this still the default?"
             // comparison as well; otherwise a template that is the default plus
             // a pasted doctype would be stored as a redundant literal override.
-            $raw      = self::strip_email_doctype( (string) \wp_unslash( $src[ $field ] ) );
+            $raw      = self::normalise_email_template_text( self::strip_email_doctype( (string) \wp_unslash( $src[ $field ] ) ) );
             $fallback = $this->resolve_email_template( $type, 0 ); // default constant, no per-event lookup.
 
             $main = $this->email_inheritance->main_of( $post_id );
@@ -5493,12 +5519,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 $this->email_inheritance->write_date_value(
                     $post_id,
                     '_anchor_event_email_tpl_' . $type,
-                    \trim( $raw ) === \trim( $inherited ) ? '' : $this->sanitize_email_template_html( $raw )
+                    $raw === self::normalise_email_template_text( $inherited ) ? '' : $this->sanitize_email_template_html( $raw )
                 );
                 continue;
             }
 
-            if ( \trim( $raw ) === \trim( $fallback ) ) {
+            if ( $raw === self::normalise_email_template_text( $fallback ) ) {
                 // Unmodified (or explicitly reset by the JS "Reset to default"
                 // button, which writes the same fallback text into the editor
                 // before submit) — store no override.
@@ -5556,10 +5582,36 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         \add_filter( 'safecss_filter_attr_allow_css', $allow_tokens, 10, 2 );
         try {
-            return (string) \wp_kses( $tpl, $this->get_email_template_allowed_html() );
+            $clean = (string) \wp_kses( $tpl, $this->get_email_template_allowed_html() );
         } finally {
             \remove_filter( 'safecss_filter_attr_allow_css', $allow_tokens, 10 );
         }
+        // kses entity-encodes a bare ">" in text, which turns a child selector
+        // (`td > a`) in a <style> block into invalid CSS. Restore it there only:
+        // markup cannot start without a "<", and kses has already turned every
+        // stray "<" in the text into "&lt;".
+        return (string) \preg_replace_callback(
+            '#(<style\b[^>]*>)(.*?)(</style>)#is',
+            static function ( $m ) {
+                return $m[1] . \str_replace( '&gt;', '>', $m[2] ) . $m[3];
+            },
+            $clean
+        );
+    }
+
+    /**
+     * Canonical text for comparing an email template with its default: browsers
+     * submit a textarea with CRLF line endings, so an unchanged template would
+     * otherwise never equal the LF original and get stored as an override.
+     * Line endings -> "\n", trailing whitespace stripped per line and overall.
+     *
+     * @param string $html
+     * @return string
+     */
+    private static function normalise_email_template_text( $html ) {
+        $html = \str_replace( [ "\r\n", "\r" ], "\n", (string) $html );
+        $html = (string) \preg_replace( '/[ \t]+$/m', '', $html );
+        return \trim( $html );
     }
 
     /**
@@ -5623,6 +5675,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'head'   => [],
             'meta'   => [ 'charset' => true, 'name' => true, 'content' => true ],
             'title'  => [],
+            // Responsive @media rules. Only type/media: no src/href/on*. wp_kses
+            // parses the element's text as markup, so a tag smuggled into the CSS
+            // (`</style><script>`) is still filtered against this allowlist.
+            'style'  => [ 'type' => true, 'media' => true ],
             'body'   => [ 'style' => true ],
             'table'  => [ 'role' => true, 'width' => true, 'cellpadding' => true, 'cellspacing' => true, 'style' => true, 'align' => true, 'border' => true ],
             'thead'  => [],
@@ -7927,7 +7983,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         \Anchor_Monaco::enqueue( self::CPT );
         \wp_enqueue_style( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.css' ), [], $this->asset_version( 'anchor-events-manager/assets/email-builder.css' ) );
-        \wp_enqueue_script( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], $this->asset_version( 'anchor-events-manager/assets/email-builder.js' ), true );
+        $this->enqueue_email_preview_tools();
+        \wp_enqueue_script( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview', 'anchor-events-email-preview-tools' ], $this->asset_version( 'anchor-events-manager/assets/email-builder.js' ), true );
 
         $post_id  = isset( $GLOBALS['post'] ) && $GLOBALS['post'] ? (int) $GLOBALS['post']->ID : 0;
         $defaults = [];
@@ -8972,10 +9029,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // about, and its component model rewrote hand-built email HTML on every
         // round trip.
         \wp_enqueue_editor();
+        $this->enqueue_email_preview_tools();
         \wp_enqueue_script(
             'anchor-events-email-modal',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-modal.js' ),
-            [ 'jquery' ],
+            [ 'jquery', 'anchor-events-email-preview-tools' ],
             $this->asset_version( 'anchor-events-manager/assets/email-modal.js' ),
             true
         );
@@ -10057,6 +10115,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     <div class="anchor-event-email-toolbar">
                                         <button type="button" class="anchor-event-email-tab is-active" data-email-view="preview"><?php echo esc_html__( 'Preview', 'anchor-schema' ); ?></button>
                                         <button type="button" class="anchor-event-email-tab" data-email-view="html"><?php echo esc_html__( 'HTML', 'anchor-schema' ); ?></button>
+                                        <?php $this->render_email_device_toggles( 'anchor-event-email-devices' ); ?>
                                         <span class="anchor-event-email-status" aria-live="polite"></span>
                                         <span class="anchor-event-email-note"><?php echo esc_html__( 'Preview fills empty tokens with sample data, and shows text regions a given recipient might not get.', 'anchor-schema' ); ?></span>
                                     </div>
@@ -10076,7 +10135,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                             <?php echo esc_html__( 'This email uses its own HTML, so the colours and logo set in Settings may not reach it. Use the {brand_bg}, {brand_surface}, {brand_heading}, {brand_text}, {brand_button}, {brand_button_text} and {logo} tokens to opt back in.', 'anchor-schema' ); ?>
                                         </p>
                                     <?php endif; ?>
-                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $email_template ); ?></textarea>
+                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden disabled><?php echo esc_textarea( $email_template ); ?></textarea>
                                 </div>
                             </div>
                             <div class="anchor-event-email-modal__foot">

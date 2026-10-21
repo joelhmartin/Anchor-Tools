@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.39.0
+Stable tag: 3.39.1
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,12 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.39.1 =
+* Events: the role panel no longer breaks a date's edit screen.
+* Events: unchanged email templates are no longer posted or stored as overrides (fixes copies of the defaults being saved, and a firewall 403 on saves that never touched a template).
+* Events: `<style>` blocks (responsive `@media` rules) in email templates are kept instead of being stripped to visible text.
+* Events: the email preview has Desktop / Tablet / Mobile widths.
 
 = 3.39.0 =
 * Events: every email sent to a registrant is logged on their seat (wp-admin roster and front-end console) with delivery, open and click status from Mailgun webhooks, a View link and a Resend button. WooCommerce customer emails for event orders are logged too.

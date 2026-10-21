@@ -4018,7 +4018,6 @@ class WooCommerce {
         }
         $event_id = (int) $event_id;
         $order_id = (int) $order->get_id();
-        $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
         $by_event = $this->collect_order_seats( $order_id, $review_flags );
         $seats    = $by_event[ $event_id ] ?? [];
 
@@ -4034,6 +4033,27 @@ class WooCommerce {
             return Outcome::skipped( 'disabled' );
         }
 
+        $built = $this->build_customer_confirmation( $order, $settings, $event_id, $seats );
+        // finding-13 — the order identity keeps two different buyers on the
+        // same event from collapsing into one deduped mail-failure row.
+        return Outcome::from_bool(
+            $this->module->send_html_email( $to, $built['subject'], $built['html'], [], $event_id, [ 'order' => $order_id ], [ 'kind' => 'events.wc_confirmation' ] ),
+            'wp_mail'
+        );
+    }
+
+    /**
+     * The buyer confirmation's subject and HTML for one event's active seats on
+     * the order, built and not sent. The one builder behind
+     * send_customer_confirmation() and the Emails panel's View.
+     *
+     * @param array $seats This event's active seats (collect_order_seats()).
+     * @return array{subject:string,html:string}
+     */
+    private function build_customer_confirmation( \WC_Order $order, array $settings, $event_id, array $seats ) {
+        $event_id = (int) $event_id;
+        $to       = (string) $order->get_billing_email();
+        $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
         $seat_list    = [];
         $any_waitlist = false;
         foreach ( $seats as $s ) {
@@ -4120,13 +4140,40 @@ class WooCommerce {
             'room_link_plain_fallback' => true,
             'recipient_email' => (string) $to,
         ];
-        $html = $this->module->build_registration_email_html( $ctx );
-        // finding-13 — the order identity keeps two different buyers on the
-        // same event from collapsing into one deduped mail-failure row.
-        return Outcome::from_bool(
-            $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => $order_id ], [ 'kind' => 'events.wc_confirmation' ] ),
-            'wp_mail'
-        );
+        return [ 'subject' => $subject, 'html' => $this->module->build_registration_email_html( $ctx ) ];
+    }
+
+    /**
+     * The Emails panel's View of the buyer confirmation for one event on an
+     * order: built, never sent. Seat-status problems are not flagged for
+     * review from here (a preview must not write to the order).
+     *
+     * @return array{subject:string,html:string}|null Null when the order holds no active seat for the event.
+     */
+    public function preview_customer_confirmation( $order_id, $event_id ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order instanceof \WC_Order ) {
+            return null;
+        }
+        $flags = []; // Collected and discarded: no order note from a preview.
+        $seats = $this->collect_order_seats( (int) $order_id, $flags )[ (int) $event_id ] ?? [];
+        return $seats ? $this->build_customer_confirmation( $order, $this->module->get_settings(), (int) $event_id, $seats ) : null;
+    }
+
+    /**
+     * The Emails panel's Send for a WooCommerce seat's confirmation: the same
+     * buyer confirmation the order's sequence sends, mailed now (logged as
+     * events.wc_confirmation like any other send). Leaves the order's
+     * emails-sent gates alone.
+     *
+     * @return Outcome
+     */
+    public function resend_customer_confirmation( $order_id, $event_id ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order instanceof \WC_Order ) {
+            return Outcome::skipped( 'no_order' );
+        }
+        return $this->send_customer_confirmation( $order, $this->module->get_settings(), (int) $event_id );
     }
 
     /**

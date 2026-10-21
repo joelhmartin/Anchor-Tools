@@ -127,9 +127,10 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 
 		$out = $this->send( $event_id, $seat, 'confirmation' );
 		$this->assertTrue( $out['success'] );
-		$rows = $this->rows( 'events.confirmation' );
+		$this->assertCount( 0, $this->rows( 'events.confirmation' ), 'A WooCommerce seat gets the buyer confirmation, not the attendee one.' );
+		$rows = $this->rows( 'events.wc_confirmation' );
 		$this->assertCount( 1, $rows );
-		$this->assertSame( $seat, (int) $rows[0]['seat_id'] );
+		$this->assertSame( 'buyer@example.test', $rows[0]['recipient'] );
 		$this->assertStringContainsString( 'data-mail-row="confirmation"', $out['data']['row_html'] );
 		$this->assertStringContainsString( '>Sent ', $out['data']['row_html'] );
 		$this->assertStringContainsString( 'Send again', $out['data']['row_html'] );

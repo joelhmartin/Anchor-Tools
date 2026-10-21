@@ -82,8 +82,11 @@ class Email_Catalog {
                 $this->receipt_off_reason( $order_id, $wc ) );
         }
 
+        // A WooCommerce seat's confirmation is the order's buyer confirmation
+        // (events.wc_confirmation), which has no site-wide notify_user switch.
+        $buyer = self::buyer_order_id( $this->module, $seat ) > 0;
         $out[] = $this->entry( 'confirmation', \__( 'Registration confirmation', 'anchor-schema' ), $logged, self::CONFIRMATION_KINDS,
-            $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'confirmation', $external, ! empty( $settings['notify_user'] ) ) );
+            $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'confirmation', $external, $buyer || ! empty( $settings['notify_user'] ) ) );
 
         $off = $this->seat_off_reason( $seat ) ?: $this->off_reason( $event_id, 'reminder', $external, true );
         foreach ( $this->module->effective_offsets( $event_id, $settings ) as $offset ) {
@@ -95,6 +98,16 @@ class Email_Catalog {
                 $this->off_reason( $event_id, 'cancellation', $external, ! empty( $settings['notify_cancellation'] ) ) );
         }
         return $out;
+    }
+
+    /**
+     * The order whose buyer confirmation IS this seat's Registration
+     * confirmation in the sequence (WooCommerce::send_customer_confirmation()),
+     * or 0 for a seat that did not come from a WooCommerce order.
+     */
+    public static function buyer_order_id( Module $module, array $seat ) {
+        $order_id = (int) ( $seat['order_id'] ?? 0 );
+        return ( $order_id > 0 && $module->woocommerce && \function_exists( 'wc_get_order' ) && \wc_get_order( $order_id ) ) ? $order_id : 0;
     }
 
     /** "Reminder · 7 days before" / "Reminder · 1 day before". */
@@ -247,6 +260,9 @@ class Email_Catalog {
         $event_id = (int) $event_id;
         if ( 'receipt' === $key ) {
             return $this->send_receipt( (int) $seat['order_id'] );
+        }
+        if ( 'confirmation' === $key && self::buyer_order_id( $this->module, $seat ) > 0 ) {
+            return $this->module->woocommerce->resend_customer_confirmation( (int) $seat['order_id'], $event_id );
         }
         if ( 'confirmation' === $key ) {
             return $this->module->send_confirmation_email(

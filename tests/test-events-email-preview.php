@@ -245,7 +245,10 @@ class Test_Events_Email_Preview extends WP_Ajax_UnitTestCase {
 		list( , $seat )       = $this->seat( $event_id );
 		list( , $cancelled )  = $this->seat( $event_id, Registrations::STATUS_CANCELLED );
 
-		foreach ( [ 'receipt' => $seat, 'confirmation' => $seat, 'reminder:7' => $seat, 'cancellation' => $cancelled ] as $key => $sid ) {
+		$free                 = $this->make_seat( $event_id, [ 'name' => 'Free Seat', 'email' => 'free@example.test' ] );
+
+		foreach ( [ 'receipt' => $seat, 'confirmation' => $seat, 'confirmation ' => $free, 'reminder:7' => $seat, 'cancellation' => $cancelled ] as $key => $sid ) {
+			$key          = trim( $key );
 			$preview      = $this->render( $event_id, $sid, $key );
 			$this->mailed = [];
 			$result       = $this->catalog()->send( $event_id, $this->module()->registrations->get_seat( $sid ), $key );
@@ -259,5 +262,45 @@ class Test_Events_Email_Preview extends WP_Ajax_UnitTestCase {
 			);
 			$this->assertSame( html_entity_decode( $preview['subject'], ENT_QUOTES | ENT_HTML5, 'UTF-8' ), wp_specialchars_decode( (string) $sent['subject'] ), $key );
 		}
+	}
+
+	/**
+	 * The confirmation row mirrors the sequence: a WooCommerce seat's is the
+	 * order's buyer confirmation (to the buyer, buyer's name, the order's seat
+	 * list); any other seat's is the attendee confirmation.
+	 */
+	public function test_wc_seat_uses_the_buyer_confirmation_and_a_free_seat_the_attendee_one() {
+		$this->require_wc();
+		$event_id = $this->event();
+		$order    = wc_create_order();
+		$order->set_billing_first_name( 'Pat' );
+		$order->set_billing_last_name( 'Quill' );
+		$order->set_billing_email( 'pat@example.test' );
+		$order->set_status( 'processing' );
+		$order->save();
+		$sam  = $this->make_seat( $event_id, [ 'order_id' => $order->get_id(), 'name' => 'Sam Seat', 'email' => 'sam@example.test' ] );
+		$lee  = $this->make_seat( $event_id, [ 'order_id' => $order->get_id(), 'name' => 'Lee Second', 'email' => 'lee@example.test' ] );
+		$free = $this->make_seat( $event_id, [ 'name' => 'Free Seat', 'email' => 'free@example.test' ] );
+		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<p>CUSTOM-CONFIRMATION for {attendee_name}</p>{intro}{seat_list}' );
+
+		$view = $this->render( $event_id, $sam, 'confirmation' );
+		$this->assertStringContainsString( 'CUSTOM-CONFIRMATION for Pat Quill', $view['html'], 'buyer name' );
+		$this->assertStringContainsString( 'Sam Seat', $view['html'], 'seat list' );
+		$this->assertStringContainsString( 'Lee Second', $view['html'], 'seat list' );
+
+		$this->mailed = [];
+		$this->assertTrue( $this->catalog()->send( $event_id, $this->module()->registrations->get_seat( $sam ), 'confirmation' )->is_sent() );
+		$this->assertSame( 'pat@example.test', $this->mailed[0]['to'] );
+		$rows = Anchor_Mail_Log::query( [ 'order_id' => $order->get_id() ] );
+		$this->assertSame( 'events.wc_confirmation', $rows[0]['kind'] );
+		$this->assertMatchesRegularExpression( '#data-mail-row="confirmation">(?:(?!</tr>).)*>Sent #s', $this->catalog()->panel_for_seat( $event_id, $lee ), 'The order-level send counts for every seat on the order.' );
+
+		$view = $this->render( $event_id, $free, 'confirmation' );
+		$this->assertStringContainsString( 'CUSTOM-CONFIRMATION for Free Seat', $view['html'] );
+		$this->mailed = [];
+		$this->assertTrue( $this->catalog()->send( $event_id, $this->module()->registrations->get_seat( $free ), 'confirmation' )->is_sent() );
+		$this->assertSame( 'free@example.test', $this->mailed[0]['to'] );
+		$this->assertCount( 1, Anchor_Mail_Log::query( [ 'seat_id' => $free ] ) );
+		$this->assertSame( 'events.confirmation', Anchor_Mail_Log::query( [ 'seat_id' => $free ] )[0]['kind'] );
 	}
 }

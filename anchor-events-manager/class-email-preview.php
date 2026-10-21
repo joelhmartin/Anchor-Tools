@@ -4,7 +4,8 @@
  * registrant now, rendered on demand and never mailed.
  *
  * Each row type renders through the same builder its sender uses
- * (Module::build_confirmation_email(), build_reminder_email(),
+ * (WooCommerce::preview_customer_confirmation() for a WooCommerce seat's
+ * buyer confirmation, Module::build_confirmation_email(), build_reminder_email(),
  * build_cancellation_email(), or WooCommerce's own processing-order email), so
  * the preview cannot drift from the send. Rendering has no side effects: no
  * wp_mail(), no mail-log row, no order note, no reminder/cancellation marker,
@@ -57,6 +58,9 @@ class Email_Preview {
         return $this->module->render_without_side_effects( function () use ( $event_id, $seat, $key ) {
             if ( 'receipt' === $key ) {
                 return $this->render_receipt( (int) ( $seat['order_id'] ?? 0 ) );
+            }
+            if ( 'confirmation' === $key && Email_Catalog::buyer_order_id( $this->module, $seat ) > 0 ) {
+                return $this->module->woocommerce->preview_customer_confirmation( (int) $seat['order_id'], $event_id );
             }
             if ( 'confirmation' === $key ) {
                 return $this->module->build_confirmation_email(

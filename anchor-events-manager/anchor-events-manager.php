@@ -3591,6 +3591,47 @@ class Module {
         return (string) \ob_get_clean();
     }
 
+    /** Standalone role-action forms queued by role_action_button(), printed in the page footer. */
+    private $role_action_forms = [];
+
+    /**
+     * One role-panel action as a button that submits its OWN form.
+     *
+     * The panel is printed inside the event edit form, and a <form> nested in
+     * another is dropped by the browser while its </form> closes the OUTER one
+     * early — everything after the panel then fell out of the editor (seen on a
+     * date's edit screen, the only screen that owns a role). So the button
+     * stays in place and points at a form printed after the page with the HTML
+     * `form` attribute.
+     *
+     * @return string Button markup.
+     */
+    private function role_action_button( $event_id, $action, $redirect, $label, $mode = '', $confirm = '' ) {
+        $id = 'anchor-role-' . \sanitize_html_class( $action ) . '-' . (int) $event_id;
+        if ( ! isset( $this->role_action_forms[ $id ] ) ) {
+            $this->role_action_forms[ $id ] = '<form id="' . \esc_attr( $id ) . '" method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" hidden>'
+                . '<input type="hidden" name="action" value="' . \esc_attr( $action ) . '" />'
+                . '<input type="hidden" name="event_id" value="' . (int) $event_id . '" />'
+                . '<input type="hidden" name="redirect_to" value="' . \esc_url( $redirect ) . '" />'
+                . \wp_nonce_field( $action . '_' . (int) $event_id, '_wpnonce', true, false )
+                . '</form>';
+            if ( 1 === \count( $this->role_action_forms ) ) {
+                \add_action( 'wp_footer', [ $this, 'print_role_action_forms' ] );
+                \add_action( 'admin_footer', [ $this, 'print_role_action_forms' ] );
+            }
+        }
+        return '<button type="submit" form="' . \esc_attr( $id ) . '" class="anchor-event-button-secondary"'
+            . ( '' !== $mode ? ' name="mode" value="' . \esc_attr( $mode ) . '"' : '' )
+            . ( '' !== $confirm ? ' data-confirm="' . \esc_attr( $confirm ) . '"' : '' )
+            . '>' . \esc_html( $label ) . '</button>';
+    }
+
+    /** Footer hook: the forms role_action_button() queued, outside any other form. */
+    public function print_role_action_forms() {
+        echo \implode( '', $this->role_action_forms ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped when built.
+        $this->role_action_forms = [];
+    }
+
     /**
      * The "Event role" panel on the console's Basics step (spec §7).
      *
@@ -3638,14 +3679,7 @@ class Module {
                     ?>
                 </p>
                 <p class="anchor-event-hint"><?php echo esc_html__( 'The role is kept after the event runs, so you can keep granting access later. Deleting it removes it from everyone who holds it.', 'anchor-schema' ); ?></p>
-                <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>"
-                      onsubmit="return confirm('<?php echo esc_js( __( 'Delete this event role and remove it from every holder? This cannot be undone.', 'anchor-schema' ) ); ?>');">
-                    <input type="hidden" name="action" value="anchor_events_delete_role" />
-                    <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
-                    <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
-                    <?php \wp_nonce_field( 'anchor_events_delete_role_' . $event_id ); ?>
-                    <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Delete role', 'anchor-schema' ); ?></button>
-                </form>
+                <?php echo $this->role_action_button( $event_id, 'anchor_events_delete_role', $redirect, __( 'Delete role', 'anchor-schema' ), '', __( 'Delete this event role and remove it from every holder? This cannot be undone.', 'anchor-schema' ) ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
             <?php endif; ?>
 
             <?php
@@ -3653,18 +3687,14 @@ class Module {
              * The backfill (spec §4.4) is offered whether or not the role
              * exists yet: the event that most needs it is one that was already
              * selling when this shipped, which by definition has no role.
-             * Not destructive and idempotent, so no confirm dialog — running
+             * Not destructive and idempotent, so no confirm — running
              * it twice is a no-op, which is the point.
              */
             ?>
-            <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
-                <input type="hidden" name="action" value="anchor_events_backfill_role" />
-                <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
-                <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
-                <?php \wp_nonce_field( 'anchor_events_backfill_role_' . $event_id ); ?>
-                <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Grant role to current attendees', 'anchor-schema' ); ?></button>
+            <p>
+                <?php echo $this->role_action_button( $event_id, 'anchor_events_backfill_role', $redirect, __( 'Grant role to current attendees', 'anchor-schema' ) ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
                 <span class="anchor-event-hint"><?php echo esc_html__( 'Gives the role (and an account, where they have none) to everyone with a confirmed seat right now. Safe to run more than once.', 'anchor-schema' ); ?></span>
-            </form>
+            </p>
 
             <?php if ( $slug !== '' ) : ?>
             <?php
@@ -3672,19 +3702,15 @@ class Module {
              * Audit F01: the reverse of the backfill. "Check" is a dry run
              * that only reports; "Reconcile roles" removes seat-derived roles
              * whose holder no longer owns a confirmed seat. Manual grants are
-             * never touched, so no confirm dialog either — but the check is
+             * never touched, so no confirm either — but the check is
              * offered first so the operator can see the count.
              */
             ?>
-            <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
-                <input type="hidden" name="action" value="anchor_events_reconcile_role" />
-                <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
-                <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
-                <?php \wp_nonce_field( 'anchor_events_reconcile_role_' . $event_id ); ?>
-                <button type="submit" name="mode" value="check" class="anchor-event-button-secondary"><?php echo esc_html__( 'Check roles', 'anchor-schema' ); ?></button>
-                <button type="submit" name="mode" value="apply" class="anchor-event-button-secondary"><?php echo esc_html__( 'Reconcile roles', 'anchor-schema' ); ?></button>
+            <p>
+                <?php echo $this->role_action_button( $event_id, 'anchor_events_reconcile_role', $redirect, __( 'Check roles', 'anchor-schema' ), 'check' ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+                <?php echo $this->role_action_button( $event_id, 'anchor_events_reconcile_role', $redirect, __( 'Reconcile roles', 'anchor-schema' ), 'apply' ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
                 <span class="anchor-event-hint"><?php echo esc_html__( 'Removes the role from anyone who got it from a seat but no longer holds a confirmed seat of their own. Access you granted by hand is never removed.', 'anchor-schema' ); ?></span>
-            </form>
+            </p>
             <?php endif; ?>
         </div>
         <?php

@@ -67,22 +67,48 @@ final class ManualTracking {
 			'box'             => '',
 			'dims_cm'         => '',
 			'source'          => self::SOURCE,
-			// A carrier we cannot ask is taken at its word: the package has shipped.
-			'status'          => $trackable ? 'label_created' : 'in_transit',
+			// A carrier we cannot ask is taken at its word: the package has shipped (no progress is known).
+			'status'          => $trackable ? 'label_created' : 'shipped',
 		] );
 
 		/* translators: 1: carrier, 2: tracking number */
 		$order->add_order_note( sprintf( \__( 'Tracking number added: %1$s %2$s.', 'anchor-schema' ), $carrier->label(), $number ) );
-		if ( ! in_array( (string) $order->get_meta( LabelService::STATE_META ), [ 'shipped', 'delivered' ], true ) ) {
+		if ( $this->needs_label_state( $order ) ) {
 			$order->update_meta_data( LabelService::STATE_META, 'labelled' );
+		}
+		if ( ! $order->has_status( [ 'processing', 'on-hold' ] ) ) {
+			// Back-filling a finished (or cancelled) order: record it, but never tell the customer it is on its way.
+			$order->update_meta_data( TrackingPoller::SHIPPED_META, (string) time() );
 		}
 		$order->save();
 
 		if ( $trackable ) {
 			$this->poller->refresh( $id ); // already scanned → Shipped and the customer's email now, not in two hours
 		} else {
-			$this->poller->mark_shipped( \wc_get_order( $order->get_id() ), (array) $this->shipments->find( $id ) );
+			$fresh = \wc_get_order( $order->get_id() );
+			$this->poller->mark_shipped( $fresh, (array) $this->shipments->find( $id ) );
+			if ( 'labelled' === (string) $fresh->get_meta( LabelService::STATE_META ) ) {
+				// The shipped email went out earlier (or this is a back-fill): it has still shipped.
+				$fresh->update_meta_data( LabelService::STATE_META, 'shipped' );
+				$fresh->save();
+			}
 		}
 		return $id;
+	}
+
+	/**
+	 * Does the order's shipping state still mean "no package yet"? Empty, Labelled, or a processing
+	 * order flagged only because it has nothing on it. Any other flag (a refused void, a label
+	 * bought but not saved) is a problem for a person and is kept.
+	 */
+	private function needs_label_state( \WC_Order $order ): bool {
+		$state = (string) $order->get_meta( LabelService::STATE_META );
+		if ( in_array( $state, [ '', 'labelled' ], true ) ) {
+			return true;
+		}
+		return 'needs_attention' === $state
+			&& $order->has_status( 'processing' )
+			&& '' === (string) $order->get_meta( LabelService::UNRECORDED_META )
+			&& 1 === count( $this->shipments->active_for_order( $order->get_id() ) ); // only the row just added
 	}
 }

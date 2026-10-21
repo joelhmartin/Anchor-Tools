@@ -338,6 +338,10 @@ final class LabelService {
 		if ( $order ) {
 			/* translators: %s: tracking number */
 			$order->add_order_note( sprintf( \__( 'Tracking number removed: %s.', 'anchor-schema' ), $row['tracking_number'] ) );
+			if ( ! $this->is_labelled( $order ) && $order->has_status( [ 'processing', 'on-hold' ] ) ) {
+				// Usually a mistyped number: let the corrected one send the customer a shipped email of its own.
+				$order->delete_meta_data( TrackingPoller::SHIPPED_META );
+			}
 			$this->reset_state_after_void( $order );
 			$order->save();
 		}

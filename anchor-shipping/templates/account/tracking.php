@@ -25,10 +25,13 @@ $count   = count( $rows );
 		$key   = $r['status_key'];
 		$at    = $reached[ $key ] ?? 0;
 		$alert = in_array( $key, [ 'exception', 'returned' ], true );
+		$blind = 'shipped' === $key; // a carrier we cannot ask: no progress bar, just the link
 		if ( 'delivered' === $key ) {
 			$headline = $r['delivered_at'] ? sprintf( /* translators: %s: delivery day */ \__( 'Delivered %s', 'anchor-schema' ), $day( $r['delivered_at'] ) ) : \__( 'Delivered', 'anchor-schema' );
 		} elseif ( $alert ) {
 			$headline = '' !== $r['status'] ? $r['status'] : \__( 'Delivery problem', 'anchor-schema' );
+		} elseif ( $blind ) {
+			$headline = \__( 'Shipped', 'anchor-schema' );
 		} elseif ( 'label_created' === $key ) {
 			$headline = \__( 'Preparing to ship', 'anchor-schema' );
 		} else {
@@ -40,7 +43,7 @@ $count   = count( $rows );
 		?>
 		<div class="ast-card ast-is-<?php echo \esc_attr( $key ); ?>">
 			<p class="ast-headline"><?php echo \esc_html( $headline ); ?></p>
-			<?php if ( ! $alert ) : ?>
+			<?php if ( ! $alert && ! $blind ) : ?>
 				<ol class="ast-steps">
 					<?php $i = 0; foreach ( $steps as $step => $label ) : ?>
 						<li class="ast-step<?php echo $i < $at ? ' is-done' : ( $i === $at ? ' is-current' : '' ); ?>"<?php echo $i === $at ? ' aria-current="step"' : ''; ?>><span><?php echo \esc_html( $label ); ?></span></li>
@@ -51,7 +54,9 @@ $count   = count( $rows );
 				<?php if ( $expected ) : ?>
 					<div class="ast-row"><dt><?php \esc_html_e( 'Expected delivery', 'anchor-schema' ); ?></dt><dd><?php echo \esc_html( \wp_date( 'l, F j', $expected, new \DateTimeZone( 'UTC' ) ) ); ?></dd></div>
 				<?php endif; ?>
-				<?php if ( 'label_created' === $key ) : ?>
+				<?php if ( $blind ) : ?>
+					<div class="ast-row"><dt><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></dt><dd><?php echo \esc_html( sprintf( /* translators: %s: carrier name */ \__( 'Follow this package on the %s website.', 'anchor-schema' ), $r['carrier'] ) ); ?></dd></div>
+				<?php elseif ( 'label_created' === $key ) : ?>
 					<div class="ast-row"><dt><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></dt><dd><?php \esc_html_e( 'Label created. Tracking updates once the carrier scans the package.', 'anchor-schema' ); ?></dd></div>
 				<?php elseif ( '' !== $detail || '' !== $r['location'] ) : ?>
 					<div class="ast-row"><dt><?php \esc_html_e( 'Latest update', 'anchor-schema' ); ?></dt><dd><?php echo \esc_html( implode( ' — ', array_filter( [ $detail, $r['location'] ] ) ) ); ?></dd></div>

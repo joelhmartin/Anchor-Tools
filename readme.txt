@@ -25,7 +25,7 @@ Usage:
 == Changelog ==
 
 = 3.40.0 =
-* Shipping: add a tracking number to an order by hand (UPS, FedEx or USPS) for packages shipped without a label from here. UPS numbers are tracked like labels made here (shipped email on first scan, complete on delivery); FedEx and USPS get a tracking link and the shipped email straight away. Hand-entered numbers are removed, never voided at the carrier, and survive cancelling the order.
+* Shipping: add a tracking number to an order by hand (UPS, FedEx or USPS) for packages shipped without a label from here. UPS numbers are tracked like labels made here (shipped email on first scan, complete on delivery); FedEx and USPS get a tracking link, show as Shipped, and send the shipped email straight away. Back-filling a completed, cancelled or refunded order never emails the customer. Hand-entered numbers are removed, never voided (or auto-voided) at the carrier, and survive cancelling the order. Mixed orders complete when their UPS packages are delivered; the poller only spends its batch on carriers it can ask.
 
 = 3.39.4 =
 * Events: the console Registered list has a search box that matches any column (name, email, phone, status, ticket, answers, source, order, date; several words narrow it) and click-to-sort column headers (Party sorts as a number).

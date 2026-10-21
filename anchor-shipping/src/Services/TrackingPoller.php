@@ -57,7 +57,7 @@ final class TrackingPoller {
 	public function poll(): void {
 		$touched = []; // order_id => true: orders with a row that changed status this run
 		$now     = \current_time( 'mysql', true );
-		foreach ( $this->shipments->pollable( self::BATCH ) as $row ) {
+		foreach ( $this->shipments->pollable( self::BATCH, $this->trackable_ids() ) as $row ) {
 			if ( $this->poll_one( $row, $now ) ) {
 				$touched[ (int) $row['order_id'] ] = true;
 			}
@@ -193,7 +193,10 @@ final class TrackingPoller {
 			$this->mark_shipped( $order, $scanned[0] );
 		}
 
-		if ( count( array_filter( $rows, static fn( array $r ) => 'delivered' !== $r['status'] ) ) > 0 ) {
+		// Delivery is only known for packages a carrier reports on: a tracking-only (FedEx/USPS by hand)
+		// row neither blocks nor proves it. An order with no trackable package is never auto-delivered.
+		$trackable = array_filter( $rows, fn( array $r ): bool => $this->can_track( (string) $r['carrier'] ) );
+		if ( ! $trackable || count( array_filter( $trackable, static fn( array $r ) => 'delivered' !== $r['status'] ) ) > 0 ) {
 			return;
 		}
 		if ( 'delivered' === $order->get_meta( LabelService::STATE_META ) ) {
@@ -222,6 +225,16 @@ final class TrackingPoller {
 		$order->update_meta_data( LabelService::STATE_META, 'shipped' );
 		$order->save();
 		\do_action( 'anchor_shipping_first_scan', $order->get_id(), $row );
+	}
+
+	/** Ids of carriers the poller can ask about. @return string[] */
+	private function trackable_ids(): array {
+		return array_keys( array_filter( $this->carriers->all(), static fn( $c ): bool => $c->supports( 'track' ) ) );
+	}
+
+	private function can_track( string $carrier_id ): bool {
+		$c = $this->carriers->get( $carrier_id );
+		return $c && $c->supports( 'track' );
 	}
 
 	private function note( int $order_id, string $text ): void {

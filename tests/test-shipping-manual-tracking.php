@@ -101,12 +101,13 @@ class Test_Shipping_Manual_Tracking extends Anchor_Shipping_TestCase {
 		$order = $this->make_order( [], 'processing' );
 		$id    = $this->manual->add( $order, 'fedex', '123456789012' );
 
-		$this->assertSame( 'in_transit', Module::instance()->shipments->find( $id )['status'] );
+		$this->assertSame( 'shipped', Module::instance()->shipments->find( $id )['status'], 'no progress is known for a carrier we cannot ask' );
 		$this->assertSame( 'shipped', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ) );
 		$this->assertSame( 1, $this->first_scans );
 		$links = ( new TrackingLinks( Module::instance()->shipments, $this->registry ) )->for_order( $order->get_id() );
 		$this->assertSame( 'FedEx', $links[0]['carrier'] );
 		$this->assertSame( 'https://www.fedex.com/fedextrack/?trknbr=123456789012', $links[0]['url'] );
+		$this->assertSame( 'Shipped', $links[0]['status'] );
 	}
 
 	public function test_a_second_number_does_not_resend_the_shipped_email() {
@@ -205,11 +206,86 @@ class Test_Shipping_Manual_Tracking extends Anchor_Shipping_TestCase {
 		$this->assertStringNotContainsString( 'auto-voided', $this->notes( $order->get_id() ) );
 	}
 
-	public function test_poller_rotates_rows_it_cannot_ask_about() {
+	public function test_poller_never_spends_a_batch_slot_on_rows_it_cannot_ask_about() {
 		$order = $this->make_order( [], 'processing' );
-		$id    = $this->manual->add( $order, 'fedex', '123456789012' );
+		$fedex = $this->manual->add( $order, 'fedex', '123456789012' );
+		$ups   = $this->manual->add( wc_get_order( $order->get_id() ), 'ups', '1Z999AA10123456784' );
+		$ids   = array_map( 'intval', wp_list_pluck( Module::instance()->shipments->pollable( 50, [ 'ups' ] ), 'id' ) );
+		$this->assertSame( [ $ups ], $ids );
+		$this->assertNotContains( $fedex, $ids );
+		$this->assertSame( [], Module::instance()->shipments->pollable( 50, [] ) );
+	}
+
+	private function poller(): TrackingPoller {
+		return new TrackingPoller( $this->registry, Module::instance()->shipments );
+	}
+
+	public function test_mixed_order_completes_when_the_ups_package_is_delivered() {
+		$order = $this->make_order( [], 'processing' );
+		$this->manual->add( $order, 'fedex', '123456789012' );
+		$ups = $this->manual->add( wc_get_order( $order->get_id() ), 'ups', '1Z999AA10123456784' );
+		$this->ups->script['1Z999AA10123456784'] = new TrackingResult( '1Z999AA10123456784', 'delivered', 'Delivered', time() - 60 );
+		$this->poller()->poll();
+		$this->assertSame( 'delivered', Module::instance()->shipments->find( $ups )['status'] );
+		$this->assertSame( 'completed', wc_get_order( $order->get_id() )->get_status(), 'a FedEx number entered by hand neither blocks nor proves delivery' );
+	}
+
+	public function test_order_with_only_untrackable_numbers_is_never_auto_completed() {
+		$order = $this->make_order( [], 'processing' );
+		$this->manual->add( $order, 'usps', '9400111899223197428490' );
+		$this->poller()->poll();
+		$this->assertSame( 'processing', wc_get_order( $order->get_id() )->get_status() );
+	}
+
+	public function test_correcting_a_mistyped_number_reaches_shipped_and_emails_the_right_one() {
 		$m     = Module::instance();
-		( new TrackingPoller( $this->registry, $m->shipments ) )->poll();
-		$this->assertNotNull( $m->shipments->find( $id )['last_polled_at'], 'stamped, so it cannot hold the batch\'s front' );
+		$order = $this->make_order( [], 'processing' );
+		$bad   = $this->manual->add( $order, 'fedex', '123456789012' );
+		( new LabelService( $this->registry, $m->shipments, $m->store, $m->packer ) )->void_shipment( $bad );
+		$this->manual->add( wc_get_order( $order->get_id() ), 'fedex', '123456789013' );
+		$this->assertSame( 'shipped', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ) );
+		$this->assertSame( 2, $this->first_scans, 'the corrected number gets its own shipped email' );
+	}
+
+	/** @dataProvider closed_statuses */
+	public function test_back_filling_a_closed_order_never_emails_the_customer( string $status ) {
+		$order = $this->make_order( [], $status );
+		$this->manual->add( $order, 'fedex', '123456789012' );
+		$this->ups->script['1Z999AA10123456784'] = new TrackingResult( '1Z999AA10123456784', 'delivered', 'Delivered', time() - 60 );
+		$this->manual->add( wc_get_order( $order->get_id() ), 'ups', '1Z999AA10123456784' );
+		$this->assertSame( 0, $this->first_scans );
+		$this->assertCount( 2, Module::instance()->shipments->active_for_order( $order->get_id() ), 'still recorded' );
+		$this->assertSame( $status, wc_get_order( $order->get_id() )->get_status() );
+		$this->assertSame( 'delivered', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ), 'the delivered UPS package settles the state, quietly' );
+	}
+
+	public function closed_statuses(): array {
+		return [ 'completed' => [ 'completed' ], 'cancelled' => [ 'cancelled' ], 'refunded' => [ 'refunded' ] ];
+	}
+
+	public function test_a_problem_flag_survives_adding_a_number() {
+		$order = $this->make_order( [], 'cancelled' );
+		$order->update_meta_data( LabelService::STATE_META, 'needs_attention' );
+		$order->save();
+		$this->manual->add( $order, 'fedex', '123456789012' );
+		$this->assertSame( 'needs_attention', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ) );
+	}
+
+	public function test_a_processing_order_waiting_for_a_label_stops_needing_one() {
+		$order = $this->make_order( [], 'processing' );
+		$order->update_meta_data( LabelService::STATE_META, 'needs_attention' );
+		$order->save();
+		$this->manual->add( $order, 'ups', '1Z999AA10123456784' );
+		$this->assertSame( 'labelled', wc_get_order( $order->get_id() )->get_meta( LabelService::STATE_META ) );
+	}
+
+	public function test_customer_card_for_a_tracking_only_number_has_no_progress_bar() {
+		$html = \Anchor\Shipping\Support\Template::render( 'account/tracking', [ 'rows' => [ [
+			'carrier' => 'FedEx', 'number' => '123456789012', 'url' => 'https://www.fedex.com/x', 'status' => 'Shipped', 'status_key' => 'shipped',
+			'detail' => '', 'location' => '', 'event_at' => null, 'expected' => '', 'delivered_at' => null,
+		] ] ] );
+		$this->assertStringContainsString( '>Shipped<', $html );
+		$this->assertStringNotContainsString( 'ast-steps', $html );
+		$this->assertStringContainsString( 'Follow this package on the FedEx website', $html );
 	}
 }

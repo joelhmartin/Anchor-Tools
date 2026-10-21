@@ -57,43 +57,67 @@ final class TrackingPoller {
 	public function poll(): void {
 		$touched = []; // order_id => true: orders with a row that changed status this run
 		$now     = \current_time( 'mysql', true );
-		foreach ( $this->shipments->pollable( self::BATCH ) as $row ) {
-			$carrier = $this->carriers->get( (string) $row['carrier'] );
-			$number  = (string) $row['tracking_number'];
-			if ( ! $carrier || '' === $number || ! $carrier->supports( 'track' ) ) {
-				continue;
-			}
-			$id = (int) $row['id'];
-			try {
-				// One number per call: a failure must not cost the rest of the batch their update.
-				$result = $carrier->track( [ $number ] )[ $number ] ?? null;
-			} catch ( \Throwable $e ) {
-				$this->log( sprintf( 'Tracking %s failed: %s', $number, $e->getMessage() ) );
-				try {
-					$this->shipments->update( $id, [ 'last_polled_at' => $now ] );
-				} catch ( \Throwable $e2 ) {
-					$this->log( sprintf( 'Could not stamp %s: %s', $number, $e2->getMessage() ) );
-				}
-				continue;
-			}
-			try {
-				$fresh = $this->shipments->find( $id );
-				if ( ! $fresh || 'voided' === $fresh['status'] ) {
-					continue; // voided (by a person) since the batch was read: leave it alone
-				}
-				if ( $this->apply( $fresh, $result, $now ) && ! $this->quiet_for( (string) $row['carrier'] ) ) {
-					$touched[ (int) $row['order_id'] ] = true;
-				}
-			} catch ( \Throwable $e ) {
-				$this->log( sprintf( 'Could not record tracking for %s: %s', $number, $e->getMessage() ) );
+		foreach ( $this->shipments->pollable( self::BATCH, $this->trackable_ids() ) as $row ) {
+			if ( $this->poll_one( $row, $now ) ) {
+				$touched[ (int) $row['order_id'] ] = true;
 			}
 		}
 		foreach ( array_keys( $touched ) as $order_id ) {
-			try {
-				$this->settle_order( $order_id );
-			} catch ( \Throwable $e ) {
-				$this->log( sprintf( 'Could not settle order %d after tracking: %s', $order_id, $e->getMessage() ) );
+			$this->settle_quietly( $order_id );
+		}
+	}
+
+	/** Ask the carrier about one row now (e.g. a tracking number just entered) and settle its order. */
+	public function refresh( int $row_id ): void {
+		$row = $this->shipments->find( $row_id );
+		if ( $row && 'voided' !== $row['status'] && $this->poll_one( $row, \current_time( 'mysql', true ) ) ) {
+			$this->settle_quietly( (int) $row['order_id'] );
+		}
+	}
+
+	/** @return bool true when the row changed in a way its order should be settled for */
+	private function poll_one( array $row, string $now ): bool {
+		$carrier = $this->carriers->get( (string) $row['carrier'] );
+		$number  = (string) $row['tracking_number'];
+		$id      = (int) $row['id'];
+		if ( ! $carrier || '' === $number || ! $carrier->supports( 'track' ) ) {
+			// Nothing to ask (e.g. a tracking-only carrier): stamp it so it rotates behind rows that can be polled.
+			$this->stamp( $id, $number, $now );
+			return false;
+		}
+		try {
+			// One number per call: a failure must not cost the rest of the batch their update.
+			$result = $carrier->track( [ $number ] )[ $number ] ?? null;
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Tracking %s failed: %s', $number, $e->getMessage() ) );
+			$this->stamp( $id, $number, $now );
+			return false;
+		}
+		try {
+			$fresh = $this->shipments->find( $id );
+			if ( ! $fresh || 'voided' === $fresh['status'] ) {
+				return false; // voided (by a person) since the batch was read: leave it alone
 			}
+			return $this->apply( $fresh, $result, $now ) && ! $this->quiet_for( (string) $row['carrier'] );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Could not record tracking for %s: %s', $number, $e->getMessage() ) );
+			return false;
+		}
+	}
+
+	private function stamp( int $id, string $number, string $now ): void {
+		try {
+			$this->shipments->update( $id, [ 'last_polled_at' => $now ] );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Could not stamp %s: %s', $number, $e->getMessage() ) );
+		}
+	}
+
+	private function settle_quietly( int $order_id ): void {
+		try {
+			$this->settle_order( $order_id );
+		} catch ( \Throwable $e ) {
+			$this->log( sprintf( 'Could not settle order %d after tracking: %s', $order_id, $e->getMessage() ) );
 		}
 	}
 
@@ -102,7 +126,8 @@ final class TrackingPoller {
 		$id = (int) $row['id'];
 		// Only "carrier has no such package" (unknown) or a genuine label_created counts as never scanned;
 		// an unmapped status type (unknown_type) must leave the row alone.
-		$never_scanned = 'label_created' === $row['status'] && $this->older_than_void_window( (string) $row['created_at'] ) && ( ! $r || in_array( $r->status, [ 'label_created', 'unknown' ], true ) );
+		// A hand-entered number was not bought here: UPS's unused-label auto-void says nothing about it.
+		$never_scanned = ! ManualTracking::is_manual( $row ) && 'label_created' === $row['status'] && $this->older_than_void_window( (string) $row['created_at'] ) && ( ! $r || in_array( $r->status, [ 'label_created', 'unknown' ], true ) );
 		$carrier_void  = $r && 'voided' === $r->status;
 		if ( $never_scanned || $carrier_void ) {
 			$this->shipments->update( $id, [ 'last_polled_at' => $now, 'status' => 'voided', 'voided_at' => $now ] + ( $r && '' !== $r->detail && ! in_array( $r->status, [ 'unknown', 'unknown_type' ], true ) ? [ 'status_detail' => \mb_substr( $r->detail, 0, 255 ) ] : [] ) );
@@ -164,14 +189,14 @@ final class TrackingPoller {
 		}
 
 		$scanned = array_values( array_filter( $rows, static fn( array $r ) => 'label_created' !== $r['status'] ) );
-		if ( $scanned && '' === (string) $order->get_meta( self::SHIPPED_META ) ) {
-			$order->update_meta_data( self::SHIPPED_META, (string) time() );
-			$order->update_meta_data( LabelService::STATE_META, 'shipped' );
-			$order->save();
-			\do_action( 'anchor_shipping_first_scan', $order_id, $scanned[0] );
+		if ( $scanned ) {
+			$this->mark_shipped( $order, $scanned[0] );
 		}
 
-		if ( count( array_filter( $rows, static fn( array $r ) => 'delivered' !== $r['status'] ) ) > 0 ) {
+		// Delivery is only known for packages a carrier reports on: a tracking-only (FedEx/USPS by hand)
+		// row neither blocks nor proves it. An order with no trackable package is never auto-delivered.
+		$trackable = array_filter( $rows, fn( array $r ): bool => $this->can_track( (string) $r['carrier'] ) );
+		if ( ! $trackable || count( array_filter( $trackable, static fn( array $r ) => 'delivered' !== $r['status'] ) ) > 0 ) {
 			return;
 		}
 		if ( 'delivered' === $order->get_meta( LabelService::STATE_META ) ) {
@@ -185,6 +210,31 @@ final class TrackingPoller {
 		} else {
 			$order->add_order_note( $note );
 		}
+	}
+
+	/**
+	 * The order has left the building: mark it Shipped and fire `anchor_shipping_first_scan` (the customer's
+	 * shipped email), once per order. Called on a carrier's first scan, or straight away for a tracking
+	 * number entered for a carrier that cannot be polled.
+	 */
+	public function mark_shipped( \WC_Order $order, array $row ): void {
+		if ( '' !== (string) $order->get_meta( self::SHIPPED_META ) ) {
+			return;
+		}
+		$order->update_meta_data( self::SHIPPED_META, (string) time() );
+		$order->update_meta_data( LabelService::STATE_META, 'shipped' );
+		$order->save();
+		\do_action( 'anchor_shipping_first_scan', $order->get_id(), $row );
+	}
+
+	/** Ids of carriers the poller can ask about. @return string[] */
+	private function trackable_ids(): array {
+		return array_keys( array_filter( $this->carriers->all(), static fn( $c ): bool => $c->supports( 'track' ) ) );
+	}
+
+	private function can_track( string $carrier_id ): bool {
+		$c = $this->carriers->get( $carrier_id );
+		return $c && $c->supports( 'track' );
 	}
 
 	private function note( int $order_id, string $text ): void {

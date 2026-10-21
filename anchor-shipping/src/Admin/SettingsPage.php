@@ -39,7 +39,7 @@ final class SettingsPage {
 		$txt = static fn( $v ): string => \sanitize_text_field( (string) $v );
 		$num = static fn( $v ): float => max( 0.0, (float) $v );
 
-		$out['default_carrier'] = isset( $post['default_carrier'] ) && $this->carriers->get( (string) $post['default_carrier'] ) ? (string) $post['default_carrier'] : $current['default_carrier'];
+		$out['default_carrier'] = isset( $post['default_carrier'], $this->carriers->all()[ (string) $post['default_carrier'] ] ) ? (string) $post['default_carrier'] : $current['default_carrier'];
 		$out['default_service'] = isset( $post['default_service'] ) ? $txt( $post['default_service'] ) : $current['default_service'];
 		$out['label_format']    = in_array( $post['label_format'] ?? '', [ 'GIF', 'ZPL' ], true ) ? $post['label_format'] : 'GIF';
 		$out['inbox']           = implode( ', ', array_filter( array_map( 'sanitize_email', array_map( 'trim', explode( ',', (string) ( $post['inbox'] ?? $current['inbox'] ) ) ) ) ) );

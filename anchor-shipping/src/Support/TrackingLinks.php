@@ -47,6 +47,7 @@ final class TrackingLinks {
 		$labels = [
 			'label_created'    => \__( 'Label created', 'anchor-schema' ),
 			'in_transit'       => \__( 'In transit', 'anchor-schema' ),
+			'shipped'          => \__( 'Shipped', 'anchor-schema' ), // tracking-only carrier: progress is on its site
 			'out_for_delivery' => \__( 'Out for delivery', 'anchor-schema' ),
 			'delivered'        => \__( 'Delivered', 'anchor-schema' ),
 			'exception'        => \__( 'Delivery exception', 'anchor-schema' ),

@@ -50,11 +50,19 @@ final class ShipmentRepository {
 
 	/**
 	 * Rows worth asking the carrier about: still moving, shipped within the last 30 days,
-	 * the longest-unpolled first (never-polled rows lead).
+	 * the longest-unpolled first (never-polled rows lead). $carriers limits it to carriers that
+	 * can be asked (null = any), so tracking-only rows never take a batch slot.
+	 *
+	 * @param string[]|null $carriers
 	 */
-	public function pollable( int $limit ): array {
+	public function pollable( int $limit, ?array $carriers = null ): array {
 		global $wpdb;
+		if ( [] === $carriers ) {
+			return [];
+		}
 		$cutoff = gmdate( 'Y-m-d H:i:s', time() - 30 * DAY_IN_SECONDS );
-		return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM " . Migrations::table() . " WHERE status NOT IN ('voided','delivered','returned') AND created_at > %s ORDER BY last_polled_at IS NULL DESC, last_polled_at ASC, id ASC LIMIT %d", $cutoff, $limit ), ARRAY_A ) ?: []; // phpcs:ignore
+		$only   = null === $carriers ? '' : ' AND carrier IN (' . implode( ',', array_fill( 0, count( $carriers ), '%s' ) ) . ')';
+		$args   = array_merge( [ $cutoff ], null === $carriers ? [] : array_values( $carriers ), [ $limit ] );
+		return $wpdb->get_results( $wpdb->prepare( "SELECT * FROM " . Migrations::table() . " WHERE status NOT IN ('voided','delivered','returned') AND created_at > %s{$only} ORDER BY last_polled_at IS NULL DESC, last_polled_at ASC, id ASC LIMIT %d", $args ), ARRAY_A ) ?: []; // phpcs:ignore
 	}
 }

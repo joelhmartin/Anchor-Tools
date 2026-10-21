@@ -8,6 +8,7 @@ use Anchor\Shipping\Carriers\CarrierRegistry;
 use Anchor\Shipping\Domain\Address;
 use Anchor\Shipping\Database\ShipmentRepository;
 use Anchor\Shipping\Packing\Packer;
+use Anchor\Shipping\Services\ManualTracking;
 use Anchor\Shipping\Services\Protection;
 use Anchor\Shipping\Support\Settings;
 use Anchor\Shipping\Support\TrackingLinks;
@@ -43,8 +44,8 @@ final class OrderPanel {
 
 	/** Styles + script + the `anchorShipping` object the panel's JS needs; callable from wp-admin and the front-end console. */
 	public static function enqueue(): void {
-		\wp_enqueue_style( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.css', [], '1.0.2' );
-		\wp_enqueue_script( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.js', [ 'jquery' ], '1.0.2', true );
+		\wp_enqueue_style( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.css', [], '1.0.3' );
+		\wp_enqueue_script( 'anchor-shipping-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-shipping/assets/admin.js', [ 'jquery' ], '1.0.3', true );
 		\wp_localize_script( 'anchor-shipping-admin', 'anchorShipping', [ 'ajax' => \admin_url( 'admin-ajax.php' ), 'nonce' => \wp_create_nonce( Ajax::NONCE ), 'confirmVoid' => \__( 'Click again to void', 'anchor-schema' ) ] );
 	}
 
@@ -55,7 +56,24 @@ final class OrderPanel {
 		return '<div class="anchor-shipping-panel anchor-shipping-predates" data-order="' . (int) $order->get_id() . '">'
 			. '<p class="anchor-shipping-note">' . \esc_html( sprintf( /* translators: %s: date label printing started */ \__( 'Placed before label printing started on %s, so it was most likely shipped another way.', 'anchor-schema' ), $date ) ) . '</p>'
 			. '<p><a class="anchor-shipping-open" href="' . \esc_url( $url ) . '">' . \esc_html__( 'Create a label anyway', 'anchor-schema' ) . '</a></p>'
+			. $this->render_add_tracking()
+			. '<p class="anchor-shipping-error" role="alert"></p>'
 			. '</div>';
+	}
+
+	/** Folded form for a package shipped without a label from here (UPS.com, WorldShip, FedEx, USPS). */
+	private function render_add_tracking(): string {
+		$options = '';
+		foreach ( $this->carriers->for_tracking() as $id => $c ) {
+			$options .= '<option value="' . \esc_attr( $id ) . '">' . \esc_html( $c->label() ) . '</option>';
+		}
+		return '<details class="anchor-shipping-more anchor-shipping-track"><summary>' . \esc_html__( 'Add a tracking number', 'anchor-schema' ) . '</summary>'
+			. '<div class="anchor-shipping-track-add">'
+			. '<p class="anchor-shipping-meta">' . \esc_html__( 'For a package shipped without a label from here. The customer gets the shipped email when UPS first scans it, or straight away for FedEx and USPS.', 'anchor-schema' ) . '</p>'
+			. '<p><select name="track_carrier" aria-label="' . \esc_attr__( 'Carrier', 'anchor-schema' ) . '">' . $options . '</select> '
+			. '<input type="text" name="track_number" size="22" autocomplete="off" spellcheck="false" aria-label="' . \esc_attr__( 'Tracking number', 'anchor-schema' ) . '" placeholder="' . \esc_attr__( 'Tracking number', 'anchor-schema' ) . '"></p>'
+			. '<p><button type="button" class="button anchor-shipping-track-submit">' . \esc_html__( 'Add tracking number', 'anchor-schema' ) . '</button></p>'
+			. '</div></details>';
 	}
 
 	/** @param \WP_Post|\WC_Order $post_or_order */
@@ -88,18 +106,24 @@ final class OrderPanel {
 			<?php foreach ( $rows as $r ) :
 				$carrier = $this->carriers->get( $r['carrier'] );
 				$voided  = 'voided' === $r['status'];
+				$manual  = ManualTracking::is_manual( $r );
 				?>
 				<div class="anchor-shipping-row<?php echo $voided ? ' is-voided' : ''; ?>">
 					<strong><?php echo \esc_html( $r['tracking_number'] ); ?></strong>
-					<span class="anchor-shipping-meta"><?php echo \esc_html( trim( ( $carrier ? $carrier->label() : $r['carrier'] ) . ' · ' . ( TrackingLinks::status_label( (string) $r['status'] ) ?: $r['status'] ) . ( (float) $r['declared_value'] > 0 ? ' · insured' : '' ) . ( '1' === (string) $r['signature'] ? ' · signature' : '' ) ) ); ?></span>
+					<span class="anchor-shipping-meta"><?php echo \esc_html( trim( ( $carrier ? $carrier->label() : $r['carrier'] ) . ' · ' . ( TrackingLinks::status_label( (string) $r['status'] ) ?: $r['status'] ) . ( (float) $r['declared_value'] > 0 ? ' · insured' : '' ) . ( '1' === (string) $r['signature'] ? ' · signature' : '' ) . ( $manual ? ' · ' . \__( 'entered by hand', 'anchor-schema' ) : '' ) ) ); ?></span>
 					<?php if ( ! $voided ) : ?>
-						<?php if ( '' === (string) $r['label_path'] ) : ?>
+						<?php if ( $manual ) : ?>
+						<?php elseif ( '' === (string) $r['label_path'] ) : ?>
 							<em class="anchor-shipping-meta"><?php \esc_html_e( 'Label file missing', 'anchor-schema' ); ?></em>
 						<?php else : ?>
 							<a class="button button-small anchor-shipping-print" target="_blank" href="<?php echo \esc_url( Ajax::download_url( (int) $r['id'] ) ); ?>"><?php \esc_html_e( 'Print', 'anchor-schema' ); ?></a>
 						<?php endif; ?>
 						<?php if ( $carrier ) : ?><a class="button button-small" target="_blank" rel="noopener" href="<?php echo \esc_url( $carrier->tracking_url( $r['tracking_number'] ) ); ?>"><?php \esc_html_e( 'Track', 'anchor-schema' ); ?></a><?php endif; ?>
-						<button type="button" class="button button-small anchor-shipping-void" data-id="<?php echo (int) $r['id']; ?>"><?php \esc_html_e( 'Void', 'anchor-schema' ); ?></button>
+						<?php if ( $manual ) : ?>
+							<button type="button" class="button button-small anchor-shipping-void" data-id="<?php echo (int) $r['id']; ?>" data-confirm="<?php \esc_attr_e( 'Click again to remove', 'anchor-schema' ); ?>"><?php \esc_html_e( 'Remove', 'anchor-schema' ); ?></button>
+						<?php else : ?>
+							<button type="button" class="button button-small anchor-shipping-void" data-id="<?php echo (int) $r['id']; ?>"><?php \esc_html_e( 'Void', 'anchor-schema' ); ?></button>
+						<?php endif; ?>
 					<?php endif; ?>
 				</div>
 			<?php endforeach; ?>
@@ -152,6 +176,7 @@ final class OrderPanel {
 				<p><button type="button" class="button button-primary anchor-shipping-submit"><?php \esc_html_e( 'Create label', 'anchor-schema' ); ?></button></p>
 			</div>
 			<?php if ( $active ) : ?></details><?php endif; ?>
+			<?php echo $this->render_add_tracking(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped in render_add_tracking() ?>
 			<?php // Outside the toggle: void errors land here too and must not hide in a closed <details>. ?>
 			<p class="anchor-shipping-error" role="alert"></p>
 		</div>

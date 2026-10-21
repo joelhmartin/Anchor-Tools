@@ -869,7 +869,7 @@ class Module {
      * @param array|null $meta     Pre-loaded event meta; loaded if not supplied.
      * @return int[]
      */
-    private function effective_offsets( $event_id, array $settings, $meta = null ) {
+    public function effective_offsets( $event_id, array $settings, $meta = null ) {
         if ( ! \is_array( $meta ) ) {
             $meta = $this->get_meta( (int) $event_id );
         }
@@ -1230,7 +1230,7 @@ class Module {
      *                       documented as a read with no side effects.
      * @return array [ offset => sent_at ]; 0 means "superseded, never sent".
      */
-    private function reminder_markers( $seat_id, $start_ts, $migrate = false ) {
+    public function reminder_markers( $seat_id, $start_ts, $migrate = false ) {
         $raw = \get_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, true );
         list( $keyed, $legacy ) = $this->normalize_marker_map( $raw, $start_ts );
         if ( $legacy && $migrate ) {
@@ -1250,7 +1250,7 @@ class Module {
      *                      "gave up after MAX_EMAIL_ATTEMPTS failed sends"
      *                      (finding-14).
      */
-    private function mark_reminder_sent( $seat_id, $start_ts, $offset, $sent_at ) {
+    public function mark_reminder_sent( $seat_id, $start_ts, $offset, $sent_at ) {
         $raw = \get_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, true );
         list( $keyed, ) = $this->normalize_marker_map( $raw, $start_ts );
         $keyed[ (int) $start_ts ][ (int) $offset ] = (int) $sent_at;
@@ -1560,7 +1560,7 @@ class Module {
         // finding-13 — the seat identity keeps two different attendees on the
         // same event (and the same email domain) from collapsing into one
         // deduped error row; see send_html_email()'s docblock.
-        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ], [ 'kind' => 'events.reminder' ] );
+        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ], [ 'kind' => 'events.reminder:' . (int) $offset ] );
 
         // Retry bookkeeping lives at the point of the actual send (audit
         // REG-D5) so the pre-flight bails above — reminders off for this

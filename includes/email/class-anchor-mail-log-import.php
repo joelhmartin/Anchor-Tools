@@ -17,8 +17,8 @@ if ( ! class_exists( 'Anchor_Mail_Log_Import' ) ) {
 
     class Anchor_Mail_Log_Import {
 
-        /** Subjects that are never registrant emails (account, password, signing, admin mail). */
-        const EXCLUDE_PATTERN = '/account (has been )?created|password|Document Viewed|has been signed|^\[|new order/i';
+        /** Subjects that are never registrant emails (account, password, login codes, signing, admin mail). */
+        const EXCLUDE_PATTERN = '/account (has been )?created|password|login confirmation code|verification code|one-time code|security code|Document Viewed|has been signed|^\[|new order/i';
 
         /** Headers dropped on import: dead FunnelKit endpoints, or set by the mailer on every send. */
         const DROPPED_HEADERS = [ 'mime-version', 'list-unsubscribe', 'list-unsubscribe-post' ];

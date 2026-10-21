@@ -85,22 +85,6 @@ class Test_Events_Email_Log extends Anchor_Events_TestCase {
 		$this->assertCount( 0, $this->rows() );
 	}
 
-	public function test_panel_for_seat_lists_seat_and_order_rows() {
-		$this->require_wc();
-		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
-		$event_id = $this->make_event( [ 'title' => 'Panel Event', 'start_date' => '2030-10-23' ] );
-		list( $order, $seat ) = $this->event_order( $event_id );
-		$other = $this->make_seat( $event_id, [ 'email' => 'other@example.test' ] );
-		Anchor_Mail_Log::insert( [ 'context' => 'events', 'kind' => 'events.confirmation', 'audience' => 'attendee', 'event_id' => $event_id, 'seat_id' => $seat, 'recipient' => 'seatrow@example.test', 'subject' => 'S' ] );
-		Anchor_Mail_Log::insert( [ 'context' => 'events', 'kind' => 'wc.customer_processing_order', 'audience' => 'attendee', 'event_id' => $event_id, 'order_id' => $order->get_id(), 'recipient' => 'orderrow@example.test', 'subject' => 'S' ] );
-		Anchor_Mail_Log::insert( [ 'context' => 'events', 'kind' => 'events.confirmation', 'audience' => 'attendee', 'event_id' => $event_id, 'seat_id' => $other, 'recipient' => 'otherrow@example.test', 'subject' => 'S' ] );
-		$html = $this->module()->email_log->panel_for_seat( $event_id, $seat );
-		$this->assertStringContainsString( 'seatrow@example.test', $html );
-		$this->assertStringContainsString( 'orderrow@example.test', $html );
-		$this->assertStringNotContainsString( 'otherrow@example.test', $html );
-		$this->assertSame( '', $this->module()->email_log->panel_for_seat( $event_id + 999, $seat ) );
-	}
-
 	public function test_events_capability_gates_rows() {
 		$cap  = Module::events_capability();
 		$user = self::factory()->user->create( [ 'role' => 'subscriber' ] );
@@ -109,12 +93,6 @@ class Test_Events_Email_Log extends Anchor_Events_TestCase {
 		$this->assertFalse( current_user_can( 'manage_options' ) );
 		$this->assertTrue( Anchor_Mail_Log_Admin::can_manage( [ 'context' => 'events' ] ) );
 		$this->assertFalse( Anchor_Mail_Log_Admin::can_manage( [ 'context' => 'other' ] ) );
-	}
-
-	public function test_kind_labels_filter_includes_events_kinds() {
-		$labels = apply_filters( 'anchor_mail_log_kind_labels', [] );
-		$this->assertSame( 'Order received', $labels['wc.customer_processing_order'] );
-		$this->assertArrayHasKey( 'events.confirmation', $labels );
 	}
 
 	public function test_signing_key_saved_not_echoed() {

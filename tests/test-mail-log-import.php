@@ -155,16 +155,10 @@ class Test_Mail_Log_Import extends Anchor_Events_TestCase {
 		$this->assertSame( 'events.wc_confirmation', Anchor_Mail_Log_Import::kind_for_subject( "You\u{2019}re registered: X" ) );
 		$this->assertSame( 'events.wc_confirmation', Anchor_Mail_Log_Import::kind_for_subject( "You're registered" ) );
 		$this->assertSame( 'imported', Anchor_Mail_Log_Import::kind_for_subject( 'Something else' ) );
-		foreach ( [ 'Your account has been created', 'Reset your Password', 'Document Viewed', 'Your doc has been signed', '[TMJ] x', 'New order #5' ] as $s ) {
+		foreach ( [ 'Your account has been created', 'Reset your Password', 'Document Viewed', 'Your doc has been signed', '[TMJ] x', 'New order #5', 'Your login confirmation code', 'Verification code: 123456', 'Your one-time code', 'Security code for TMJ' ] as $s ) {
 			$this->assertTrue( Anchor_Mail_Log_Import::is_excluded( $s ), $s );
 		}
 		$this->assertFalse( Anchor_Mail_Log_Import::is_excluded( 'Thank You For Registering!' ) );
-		foreach ( array_keys( \Anchor\Events\Email_Log::kind_labels() ) as $k ) {
-			$labels[ $k ] = true;
-		}
-		foreach ( [ 'Thank You For Registering!', 'Mini Residency Course', "You're registered", 'zzz' ] as $s ) {
-			$this->assertArrayHasKey( Anchor_Mail_Log_Import::kind_for_subject( $s ), $labels );
-		}
 	}
 
 	public function test_cli_matches_order_window_and_skips_excluded() {

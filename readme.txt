@@ -29,6 +29,8 @@ Usage:
 * Events: unchanged email templates are no longer posted or stored as overrides (fixes copies of the defaults being saved, and a firewall 403 on saves that never touched a template).
 * Events: `<style>` blocks (responsive `@media` rules) in email templates are kept instead of being stripped to visible text.
 * Events: the email preview has Desktop / Tablet / Mobile widths.
+* Events: a registrant's Emails panel now lists every email the event has for them (Order receipt, Registration confirmation, each Reminder, and Cancellation notice for cancelled seats) instead of a send history. Each row shows Not sent / Sent with the date, Delivered / Opened / Clicked when Mailgun reports them, View for the latest copy, and Send / Send again to mail today's version on demand. Emails switched off for the event show "Off for this event". Reminder log entries now record their offset.
+* Mail log import skips login, verification, one-time and security code emails.
 
 = 3.39.0 =
 * Events: every email sent to a registrant is logged on their seat (wp-admin roster and front-end console) with delivery, open and click status from Mailgun webhooks, a View link and a Resend button. WooCommerce customer emails for event orders are logged too.

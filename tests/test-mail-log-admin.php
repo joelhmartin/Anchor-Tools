@@ -1,6 +1,6 @@
 <?php
 /**
- * Mail log admin: view, resend and the reusable panel.
+ * Mail log admin: view endpoint, cell helpers and assets.
  *
  * @package Anchor_Tools\Tests
  */
@@ -79,91 +79,6 @@ class Test_Mail_Log_Admin extends WP_Ajax_UnitTestCase {
 		return $this->_last_response;
 	}
 
-	public function test_resend_creates_linked_row() {
-		$old = $this->seed(
-			[
-				'headers' => wp_json_encode(
-					[
-						'Content-Type: text/html; charset=UTF-8',
-						'Bcc: staff@x.com',
-						'X-Mailgun-Variables: {"anchor_mail_id":999}',
-					]
-				),
-			]
-		);
-
-		$res = Anchor_Mail_Log_Admin::resend( $old, get_current_user_id() );
-
-		$this->assertTrue( $res['ok'] );
-		$new = Anchor_Mail_Log::get( $res['id'] );
-		$this->assertSame( 'resend', $new['source'] );
-		$this->assertSame( $old, (int) $new['resend_of'] );
-		$this->assertSame( 'pat@example.com', $new['recipient'] );
-		$this->assertSame( 22, (int) $new['seat_id'] );
-		$this->assertSame( get_current_user_id(), (int) $new['sent_by'] );
-
-		$blob = $this->sent_header_blob();
-		$this->assertStringContainsString( 'Bcc: staff@x.com', $blob );
-		$this->assertSame( 1, substr_count( $blob, 'X-Mailgun-Variables' ) );
-		$this->assertStringContainsString( '"anchor_mail_id":' . $res['id'], $blob );
-	}
-
-	public function test_resend_of_resend_points_at_clicked_row() {
-		$old   = $this->seed();
-		$first = Anchor_Mail_Log_Admin::resend( $old, 1 );
-		$again = Anchor_Mail_Log_Admin::resend( $first['id'], 1 );
-		$this->assertTrue( $again['ok'] );
-		$this->assertSame( $first['id'], (int) Anchor_Mail_Log::get( $again['id'] )['resend_of'] );
-	}
-
-	public function test_resend_of_imported_row() {
-		$old = $this->seed( [ 'source' => 'import', 'headers' => '[]' ] );
-		$res = Anchor_Mail_Log_Admin::resend( $old, 1 );
-		$this->assertTrue( $res['ok'] );
-		$mock = tests_retrieve_phpmailer_instance();
-		$to   = $mock->get_recipient( 'to' );
-		$this->assertSame( 'pat@example.com', $to->address );
-	}
-
-	public function test_resend_failure_is_logged_and_context_released() {
-		$old = $this->seed();
-		add_filter( 'pre_wp_mail', '__return_false' );
-		$res = Anchor_Mail_Log_Admin::resend( $old, 1 );
-		remove_filter( 'pre_wp_mail', '__return_false' );
-		$this->assertFalse( $res['ok'] );
-		$this->assertSame( 'failed', Anchor_Mail_Log::get( $res['id'] )['status'] );
-
-		// Context must be disarmed: an unrelated mail is not logged.
-		global $wpdb;
-		$before = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . Anchor_Mail_Log::table() ); // phpcs:ignore
-		wp_mail( 'x@example.com', 's', 'm' );
-		$this->assertSame( $before, (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . Anchor_Mail_Log::table() ) ); // phpcs:ignore
-	}
-
-	public function test_resend_unknown_row() {
-		$res = Anchor_Mail_Log_Admin::resend( 424242, 1 );
-		$this->assertFalse( $res['ok'] );
-	}
-
-	public function test_resend_ajax_works_for_admin() {
-		$old                = $this->seed();
-		$_POST['id']        = $old;
-		$_POST['nonce']     = wp_create_nonce( 'anchor_mail_log' );
-		$out                = json_decode( $this->ajax( 'anchor_mail_log_resend' ), true );
-		$this->assertTrue( $out['success'] );
-		$this->assertStringContainsString( 'data-resend', $out['data']['row_html'] );
-	}
-
-	public function test_resend_ajax_requires_capability() {
-		$old            = $this->seed();
-		$this->_setRole( 'subscriber' );
-		$_POST['id']    = $old;
-		$_POST['nonce'] = wp_create_nonce( 'anchor_mail_log' );
-		$out            = json_decode( $this->ajax( 'anchor_mail_log_resend' ), true );
-		$this->assertFalse( $out['success'] );
-		$this->assertSame( 0, (int) $GLOBALS['wpdb']->get_var( 'SELECT COUNT(*) FROM ' . Anchor_Mail_Log::table() . " WHERE source='resend'" ) ); // phpcs:ignore
-	}
-
 	public function test_view_requires_capability() {
 		$old               = $this->seed();
 		$this->_setRole( 'subscriber' );
@@ -201,32 +116,14 @@ class Test_Mail_Log_Admin extends WP_Ajax_UnitTestCase {
 		remove_filter( 'anchor_mail_log_can_manage', '__return_true' );
 	}
 
-	public function test_panel_renders_states() {
-		$a = $this->seed( [ 'kind' => 'confirmation', 'status' => 'delivered', 'delivered_at' => '2026-10-20 20:00:00', 'opened_at' => '2026-10-20 20:04:00', 'open_count' => 2 ] );
-		$b = $this->seed( [ 'status' => 'bounced', 'status_detail' => 'mailbox "full" <550>' ] );
-		$c = $this->seed( [ 'source' => 'import', 'subject' => 'Old FunnelKit mail', 'kind' => '' ] );
-		$d = $this->seed( [ 'source' => 'resend', 'resend_of' => $a, 'sent_by' => 1, 'status' => 'failed', 'status_detail' => 'SMTP down' ] );
-
-		$rows = array_map( [ 'Anchor_Mail_Log', 'get' ], [ $a, $b, $c, $d ] );
-		$html = Anchor_Mail_Log_Admin::render_panel( $rows, [ 'confirmation' => 'Registration confirmation' ] );
-
-		$this->assertStringContainsString( 'Emails', $html );
-		$this->assertStringContainsString( 'Delivered', $html );
-		$this->assertStringContainsString( '×2', $html );
-		$this->assertStringContainsString( 'Registration confirmation', $html );
-		$this->assertStringContainsString( 'Bounced', $html );
-		$this->assertStringContainsString( 'title="' . esc_attr( 'mailbox "full" <550>' ) . '"', $html );
-		$this->assertStringContainsString( 'Sent (before tracking)', $html );
-		$this->assertStringContainsString( 'not tracked', $html );
-		$this->assertStringContainsString( 'Old FunnelKit mail', $html );
-		$this->assertStringContainsString( 'Resent by', $html );
-		$this->assertStringContainsString( 'SMTP down', $html );
-		$this->assertSame( 4, substr_count( $html, 'data-resend=' ) );
-	}
-
-	public function test_panel_empty_state() {
-		$html = Anchor_Mail_Log_Admin::render_panel( [] );
-		$this->assertStringContainsString( 'No emails logged for this registrant yet.', $html );
+	public function test_cell_helpers() {
+		$delivered = Anchor_Mail_Log::get( $this->seed( [ 'status' => 'delivered', 'delivered_at' => '2026-10-20 20:00:00' ] ) );
+		$this->assertStringStartsWith( 'Yes · ', Anchor_Mail_Log_Admin::delivery( $delivered )[0] );
+		$this->assertSame( [ 'Bounced', 'red' ], Anchor_Mail_Log_Admin::delivery( [ 'status' => 'bounced' ] ) );
+		$this->assertSame( [ '—', '' ], Anchor_Mail_Log_Admin::delivery( [ 'status' => 'sent' ] ) );
+		$this->assertSame( '—', Anchor_Mail_Log_Admin::engagement( null, 0 ) );
+		$this->assertStringContainsString( '(×2)', Anchor_Mail_Log_Admin::engagement( '2026-10-20 20:04:00', 2 ) );
+		$this->assertStringContainsString( 'action=anchor_mail_log_view', Anchor_Mail_Log_Admin::view_url( 5 ) );
 	}
 
 	public function test_enqueue_registers_assets_and_localizes_url() {

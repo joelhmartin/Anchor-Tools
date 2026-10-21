@@ -195,6 +195,16 @@ class Test_Shipping_Manual_Tracking extends Anchor_Shipping_TestCase {
 		$this->assertSame( Settings::all()['default_carrier'], $out['default_carrier'] );
 	}
 
+	public function test_an_unscanned_hand_entered_ups_number_is_never_auto_voided() {
+		$order = $this->make_order( [], 'processing' );
+		$id    = $this->manual->add( $order, 'ups', '1Z999AA10123456784' );
+		$m     = Module::instance();
+		$m->shipments->update( $id, [ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 11 * DAY_IN_SECONDS ) ] );
+		( new TrackingPoller( $this->registry, $m->shipments ) )->poll();
+		$this->assertSame( 'label_created', $m->shipments->find( $id )['status'], 'UPS voids unused labels bought here, not numbers entered by hand' );
+		$this->assertStringNotContainsString( 'auto-voided', $this->notes( $order->get_id() ) );
+	}
+
 	public function test_poller_rotates_rows_it_cannot_ask_about() {
 		$order = $this->make_order( [], 'processing' );
 		$id    = $this->manual->add( $order, 'fedex', '123456789012' );

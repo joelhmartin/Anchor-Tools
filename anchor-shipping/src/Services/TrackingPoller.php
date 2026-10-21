@@ -126,7 +126,8 @@ final class TrackingPoller {
 		$id = (int) $row['id'];
 		// Only "carrier has no such package" (unknown) or a genuine label_created counts as never scanned;
 		// an unmapped status type (unknown_type) must leave the row alone.
-		$never_scanned = 'label_created' === $row['status'] && $this->older_than_void_window( (string) $row['created_at'] ) && ( ! $r || in_array( $r->status, [ 'label_created', 'unknown' ], true ) );
+		// A hand-entered number was not bought here: UPS's unused-label auto-void says nothing about it.
+		$never_scanned = ! ManualTracking::is_manual( $row ) && 'label_created' === $row['status'] && $this->older_than_void_window( (string) $row['created_at'] ) && ( ! $r || in_array( $r->status, [ 'label_created', 'unknown' ], true ) );
 		$carrier_void  = $r && 'voided' === $r->status;
 		if ( $never_scanned || $carrier_void ) {
 			$this->shipments->update( $id, [ 'last_polled_at' => $now, 'status' => 'voided', 'voided_at' => $now ] + ( $r && '' !== $r->detail && ! in_array( $r->status, [ 'unknown', 'unknown_type' ], true ) ? [ 'status_detail' => \mb_substr( $r->detail, 0, 255 ) ] : [] ) );

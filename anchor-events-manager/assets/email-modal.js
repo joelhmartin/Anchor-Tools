@@ -283,6 +283,12 @@
       var mce     = null;            // the TinyMCE instance, once attached
       var lastFocused = intro;
 
+      // Post the template only when it was edited (see email-preview-tools.js).
+      if (window.AnchorEmailPreviewTools) {
+        window.AnchorEmailPreviewTools.guardSource(source);
+        window.AnchorEmailPreviewTools.bindDevices(modal.querySelector('.anchor-event-email-devices'), frame);
+      }
+
       function say(msg) { if (status) { status.textContent = msg || ''; } }
 
       /** The opening lines as they stand right now, editor or textarea. */
@@ -453,6 +459,8 @@
           });
           if (source) { source.hidden = view !== 'html'; }
           if (frame)  { frame.hidden  = view !== 'preview'; }
+          var devices = modal.querySelector('.anchor-event-email-devices');
+          if (devices) { devices.hidden = view !== 'preview'; }
 
           // A token only resolves in the field whose expansion pass knows the
           // key, so the palette shows the set that belongs to the open view.

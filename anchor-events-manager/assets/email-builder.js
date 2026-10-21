@@ -34,6 +34,11 @@
   function buildDoc(type) {
     var ta = panelTextarea(type);
     var html = ta ? ta.value : '';
+    // A whole document (the default shell) is the document: nesting it inside a
+    // <body> makes the parser drop its <head>, and with it any <style>/@media.
+    if (/<html[\s>]/i.test(html)) {
+      return /^\s*<!doctype/i.test(html) ? html : '<!DOCTYPE html>' + html;
+    }
     return '<!DOCTYPE html><html><head><meta charset="utf-8">' +
       '<meta name="viewport" content="width=device-width, initial-scale=1">' +
       (window.AnchorPreview ? window.AnchorPreview.headMarkup() : '') +
@@ -91,6 +96,7 @@
     var ta = panelTextarea(type);
     if (!ta) { return; }
     var def = (window.AnchorEmailBuilder && AnchorEmailBuilder.defaults && AnchorEmailBuilder.defaults[type]) || '';
+    window.AnchorEmailPreviewTools.markEdited(ta); // a reset must post even if the text is already the default (clears a stored override).
     var ed = findMonacoEditorFor(ta);
     if (ed) {
       ed.setValue(def); // triggers onDidChangeContent -> ta.value sync + 'input' dispatch.
@@ -139,6 +145,15 @@
     if (!$('.anchor-email-builder').length) { return; }
 
     $('.anchor-email-tab').each(function () { applyPreview($(this).data('email-type')); });
+
+    // Post a template only when it was edited (see email-preview-tools.js).
+    var tools = window.AnchorEmailPreviewTools;
+    $('.anchor-email-panel').each(function () {
+      var type = $(this).data('email-type');
+      if (!tools) { return; }
+      tools.guardSource(panelTextarea(type));
+      tools.bindDevices(this.querySelector('.anchor-email-devices'), previewFrame(type));
+    });
 
     $(document).on('click', '.anchor-email-tab', function () {
       switchTab($(this).data('email-type'));

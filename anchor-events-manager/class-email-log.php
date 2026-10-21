@@ -2,10 +2,10 @@
 /**
  * Events side of the mail log.
  *
- * Wires Anchor Events into the generic Anchor_Mail_Log primitive: labels for the
- * kinds Events logs, the capability that lets event managers see/resend those
- * rows, WooCommerce customer-email capture for event orders, the per-seat panel
- * and the Mailgun signing-key setting.
+ * Wires Anchor Events into the generic Anchor_Mail_Log primitive: the capability
+ * that lets event managers view those rows, WooCommerce customer-email capture
+ * for event orders, the per-seat email catalog (Email_Catalog) and the Mailgun
+ * signing-key setting.
  *
  * @package Anchor\Events
  */
@@ -14,38 +14,22 @@ namespace Anchor\Events;
 
 defined( 'ABSPATH' ) || exit;
 
+require_once __DIR__ . '/class-email-catalog.php';
+
 class Email_Log {
 
     /** @var Module */
     private $module;
 
+    /** @var Email_Catalog The per-seat "Emails" panel and its Send endpoint. */
+    public $catalog;
+
     public function __construct( Module $module ) {
-        $this->module = $module;
+        $this->module  = $module;
+        $this->catalog = new Email_Catalog( $module );
         \add_filter( 'anchor_mail_log_can_manage', [ $this, 'filter_can_manage' ], 10, 2 );
-        \add_filter( 'anchor_mail_log_kind_labels', [ $this, 'filter_kind_labels' ] );
         \add_filter( 'woocommerce_mail_callback_params', [ $this, 'wc_begin' ], 10, 2 );
         \add_action( 'woocommerce_email_sent', [ $this, 'wc_finish' ], 10, 3 );
-    }
-
-    /** @return array<string,string> kind => human label. */
-    public static function kind_labels() {
-        return [
-            'events.confirmation'     => \__( 'Registration confirmation', 'anchor-schema' ),
-            'events.reminder'         => \__( 'Event reminder', 'anchor-schema' ),
-            'events.cancellation'     => \__( 'Cancellation notice', 'anchor-schema' ),
-            'events.roster'           => \__( 'Roster to organizer', 'anchor-schema' ),
-            'events.wc_confirmation'  => \__( 'Order confirmation (events)', 'anchor-schema' ),
-            'events.organizer_notice' => \__( 'Organizer notice', 'anchor-schema' ),
-            'wc.customer_processing_order' => \__( 'Order received (WooCommerce)', 'anchor-schema' ),
-            'wc.customer_completed_order'  => \__( 'Order complete (WooCommerce)', 'anchor-schema' ),
-            'wc.customer_invoice'     => \__( 'Invoice (WooCommerce)', 'anchor-schema' ),
-            'legacy.funnelkit'        => \__( 'Course details (old FunnelKit email)', 'anchor-schema' ),
-            'imported'                => \__( 'Imported email', 'anchor-schema' ),
-        ];
-    }
-
-    public function filter_kind_labels( $labels ) {
-        return \array_merge( \is_array( $labels ) ? $labels : [], self::kind_labels() );
     }
 
     /** Events rows are managed by anyone who can manage events, not just admins. */
@@ -108,25 +92,6 @@ class Email_Log {
             'order_id' => (int) ( $identity['order'] ?? 0 ),
         ] );
         return true;
-    }
-
-    /** Admin panel of every attendee email for a seat (empty if seat is not in the event). */
-    public function panel_for_seat( $event_id, $seat_id ) {
-        $event_id = (int) $event_id;
-        $seat_id  = (int) $seat_id;
-        if ( ! \class_exists( '\Anchor_Mail_Log_Admin' ) || ! Roster::seat_belongs_to_event( $seat_id, $event_id ) ) {
-            return '';
-        }
-        $seat = $this->module->registrations->get_seat( $seat_id );
-        if ( ! $seat ) {
-            return '';
-        }
-        $rows = \Anchor_Mail_Log::query( [
-            'seat_or_order' => [ $seat_id, (int) $seat['order_id'], $event_id ],
-            'audience'      => 'attendee',
-        ] );
-        \Anchor_Mail_Log_Admin::enqueue();
-        return \Anchor_Mail_Log_Admin::render_panel( $rows, self::kind_labels() );
     }
 
     /** Persist the posted signing key (blank = keep the saved one). */

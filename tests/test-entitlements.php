@@ -733,6 +733,41 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * The panel sits inside the event edit form, so it must not open a <form> of
+	 * its own: a nested form's </form> closes the edit form early and everything
+	 * after the panel falls out of the editor (a date's edit screen, 2026-10-21).
+	 * Its buttons point at standalone forms printed in the footer instead.
+	 */
+	public function test_event_role_panel_has_no_nested_forms() {
+		ob_start();
+		$this->module()->print_role_action_forms(); // Drain forms queued by earlier tests on the shared module.
+		ob_end_clean();
+		$event_id = $this->enabled_event( [ 'title' => 'Nested Event' ] );
+		$this->ent()->grant( $event_id, self::factory()->user->create(), 'seat' );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$html = $this->module()->render_event_role_panel( $event_id );
+		$this->assertStringNotContainsString( '<form', $html );
+		$this->assertStringNotContainsString( 'confirm(', $html, 'No native dialog.' );
+		$this->assertSame( 4, substr_count( $html, ' form="anchor-role-' ), 'Delete, Grant, Check and Reconcile.' );
+		$this->assertStringContainsString( 'data-confirm=', $html, 'Delete arms before it submits.' );
+
+		ob_start();
+		$this->module()->print_role_action_forms();
+		$forms = ob_get_clean();
+		$this->assertSame( 3, substr_count( $forms, '<form id="anchor-role-' ), 'One form per action; Check and Reconcile share one.' );
+		foreach ( [ 'anchor_events_delete_role', 'anchor_events_backfill_role', 'anchor_events_reconcile_role' ] as $action ) {
+			$this->assertStringContainsString( 'value="' . $action . '"', $forms );
+			$this->assertMatchesRegularExpression( '/id="anchor-role-' . $action . '-' . $event_id . '"/', $forms );
+		}
+		$this->assertStringContainsString( 'name="_wpnonce"', $forms );
+
+		ob_start();
+		$this->module()->print_role_action_forms();
+		$this->assertSame( '', ob_get_clean(), 'Printed once.' );
+	}
+
+	/**
 	 * An event with no role yet still offers the backfill — that is precisely
 	 * the event that needs it (one that was selling before this shipped).
 	 */

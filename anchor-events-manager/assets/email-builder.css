@@ -95,3 +95,11 @@
 .anchor-upcoming-send-past .anchor-upcoming-send-state {
     color: #d63638;
 }
+
+/* Preview device toggles. */
+.anchor-email-builder .anchor-email-devices { display: flex; gap: 4px; margin: 0 0 8px; }
+.anchor-email-builder .anchor-email-device {
+    border: 1px solid #c3c4c7; background: #f6f7f7; border-radius: 4px; padding: 3px 10px; cursor: pointer;
+}
+.anchor-email-builder .anchor-email-device[aria-pressed="true"] { background: #2271b1; border-color: #2271b1; color: #fff; }
+.anchor-email-builder .anchor-email-preview-frame.is-device-frame { box-shadow: 0 1px 6px rgba(0,0,0,.18); }

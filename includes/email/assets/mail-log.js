@@ -19,7 +19,7 @@
 
 	function disarm($btn) {
 		clearTimeout($btn.data('armTimer'));
-		$btn.removeData('armed').text($btn.data('label'));
+		$btn.removeData('armed').removeClass('is-armed').text($btn.data('label'));
 	}
 
 	function swap($row, html) {
@@ -36,7 +36,7 @@
 		if (!$btn.data('label')) { $btn.data('label', $btn.text()); }
 
 		if (!$btn.data('armed')) {
-			$btn.data('armed', true).text(i18n.confirm || 'Click again to send');
+			$btn.data('armed', true).addClass('is-armed').text(i18n.confirm || 'Click again to send');
 			$btn.data('armTimer', setTimeout(function () { disarm($btn); }, ARM_MS));
 			return;
 		}

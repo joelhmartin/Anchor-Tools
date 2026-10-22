@@ -273,4 +273,35 @@ class Test_App_Connect extends Anchor_Events_TestCase {
 		$this->assertNull( $target );
 		$_GET = [];
 	}
+
+	public function test_signed_in_user_returning_from_theme_login_is_sent_to_connect_page() {
+		$return = $this->connect()->connect_url( $this->input() );
+		$target = null;
+		add_filter( 'wp_redirect', function ( $location ) use ( &$target ) {
+			$target = $location;
+			throw new Anchor_Entitlements_Redirect_Signal();
+		} );
+
+		// Logged out: nothing happens (the login form handles it).
+		$_GET['redirect_to'] = $return;
+		$this->connect()->return_after_login();
+		$this->assertNull( $target );
+
+		$this->login();
+		try {
+			$this->connect()->return_after_login();
+			$this->fail( 'expected a redirect' );
+		} catch ( Anchor_Entitlements_Redirect_Signal $e ) {
+			$this->assertSame( $return, $target );
+		}
+
+		// Anything that isn't our connect URL is ignored.
+		$target              = null;
+		$_GET['redirect_to'] = 'https://evil.example/app-connect/';
+		$this->connect()->return_after_login();
+		$_GET['redirect_to'] = home_url( '/shop/' );
+		$this->connect()->return_after_login();
+		$this->assertNull( $target );
+		unset( $_GET['redirect_to'] );
+	}
 }

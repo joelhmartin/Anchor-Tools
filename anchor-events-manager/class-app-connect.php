@@ -50,6 +50,7 @@ class App_Connect {
         \add_action( 'init', [ $this, 'add_rewrite' ] );
         \add_action( 'init', [ $this, 'maybe_flush_rewrites' ], 99 );
         \add_filter( 'query_vars', [ $this, 'query_vars' ] );
+        \add_action( 'template_redirect', [ $this, 'return_after_login' ], 0 );
         \add_action( 'template_redirect', [ $this, 'maybe_render' ], 1 );
         // WooCommerce's My Account login/register forms only honour a hidden "redirect" field.
         \add_action( 'woocommerce_login_form', [ $this, 'emit_return_field' ] );
@@ -78,7 +79,7 @@ class App_Connect {
         $sig = self::REWRITE_V . '|' . ( $this->enabled() ? 'on' : 'off' );
         if ( \get_option( self::REWRITE_OP ) !== $sig ) {
             \flush_rewrite_rules( false );
-            \update_option( self::REWRITE_OP, $sig, false );
+            \update_option( self::REWRITE_OP, $sig, true ); // Autoloaded: it is read on every init.
         }
     }
 
@@ -188,7 +189,12 @@ class App_Connect {
         }
         $available = $user->exists() ? \wp_is_application_passwords_available_for_user( $user ) : \wp_is_application_passwords_available();
         if ( ! $available ) {
-            $error->add( 'anchor_app_connect_unavailable', \__( 'App sign-in is not available for your account. Please contact the site administrator.', 'anchor-schema' ) );
+            $error->add(
+                'anchor_app_connect_unavailable',
+                $user->exists()
+                    ? \__( 'App sign-in is not available for your account. Please contact the site administrator.', 'anchor-schema' )
+                    : \__( 'App sign-in is not available on this site right now. Please contact the site administrator.', 'anchor-schema' )
+            );
         }
         return $error;
     }
@@ -283,6 +289,21 @@ class App_Connect {
         }
     }
 
+    /**
+     * Themes may post their login form back to the page it sits on (TMJ's My Account form does), so the
+     * signed-in user lands on /my-account/?redirect_to=<connect URL>. Finish the hop to the connect page.
+     */
+    public function return_after_login() {
+        if ( ! $this->enabled() || ! \is_user_logged_in() || \get_query_var( self::QUERY_VAR ) || ! isset( $_GET['redirect_to'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+            return;
+        }
+        $target = \wp_unslash( $_GET['redirect_to'] ); // phpcs:ignore WordPress.Security
+        if ( $this->is_connect_url( $target ) ) {
+            \wp_safe_redirect( $target );
+            exit;
+        }
+    }
+
     /* ----------------------------------------------------------------- output */
 
     public function maybe_render() {
@@ -295,6 +316,9 @@ class App_Connect {
         }
         \header( 'X-Robots-Tag: noindex, nofollow' );
         \header( 'Referrer-Policy: no-referrer' );
+        // Same anti-framing as core's wp-admin consent screen.
+        \send_frame_options_header();
+        \header( "Content-Security-Policy: frame-ancestors 'self'" );
 
         $is_post = 'POST' === ( $_SERVER['REQUEST_METHOD'] ?? '' ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         // phpcs:ignore WordPress.Security.NonceVerification -- verified in dispatch() for form posts.

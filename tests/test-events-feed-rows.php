@@ -111,9 +111,9 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 
 	public function test_summary_drops_shortcodes_including_unregistered_ones() {
 		$id = $this->event();
-		wp_update_post( [ 'ID' => $id, 'post_excerpt' => 'Earn CE credits. [event_registration] [gallery ids="1,2"] Join us [b]now[/b].' ] );
+		wp_update_post( [ 'ID' => $id, 'post_excerpt' => 'Earn CE credits. [event_registration] [gallery ids="1,2"] [old-form id=3] Join us [sic] now[/b].' ] );
 		$row = $this->module()->feed->row( $id );
-		$this->assertSame( 'Earn CE credits. Join us now.', $row['summary'] );
+		$this->assertSame( 'Earn CE credits. Join us [sic] now.', $row['summary'] );
 	}
 
 	public function test_encoded_tags_are_not_resurrected_as_markup() {

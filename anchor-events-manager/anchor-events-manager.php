@@ -339,6 +339,9 @@ class Module {
     /** @var App_Auth|null Application Passwords hardening for the member app. */
     public $app_auth;
 
+    /** @var App_Connect|null Themed /app-connect/ consent page for the member app. */
+    public $app_connect;
+
     /** @var Feed|null Read-only REST feed for the member app (spec 2026-10-12-events-feed-api; always loaded). */
     public $feed = null;
 
@@ -455,6 +458,7 @@ class Module {
         require_once $dir . 'class-entitlements.php';
         require_once $dir . 'class-feed.php';
         require_once $dir . 'class-app-auth.php';
+        require_once $dir . 'class-app-connect.php';
         $this->registrations = new Registrations( $this );
         $this->email_log = new Email_Log( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
@@ -485,6 +489,8 @@ class Module {
         // Application Passwords hardening for the member app: hooks core's authorize-request
         // validation, and does nothing until "Member app URL schemes" is set.
         $this->app_auth = new App_Auth( $this );
+        // Branded front-end replacement for wp-admin/authorize-application.php (same gate: "Member app URL schemes").
+        $this->app_connect = new App_Connect( $this, $this->app_auth );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.

@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.40.0
+Stable tag: 3.40.1
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.40.1 =
+* Events emails panel: an email this system sent before the mail log existed (backfilled from WP Mail Logging) now shows as Sent again. 3.39.3 hid every backfilled row to keep FunnelKit mail out, which also hid real order receipts and registration confirmations. A row now counts by the email it is, so FunnelKit and unclassified mail still never count. The backfill also recognises the registration cancelled/refunded emails as the Cancellation notice.
 
 = 3.40.0 =
 * Shipping: add a tracking number to an order by hand (UPS, FedEx or USPS) for packages shipped without a label from here. UPS numbers are tracked like labels made here (shipped email on first scan, complete on delivery); FedEx and USPS get a tracking link, show as Shipped, and send the shipped email straight away. Back-filling a completed, cancelled or refunded order never emails the customer. Hand-entered numbers are removed, never voided (or auto-voided) at the carrier, and survive cancelling the order. Mixed orders complete when their UPS packages are delivered; the poller only spends its batch on carriers it can ask.

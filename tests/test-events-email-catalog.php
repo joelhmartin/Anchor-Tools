@@ -294,9 +294,9 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 		$this->assertCount( 0, $this->rows() );
 	}
 
-	public function test_imported_send_is_ignored() {
+	public function test_backfilled_send_of_this_email_counts_as_sent() {
 		$this->require_wc();
-		$event_id           = $this->event();
+		$event_id             = $this->event();
 		list( $order, $seat ) = $this->wc_seat( $event_id );
 		Anchor_Mail_Log::insert( [
 			'context'   => 'events',
@@ -307,11 +307,33 @@ class Test_Events_Email_Catalog extends WP_Ajax_UnitTestCase {
 			'recipient' => 'pat@example.test',
 			'subject'   => 'You are registered',
 			'source'    => 'import',
-			'status'    => 'delivered',
+			'status'    => 'sent',
 		] );
 		$html = $this->catalog()->panel_for_seat( $event_id, $seat );
-		$this->assertMatchesRegularExpression( '#data-mail-row="confirmation">(?:(?!</tr>).)*>Not sent<(?:(?!</tr>).)*<td>—</td><td>—</td><td>—</td>(?:(?!</tr>).)*View(?:(?!</tr>).)*>Send<#s', $html );
-		$this->assertStringNotContainsString( 'pat@example.test', $html, 'No recipient from an imported row.' );
+		$this->assertMatchesRegularExpression( '#data-mail-row="confirmation">(?:(?!</tr>).)*>Sent (?:(?!</tr>).)*Send again#s', $html );
+		$this->assertMatchesRegularExpression( '#data-mail-row="receipt">(?:(?!</tr>).)*>Not sent<#s', $html, 'Only the matching row flips.' );
+	}
+
+	public function test_other_systems_mail_never_counts() {
+		$this->require_wc();
+		$event_id             = $this->event();
+		list( $order, $seat ) = $this->wc_seat( $event_id );
+		foreach ( [ 'legacy.funnelkit', 'imported' ] as $kind ) {
+			Anchor_Mail_Log::insert( [
+				'context'   => 'events',
+				'kind'      => $kind,
+				'audience'  => 'attendee',
+				'event_id'  => $event_id,
+				'order_id'  => $order->get_id(),
+				'recipient' => 'pat@example.test',
+				'subject'   => 'Mini Residency Course',
+				'source'    => 'import',
+				'status'    => 'sent',
+			] );
+		}
+		$html = $this->catalog()->panel_for_seat( $event_id, $seat );
+		$this->assertSame( 0, substr_count( $html, '>Sent ' ) );
+		$this->assertStringNotContainsString( 'pat@example.test', $html );
 	}
 
 	public function test_live_send_counts_as_sent_with_its_tracking() {

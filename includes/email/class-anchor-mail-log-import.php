@@ -55,6 +55,9 @@ if ( ! class_exists( 'Anchor_Mail_Log_Import' ) ) {
             if ( preg_match( '/^You.re registered/iu', $subject ) ) {
                 return 'events.wc_confirmation';
             }
+            if ( preg_match( '/^Your registration for .+ has been (cancelled|refunded)$/iu', $subject ) ) {
+                return 'events.cancellation';
+            }
             return 'imported';
         }
 

@@ -118,6 +118,8 @@ class Module {
 		new Integrations\Events( $this->progress, $this->enrollments );
 		new Frontend\Assets();
 		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments, $this->credits, $this->certificates );
+		// [anchor_course_manager]: staff-facing settings form; saves on template_redirect.
+		new Frontend\CourseManager();
 
 		// /certificate/{token}/ - the public verification route (Task 30).
 		// Its flush_if_needed() flushes for every module rule, QuizStep's too.

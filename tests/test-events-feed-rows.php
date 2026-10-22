@@ -109,6 +109,13 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$this->assertStringStartsWith( 'Bold word', $row['summary'] );
 	}
 
+	public function test_summary_drops_shortcodes_including_unregistered_ones() {
+		$id = $this->event();
+		wp_update_post( [ 'ID' => $id, 'post_excerpt' => 'Earn CE credits. [event_registration] [gallery ids="1,2"] Join us [b]now[/b].' ] );
+		$row = $this->module()->feed->row( $id );
+		$this->assertSame( 'Earn CE credits. Join us now.', $row['summary'] );
+	}
+
 	public function test_encoded_tags_are_not_resurrected_as_markup() {
 		$id = $this->event( [ 'title' => '&lt;b&gt;Text&lt;/b&gt; &amp; more' ] );
 		wp_update_post( [ 'ID' => $id, 'post_excerpt' => '&lt;b&gt;Bold&lt;/b&gt; summary' ] );

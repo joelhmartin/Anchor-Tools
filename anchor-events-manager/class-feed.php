@@ -251,7 +251,11 @@ class Feed {
     }
 
     private function summary( $text ) {
-        $text = $this->plain( $text );
+        // Descriptions can carry shortcodes, including ones no longer registered (e.g. a retired
+        // [event_registration]); strip_shortcodes() only knows registered tags, so drop any bracketed tag too.
+        $text = \strip_shortcodes( (string) $text );
+        $text = \preg_replace( '/\[\/?[a-z][a-z0-9_-]*(?:\s[^\]]*)?\]/i', '', $text );
+        $text = \preg_replace( '/\s{2,}/', ' ', $this->plain( $text ) );
         if ( mb_strlen( $text ) <= self::SUMMARY_MAX ) {
             return $text;
         }

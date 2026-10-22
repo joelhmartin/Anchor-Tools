@@ -4,9 +4,11 @@
  *
  * Rows, in order: Order receipt (WooCommerce seats only), Registration
  * confirmation, one Reminder per configured offset, and Cancellation notice
- * (cancelled/refunded seats only). Each row says whether THIS system has sent
- * that email (a live or resend mail-log row; imported history from before the
- * Events Manager, and the scheduler's own markers, never count), its
+ * (cancelled/refunded seats only). Each row says whether THIS email has been
+ * sent: a mail-log row of that row's own kind, whether captured live or
+ * backfilled from WP Mail Logging. Other systems' mail (FunnelKit's
+ * `legacy.funnelkit`, unclassified `imported`) never matches a kind, so it
+ * never counts. Each row also carries its
  * delivery/open/click state from that send, a View link to the email as it
  * would be sent now (Email_Preview, never a stored copy), and a Send button
  * that runs the module's own sender for today's version of the email.
@@ -33,9 +35,6 @@ class Email_Catalog {
     const CANCELLATION_KINDS = [ 'events.cancellation' ];
     const REMINDER_KIND      = 'events.reminder:';
 
-    /** Mail-log sources that are sends by this system. 'import' (WP Mail Logging backfill) is not. */
-    const OWN_SOURCES = [ 'live', 'resend' ];
-
     /** The WooCommerce email the Order receipt row sends. */
     const WC_RECEIPT_EMAIL = 'WC_Email_Customer_Processing_Order';
 
@@ -59,7 +58,7 @@ class Email_Catalog {
      * @param int   $event_id
      * @param array $seat Seat DTO (Registrations::get_seat()).
      * @return array[] key, label, off (reason text, '' when on), sent (log row|null),
-     *                 failed (log row|null). Only this system's own sends count.
+     *                 failed (log row|null). A row counts by its kind only.
      */
     public function entries( $event_id, array $seat ) {
         $event_id = (int) $event_id;
@@ -69,9 +68,6 @@ class Email_Catalog {
             'seat_or_order' => [ $seat_id, $order_id, $event_id ],
             'audience'      => 'attendee',
         ] ) : [];
-        $logged   = \array_values( \array_filter( $logged, static function ( $row ) {
-            return \in_array( (string) ( $row['source'] ?? '' ), self::OWN_SOURCES, true );
-        } ) );
         $settings = $this->module->get_settings();
         $external = $this->module->uses_external_signup( $event_id );
         $out      = [];

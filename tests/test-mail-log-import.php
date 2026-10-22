@@ -152,6 +152,8 @@ class Test_Mail_Log_Import extends Anchor_Events_TestCase {
 	public function test_kind_for_subject() {
 		$this->assertSame( 'wc.customer_processing_order', Anchor_Mail_Log_Import::kind_for_subject( 'Thank You For Registering!' ) );
 		$this->assertSame( 'legacy.funnelkit', Anchor_Mail_Log_Import::kind_for_subject( 'Mini Residency Course Details' ) );
+		$this->assertSame( 'events.cancellation', Anchor_Mail_Log_Import::kind_for_subject( 'Your registration for Adjunct Mini Residency – Toronto — Nov 13, 2026 has been cancelled' ) );
+		$this->assertSame( 'events.cancellation', Anchor_Mail_Log_Import::kind_for_subject( 'Your registration for X has been refunded' ) );
 		$this->assertSame( 'events.wc_confirmation', Anchor_Mail_Log_Import::kind_for_subject( "You\u{2019}re registered: X" ) );
 		$this->assertSame( 'events.wc_confirmation', Anchor_Mail_Log_Import::kind_for_subject( "You're registered" ) );
 		$this->assertSame( 'imported', Anchor_Mail_Log_Import::kind_for_subject( 'Something else' ) );

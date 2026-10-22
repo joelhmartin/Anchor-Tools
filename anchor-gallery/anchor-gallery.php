@@ -91,6 +91,7 @@ class Anchor_Gallery_Module {
         // Phase 5 — featured gallery
         'featured_thumb_size'    => 'medium',
         'featured_aspect_ratio'  => '16:9',
+        'featured_arrows'        => true,
         // Phase 5 — filter
         'filter_button_style' => 'pills',
         'filter_default'      => '',
@@ -326,8 +327,13 @@ class Anchor_Gallery_Module {
             /* ── Phase 5: Featured gallery controls ─────────────────── */
             'featured_thumb_size' => [
                 'type' => 'select', 'label' => 'Thumbnail Strip Size', 'section' => 'layout', 'priority' => 80,
-                'options' => ['small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'],
+                'options' => ['small' => 'Small', 'medium' => 'Medium', 'large' => 'Large', 'thirds' => 'Fill Width (3 Across)'],
                 'applies_to' => ['gallery', 'thumbnail_gallery'],
+            ],
+            'featured_arrows' => [
+                'type' => 'checkbox', 'label' => 'Prev/Next Arrows on Featured', 'section' => 'layout', 'priority' => 81,
+                'applies_to' => ['gallery', 'thumbnail_gallery'],
+                'help' => 'Chevrons over the featured item that step through the strip. Shown on hover (always on touch screens). Set Popup to "Inline Expand" to play videos in place.',
             ],
             'featured_aspect_ratio' => [
                 'type' => 'select', 'label' => 'Featured Aspect Ratio', 'section' => 'style', 'priority' => 80,
@@ -438,7 +444,7 @@ class Anchor_Gallery_Module {
             /* ── 3.7.x: Style — slider arrows (Nav) ──────────────────────── */
             'nav_size'   => ['type' => 'number', 'label' => 'Arrow Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => ['slider','carousel','card_carousel']],
             'nav_bg'     => ['type' => 'color',  'label' => 'Arrow Background', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel']],
-            'nav_color'  => ['type' => 'color',  'label' => 'Arrow Color', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel']],
+            'nav_color'  => ['type' => 'color',  'label' => 'Arrow Color', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel','gallery','thumbnail_gallery']],
             'nav_radius' => ['type' => 'number', 'label' => 'Arrow Radius (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 48, 'step' => 1, 'applies_to' => ['slider','carousel','card_carousel']],
             'nav_always_visible' => ['type' => 'checkbox', 'label' => 'Always Show Arrows', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel'], 'help' => 'By default arrows fade in on hover. Check to keep them visible.'],
 
@@ -2485,6 +2491,9 @@ class Anchor_Gallery_Module {
             'avg-theme-' . $settings['theme'],
             'avg-play-' . $settings['play_button_style'],
         ];
+        if ( ( $settings['featured_thumb_size'] ?? '' ) === 'thirds' ) {
+            $classes[] = 'avg-thumbs-thirds';
+        }
 
         // Phase 5 — featured layout aspect ratio + thumb-strip size.
         $feat_ratio_map = ['16:9' => '16 / 9', '4:3' => '4 / 3', '1:1' => '1 / 1', '3:2' => '3 / 2'];
@@ -2566,6 +2575,14 @@ class Anchor_Gallery_Module {
                     <?php endif; ?>
                     <?php if (!$first_img && $settings['show_duration'] && !empty($first['duration'])): ?>
                     <span class="avg-duration"><?php echo esc_html($first['duration']); ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($settings['featured_arrows']) && count($videos) > 1): ?>
+                    <button type="button" class="avg-feat-nav avg-feat-nav--prev" aria-label="<?php esc_attr_e('Previous video', 'anchor-schema'); ?>">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 5 8 12 15 19"></polyline></svg>
+                    </button>
+                    <button type="button" class="avg-feat-nav avg-feat-nav--next" aria-label="<?php esc_attr_e('Next video', 'anchor-schema'); ?>">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="9 5 16 12 9 19"></polyline></svg>
+                    </button>
                     <?php endif; ?>
                 </div>
                 <?php if ((($settings['title_position'] ?? 'below') !== 'hidden') && !empty($first['label'])): ?>

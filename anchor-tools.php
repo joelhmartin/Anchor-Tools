@@ -64,6 +64,7 @@ if ( ! class_exists( 'Anchor_Monaco' ) ) {
 if ( ! class_exists( 'Anchor_Vimeo_Api' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/vimeo/class-anchor-vimeo-api.php';
 }
+add_filter( 'wp_default_autoload_value', [ 'Anchor_Vimeo_Api', 'default_autoload' ], 10, 2 );
 if ( ! class_exists( 'Anchor_Email_Tokens' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-tokens.php';
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/email/class-anchor-email-sanitizer.php';

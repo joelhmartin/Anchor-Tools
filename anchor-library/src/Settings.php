@@ -63,12 +63,13 @@ class Settings {
 		]);
 	}
 
-	/** Blank keeps the saved token, the Clear box empties it, anything else replaces it. Stored with autoload off. */
+	/**
+	 * Blank keeps the saved token, the Clear box empties it, anything else replaces it. Must stay free of option writes:
+	 * add_option() runs this sanitizer too, so writing here recurses forever on the first save. Autoload-off is
+	 * Anchor_Vimeo_Api::default_autoload().
+	 */
 	public static function sanitize_vimeo_token( $value ) {
 		$opt = \Anchor_Vimeo_Api::OPTION;
-		if ( false === \get_option( $opt, false ) ) {
-			\add_option( $opt, '', '', false );
-		}
 		if ( ! empty( $_POST[ $opt . '_clear' ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification -- options.php verified the nonce.
 			return '';
 		}

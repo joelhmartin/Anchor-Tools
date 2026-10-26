@@ -204,4 +204,25 @@ class Test_Library_Video_Downloads extends Anchor_Library_TestCase {
 		$this->with_token();
 		$this->assertTrue( $this->get( '/folders/' . $this->folder )->get_data()['videos'][0]['downloadable'] );
 	}
+
+	/** Regression: the sanitizer once called add_option(), which re-runs the sanitizer, and the first save never returned. */
+	public function test_saving_the_token_through_the_settings_sanitizer_stores_it_with_autoload_off() {
+		\Anchor\Library\Settings::register_settings();
+		delete_option( Anchor_Vimeo_Api::OPTION );
+		$this->assertTrue( update_option( Anchor_Vimeo_Api::OPTION, ' tok-first ' ) );
+		$this->assertSame( 'tok-first', get_option( Anchor_Vimeo_Api::OPTION ) );
+		global $wpdb;
+		$autoload = $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_name = %s", Anchor_Vimeo_Api::OPTION ) );
+		$this->assertNotContains( $autoload, wp_autoload_values_to_autoload() );
+
+		// Blank keeps it; Clear empties it; a new value after Clear is saved (the stored '' equals the registered default).
+		update_option( Anchor_Vimeo_Api::OPTION, '' );
+		$this->assertSame( 'tok-first', get_option( Anchor_Vimeo_Api::OPTION ) );
+		$_POST[ Anchor_Vimeo_Api::OPTION . '_clear' ] = '1';
+		update_option( Anchor_Vimeo_Api::OPTION, 'ignored' );
+		unset( $_POST[ Anchor_Vimeo_Api::OPTION . '_clear' ] );
+		$this->assertSame( '', get_option( Anchor_Vimeo_Api::OPTION ) );
+		update_option( Anchor_Vimeo_Api::OPTION, 'tok-second' );
+		$this->assertSame( 'tok-second', get_option( Anchor_Vimeo_Api::OPTION ) );
+	}
 }

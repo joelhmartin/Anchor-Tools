@@ -38,6 +38,14 @@ class Anchor_Vimeo_Api {
 		return '';
 	}
 
+	/**
+	 * wp_default_autoload_value filter (WP 6.6+): the token is created with autoload off however it is first saved
+	 * (settings form, WP-CLI without --autoload), so the secret never rides along in alloptions.
+	 */
+	public static function default_autoload( $autoload, $option ) {
+		return self::OPTION === $option ? false : $autoload;
+	}
+
 	public static function is_configured(): bool {
 		return '' !== self::token();
 	}

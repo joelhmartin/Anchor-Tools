@@ -267,7 +267,13 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		$this->assertStringContainsString( 'name="anchor_fm_request_access_email"', $html );
 		$this->assertStringContainsString( 'name="anchor_fm_email_on_upload"', $html );
 		$this->assertStringNotContainsString( 'anchor_fm_vimeo_token', $html );
-		$this->assertStringNotContainsString( 'Vimeo access token', $html );
+		// Its replacement is the shared downloads token, write-only: the field is there, the saved value never is.
+		update_option( 'anchor_vimeo_token', 'tok-secret-123' );
+		ob_start();
+		\Anchor\Library\Settings::render_settings_page();
+		$with_token = ob_get_clean();
+		$this->assertStringContainsString( 'name="anchor_vimeo_token"', $with_token );
+		$this->assertStringNotContainsString( 'tok-secret-123', $with_token );
 		$this->assertStringContainsString( 'Private storage', $html );
 		$this->assertStringContainsString( 'deny all', $html ); // the nginx rule is inline: release zips strip *.md
 		$this->assertStringContainsString( 'value="anchor_fm_storage_check"', $html );

@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.40.0
+Stable tag: 3.41.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,10 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.41.0 =
+* Events: branded member-app sign-in. The app's connect link now opens /app-connect/ in the site's own theme (sign in through My Account, then an Allow / Cancel screen) instead of the WordPress admin login and Application Passwords screen. The core approval screen redirects there for the listed app schemes; nothing changes on sites without "Member app URL schemes".
+* Events: app feed summaries drop shortcodes, including ones from plugins that are not active.
 
 = 3.40.0 =
 * Shipping: add a tracking number to an order by hand (UPS, FedEx or USPS) for packages shipped without a label from here. UPS numbers are tracked like labels made here (shipped email on first scan, complete on delivery); FedEx and USPS get a tracking link, show as Shipped, and send the shipped email straight away. Back-filling a completed, cancelled or refunded order never emails the customer. Hand-entered numbers are removed, never voided (or auto-voided) at the carrier, and survive cancelling the order. Mixed orders complete when their UPS packages are delivered; the poller only spends its batch on carriers it can ask.

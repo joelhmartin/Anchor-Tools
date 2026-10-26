@@ -95,6 +95,12 @@ class App_Auth {
         }
     }
 
+    /** True when $url's scheme is on the allowlist (false when the feature is off or the URL is empty/schemeless). */
+    public function is_allowed_url( $url ) {
+        $scheme = self::scheme_of( $url );
+        return '' !== $scheme && \in_array( $scheme, $this->allowed_schemes(), true );
+    }
+
     private static function scheme_of( $url ) {
         $scheme = \is_string( $url ) && '' !== $url ? \wp_parse_url( $url, PHP_URL_SCHEME ) : '';
         return \is_string( $scheme ) ? \strtolower( $scheme ) : '';

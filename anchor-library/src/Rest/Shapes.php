@@ -47,6 +47,7 @@ class Shapes {
 			'title'         => (string) $v['title'],
 			'thumbnail_url' => '' !== (string) ( $v['thumbnailUrl'] ?? '' ) ? (string) $v['thumbnailUrl'] : null,
 			'embed_url'     => self::embed_url( (string) $v['vimeoId'], (string) ( $v['vimeoHash'] ?? '' ) ),
+			'downloadable'  => \Anchor_Vimeo_Api::is_configured(),
 		];
 	}
 

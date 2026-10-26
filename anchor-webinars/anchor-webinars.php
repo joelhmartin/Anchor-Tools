@@ -182,15 +182,15 @@ class Module {
 
         $this->maybe_fill_content_with_embed( $post_id, $vimeo_id, $webinar_date );
 
-        $settings  = $this->get_settings();
-        $thumb_url = null;
+        $vimeo_token = \Anchor_Vimeo_Api::token();
+        $thumb_url   = null;
 
-        if ( $settings['vimeo_api_key'] && $vimeo_id ) {
+        if ( $vimeo_token && $vimeo_id ) {
             $response = \wp_remote_get(
                 'https://api.vimeo.com/videos/' . \rawurlencode( $vimeo_id ),
                 [
                     'headers' => [
-                        'Authorization' => 'Bearer ' . $settings['vimeo_api_key'],
+                        'Authorization' => 'Bearer ' . $vimeo_token,
                     ],
                     'timeout' => 8,
                 ]

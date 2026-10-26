@@ -41,6 +41,12 @@ class Settings {
 		]);
 		// anchor_fm_vimeo_token is deliberately NOT registered: the field was dead (nothing reads it) and options.php
 		// would blank the stored value on save if it were registered without a form field. The option stays in the DB.
+		// Write-only: the form never carries the saved value, so a blank submit must keep it (see sanitize_vimeo_token).
+		\register_setting(self::GROUP, \Anchor_Vimeo_Api::OPTION, [
+			'type' => 'string',
+			'sanitize_callback' => [ self::class, 'sanitize_vimeo_token' ],
+			'default' => '',
+		]);
 		\register_setting(self::GROUP, Schema::OPT_REQUEST_ACCESS_EMAIL, [
 			'type' => 'string',
 			'sanitize_callback' => function ($v) {
@@ -55,6 +61,19 @@ class Settings {
 			'sanitize_callback' => function ($v) { return \esc_url_raw(\trim((string) $v)); },
 			'default' => '',
 		]);
+	}
+
+	/** Blank keeps the saved token, the Clear box empties it, anything else replaces it. Stored with autoload off. */
+	public static function sanitize_vimeo_token( $value ) {
+		$opt = \Anchor_Vimeo_Api::OPTION;
+		if ( false === \get_option( $opt, false ) ) {
+			\add_option( $opt, '', '', false );
+		}
+		if ( ! empty( $_POST[ $opt . '_clear' ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification -- options.php verified the nonce.
+			return '';
+		}
+		$value = \trim( \sanitize_text_field( (string) $value ) );
+		return '' === $value ? (string) \get_option( $opt, '' ) : $value;
 	}
 
 	public static function render_settings_page() {
@@ -81,6 +100,20 @@ class Settings {
 						<td>
 							<input type="url" class="regular-text" name="<?php echo \esc_attr(Schema::OPT_PORTAL_LOGO); ?>" value="<?php echo \esc_attr(\get_option(Schema::OPT_PORTAL_LOGO, '')); ?>">
 							<p class="description">Shown in the portal sidebar. Leave blank to use the site icon (Settings → General); if there is no site icon, no logo is shown.</p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row">Vimeo token for app downloads</th>
+						<td>
+							<?php $vimeo_set = '' !== (string) \get_option(\Anchor_Vimeo_Api::OPTION, ''); ?>
+							<p><strong><?php echo $vimeo_set ? 'Set' : 'Not set'; ?></strong></p>
+							<input type="password" class="regular-text" autocomplete="new-password" name="<?php echo \esc_attr(\Anchor_Vimeo_Api::OPTION); ?>" value="" placeholder="<?php echo $vimeo_set ? 'Enter a new token to replace it' : ''; ?>">
+							<?php if ($vimeo_set) : ?>
+								<label style="display:block;margin-top:6px;">
+									<input type="checkbox" name="<?php echo \esc_attr(\Anchor_Vimeo_Api::OPTION . '_clear'); ?>" value="1"> Clear the saved token
+								</label>
+							<?php endif; ?>
+							<p class="description">A Vimeo access token with the private and download scopes. It lets the member app save videos for offline viewing. Leave blank to keep the current token. If empty, the Webinars Vimeo API key is used.</p>
 						</td>
 					</tr>
 					<tr>

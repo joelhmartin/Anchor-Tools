@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.42.0
+Stable tag: 3.43.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,10 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.43.0 =
+* Events: an event sold through linked WooCommerce products (no ticket tiers of its own) is priced from those products. It used to publish a $0 Offer, so the member app and the page's schema both called it free.
+* Events: the app feed adds `registration.price_max`, the highest ticket price, so the app can show the range instead of only the cheapest ticket.
 
 = 3.42.0 =
 * Library: members can save videos in the member app to watch offline. New routes `GET /videos/{id}` (with `?sizes=1` for the sizes Vimeo offers) and `GET /videos/{id}/download`, which re-check access on every call. Listings mark videos `downloadable`. Nothing changes until a Vimeo token is set.

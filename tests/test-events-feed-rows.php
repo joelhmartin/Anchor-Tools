@@ -392,6 +392,18 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$this->assertSame( [ 'start' => '2030-03-19', 'end' => '2030-03-19', 'all_day' => true, 'label' => 'Session 1' ], $row['sessions'][0] );
 	}
 
+	public function test_untimed_session_entries_are_date_only() {
+		$rows = array_map( static function ( $r ) {
+			return array_merge( $r, [ 'start_time' => '', 'end_time' => '' ] );
+		}, $this->pediatric_rows() );
+		list( , $child ) = $this->child( $rows );
+		$row             = $this->module()->feed->row( $child );
+		$node            = $this->module()->event_schema->for_event( $child );
+
+		$this->assertSame( [ 'start' => '2030-04-17', 'end' => '2030-04-17', 'all_day' => true, 'label' => 'Session 2' ], $row['sessions'][3] );
+		$this->assertSame( '2030-07-17', $node['subEvent'][5]['startDate'] );
+	}
+
 	public function test_plain_single_child_and_single_event_have_no_sessions() {
 		list( , $child ) = $this->child();
 		$this->assertSame( [], $this->module()->feed->row( $child )['sessions'] );

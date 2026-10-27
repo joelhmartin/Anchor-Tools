@@ -342,11 +342,13 @@ class Event_Schema {
                 $max_end = $end_ts;
             }
 
+            // A session row with no times is a whole day: date-only, not 00:00–23:59.
+            $whole_day       = $all_day || ( $session['start_time'] === '' && $session['end_time'] === '' );
             $session_nodes[] = [
                 '@type'     => 'Event',
                 'name'      => $session['label'] !== '' ? $session['label'] : $title,
-                'startDate' => $this->format_iso( $start_ts, $tz, $all_day ),
-                'endDate'   => $this->format_iso( $end_ts, $tz, $all_day ),
+                'startDate' => $this->format_iso( $start_ts, $tz, $whole_day ),
+                'endDate'   => $this->format_iso( $end_ts, $tz, $whole_day ),
                 'location'  => $loc['location'],
                 'url'       => $url,
             ];

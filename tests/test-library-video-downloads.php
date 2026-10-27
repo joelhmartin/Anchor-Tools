@@ -27,7 +27,7 @@ class Test_Library_Video_Downloads extends Anchor_Library_TestCase {
 		wp_set_current_user( 0 );
 		delete_option( Anchor_Vimeo_Api::OPTION );
 		delete_option( 'anchor_webinars_settings' );
-		delete_transient( Anchor_Vimeo_Api::CACHE_PREFIX . '987654' );
+		delete_transient( Anchor_Vimeo_Api::cache_key( '987654' ) );
 
 		global $wpdb, $wp_rest_server;
 		$now = current_time( 'mysql' );
@@ -47,7 +47,7 @@ class Test_Library_Video_Downloads extends Anchor_Library_TestCase {
 		remove_action( 'rest_api_init', [ Routes::class, 'register_routes' ] );
 		remove_all_filters( 'pre_http_request' );
 		delete_option( Anchor_Vimeo_Api::OPTION );
-		delete_transient( Anchor_Vimeo_Api::CACHE_PREFIX . '987654' );
+		delete_transient( Anchor_Vimeo_Api::cache_key( '987654' ) );
 		Permissions::reset_memo();
 		parent::tear_down();
 	}
@@ -160,7 +160,7 @@ class Test_Library_Video_Downloads extends Anchor_Library_TestCase {
 		$this->stub( [ '720p' => 300, '360p' => 100 ] );
 		$this->assertSame( '720p', $this->download( [ 'rendition' => '1080p' ] )->get_data()['rendition'] );
 		$this->assertSame( '360p', $this->download( [ 'rendition' => '540p' ] )->get_data()['rendition'] );
-		delete_transient( Anchor_Vimeo_Api::CACHE_PREFIX . '987654' );
+		delete_transient( Anchor_Vimeo_Api::cache_key( '987654' ) );
 		remove_all_filters( 'pre_http_request' );
 		$this->stub( [ '360p' => 100, '240p' => 50 ] );
 		$this->assertSame( '360p', $this->download( [ 'rendition' => '720p' ] )->get_data()['rendition'] );
@@ -189,7 +189,7 @@ class Test_Library_Video_Downloads extends Anchor_Library_TestCase {
 		$this->stub( [], 500 );
 		$this->assertSame( 503, $this->download()->get_status() );
 		remove_all_filters( 'pre_http_request' );
-		delete_transient( Anchor_Vimeo_Api::CACHE_PREFIX . '987654' );
+		delete_transient( Anchor_Vimeo_Api::cache_key( '987654' ) );
 		$this->stub( [] );
 		$r = $this->download();
 		$this->assertSame( 404, $r->get_status() );

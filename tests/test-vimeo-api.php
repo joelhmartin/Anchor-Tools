@@ -16,14 +16,14 @@ class Test_Vimeo_Api extends WP_UnitTestCase {
 		$this->requests = [];
 		delete_option( Anchor_Vimeo_Api::OPTION );
 		delete_option( 'anchor_webinars_settings' );
-		delete_transient( Anchor_Vimeo_Api::CACHE_PREFIX . '123' );
+		delete_transient( Anchor_Vimeo_Api::cache_key( '123' ) );
 	}
 
 	public function tear_down() {
 		remove_all_filters( 'pre_http_request' );
 		delete_option( Anchor_Vimeo_Api::OPTION );
 		delete_option( 'anchor_webinars_settings' );
-		delete_transient( Anchor_Vimeo_Api::CACHE_PREFIX . '123' );
+		delete_transient( Anchor_Vimeo_Api::cache_key( '123' ) );
 		parent::tear_down();
 	}
 
@@ -88,6 +88,16 @@ class Test_Vimeo_Api extends WP_UnitTestCase {
 		$this->assertSame( [ '540p' ], array_column( $again, 'rendition' ) );
 	}
 
+	public function test_a_replaced_token_never_gets_the_old_tokens_cached_links() {
+		update_option( Anchor_Vimeo_Api::OPTION, 't' );
+		$this->stub( [ 'download' => [ $this->item( '540p', 200 ) ] ] );
+		Anchor_Vimeo_Api::renditions( '123' );
+		update_option( Anchor_Vimeo_Api::OPTION, 't-new' );
+		Anchor_Vimeo_Api::renditions( '123' );
+		$this->assertCount( 2, $this->requests );
+		$this->assertSame( 'Bearer t-new', $this->requests[1][1]['headers']['Authorization'] );
+	}
+
 	public function test_not_cached_when_a_link_expires_within_two_hours() {
 		update_option( Anchor_Vimeo_Api::OPTION, 't' );
 		$soon = gmdate( 'c', time() + HOUR_IN_SECONDS );
@@ -102,7 +112,7 @@ class Test_Vimeo_Api extends WP_UnitTestCase {
 		$soon = gmdate( 'c', time() + 2 * HOUR_IN_SECONDS + 10 * MINUTE_IN_SECONDS );
 		$this->stub( [ 'download' => [ $this->item( '540p', 200, $soon ) ] ] );
 		Anchor_Vimeo_Api::renditions( '123' );
-		$left = (int) get_option( '_transient_timeout_' . Anchor_Vimeo_Api::CACHE_PREFIX . '123' ) - time();
+		$left = (int) get_option( '_transient_timeout_' . Anchor_Vimeo_Api::cache_key( '123' ) ) - time();
 		$this->assertGreaterThan( 0, $left );
 		$this->assertLessThanOrEqual( 10 * MINUTE_IN_SECONDS, $left );
 	}

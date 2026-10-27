@@ -117,7 +117,7 @@ class Settings {
 									<input type="checkbox" name="<?php echo \esc_attr(\Anchor_Vimeo_Api::OPTION . '_clear'); ?>" value="1"> Clear the saved token
 								</label>
 							<?php endif; ?>
-							<p class="description">A Vimeo access token with the private and video_files scopes (Vimeo has no separate download scope). It lets the member app save videos for offline viewing. Leave blank to keep the current token. If empty, the Webinars Vimeo API key is used.</p>
+							<p class="description">A Vimeo access token with only the public, private and video_files scopes (Vimeo needs all three for download links). It lets the member app save videos for offline viewing. Leave blank to keep the current token. If empty, the Webinars Vimeo API key is used.</p>
 						</td>
 					</tr>
 					<tr>

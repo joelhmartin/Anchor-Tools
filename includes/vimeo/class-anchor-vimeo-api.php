@@ -46,6 +46,14 @@ class Anchor_Vimeo_Api {
 		return self::OPTION === $option ? false : $autoload;
 	}
 
+	/**
+	 * Transient name for a video's rendition list. Carries a short one-way fingerprint of the token, so a replaced or
+	 * revoked token never gets links fetched with the old one.
+	 */
+	public static function cache_key( string $vimeo_id ): string {
+		return self::CACHE_PREFIX . substr( hash( 'sha256', self::token() ), 0, 10 ) . '_' . $vimeo_id;
+	}
+
 	public static function is_configured(): bool {
 		return '' !== self::token();
 	}
@@ -64,7 +72,7 @@ class Anchor_Vimeo_Api {
 			return new WP_Error( 'anchor_vimeo_http', __( 'Invalid Vimeo video id.', 'anchor-schema' ), [ 'status' => 400 ] );
 		}
 
-		$cache_key = self::CACHE_PREFIX . $vimeo_id;
+		$cache_key = self::cache_key( $vimeo_id );
 		$cached    = get_transient( $cache_key );
 		if ( is_array( $cached ) ) {
 			return $cached;

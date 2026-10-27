@@ -688,6 +688,7 @@ Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible*
     "mode": "paid",
     "status": "open",
     "price": "950.00",
+    "price_max": "1200.00",
     "currency": "USD",
     "register_url": "https://site/events/…/"
   },
@@ -699,7 +700,7 @@ Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible*
 - `title` and `summary` are plain text, entities decoded, no HTML.
 - `start` / `end` are ISO 8601 in the event's own timezone, taken from the schema node; all-day events send date-only values (`YYYY-MM-DD`).
 - `location.venue` is blank when the event has no venue (the schema node names the Place after the post title then, so the venue meta decides). `online` is true for a VirtualLocation. A stream or room URL is never included.
-- `price` is the lowest Offer price as a two-decimal string; `price` and `currency` are `null` when the node has no Offer. Free events report `"0.00"`, because the schema emits a zero-price Offer for them.
+- `price` is the lowest Offer price as a two-decimal string and `price_max` the highest (equal for a single price); `price`, `price_max` and `currency` are `null` when the node has no Offer. Free events report `"0.00"`, because the schema emits a zero-price Offer for them.
 - `register_url` is always the event page, which shows the right button (native or external).
 - `audience` is `restricted` when the event has required roles, otherwise `public`.
 

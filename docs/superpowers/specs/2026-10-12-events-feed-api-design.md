@@ -79,6 +79,7 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
     "mode": "paid | free | external",
     "status": "open | waitlist | sold_out | closed | unavailable",
     "price": "950.00",
+    "price_max": "1200.00",
     "currency": "USD",
     "register_url": "https://site/events/…/"
   },
@@ -91,7 +92,7 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
 - **Registration vocabulary** (corrected against the code during planning):
   - `mode` maps `registration_mode()`: `wc` → `paid`, `free` → `free`, `external` → `external`. There is no separate RSVP mode.
   - `status` maps `bookability()` for native events: `open` → `open`, `waitlist` → `waitlist`, `full` → `sold_out`, `disabled` → `unavailable` (registration switched off), anything else → `closed`. An external-signup event is `closed` when bookability says `closed`, otherwise `open`. The module has no "not open yet" state; a registration window that hasn't opened reads `closed`.
-  - `price` is the lowest Offer price in the schema node as a string with two decimals; `price` and `currency` are `null` when the node has no Offer.
+  - `price` is the lowest Offer price in the schema node as a string with two decimals; `price_max` is the highest (same format; equal to `price` for a single price). `price`, `price_max` and `currency` are `null` when the node has no Offer. An event with no stored tiers but linked WooCommerce products takes its Offers from those products' prices.
   - `register_url` is always the event page, which shows the right button (native or external) itself.
   - All-day events send date-only `start`/`end` (`YYYY-MM-DD`), as the schema node does.
   - `location` never includes a stream or room URL.

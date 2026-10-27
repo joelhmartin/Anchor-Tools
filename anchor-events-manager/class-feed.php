@@ -159,7 +159,7 @@ class Feed {
         }
         $meta = $this->module->get_meta( $id );
         $mode = (string) $this->module->registration_mode( $id );
-        list( $price, $currency ) = $this->price( $node['offers'] ?? [] );
+        list( $price, $currency, $price_max ) = $this->price( $node['offers'] ?? [] );
 
         return [
             'id'           => $id,
@@ -181,6 +181,7 @@ class Feed {
                 'mode'         => [ 'wc' => 'paid', 'free' => 'free', 'external' => 'external' ][ $mode ] ?? 'free',
                 'status'       => $this->map_status( (string) $this->module->bookability( $id ), $mode ),
                 'price'        => $price,
+                'price_max'    => $price_max,
                 'currency'     => $currency,
                 'register_url' => (string) \get_permalink( $id ),
             ],
@@ -201,12 +202,13 @@ class Feed {
         return $map[ $bookability ] ?? 'closed';
     }
 
-    /** @return array{0:?string,1:?string} Lowest offer price + its currency. */
+    /** @return array{0:?string,1:?string,2:?string} Lowest offer price, its currency, and the highest offer price. */
     private function price( $offers ) {
         if ( isset( $offers['@type'] ) ) {
             $offers = [ $offers ];
         }
         $best = null;
+        $max  = null;
         foreach ( (array) $offers as $offer ) {
             if ( ! is_array( $offer ) || ! isset( $offer['price'] ) || ! is_numeric( $offer['price'] ) ) {
                 continue;
@@ -214,11 +216,18 @@ class Feed {
             if ( $best === null || (float) $offer['price'] < (float) $best['price'] ) {
                 $best = $offer;
             }
+            if ( $max === null || (float) $offer['price'] > $max ) {
+                $max = (float) $offer['price'];
+            }
         }
         if ( $best === null ) {
-            return [ null, null ];
+            return [ null, null, null ];
         }
-        return [ number_format( (float) $best['price'], 2, '.', '' ), isset( $best['priceCurrency'] ) ? (string) $best['priceCurrency'] : null ];
+        return [
+            number_format( (float) $best['price'], 2, '.', '' ),
+            isset( $best['priceCurrency'] ) ? (string) $best['priceCurrency'] : null,
+            number_format( $max, 2, '.', '' ),
+        ];
     }
 
     /**

@@ -92,15 +92,16 @@ class Anchor_Vimeo_Api {
 		$list  = self::parse_renditions( is_array( $body ) ? ( $body['download'] ?? [] ) : [] );
 
 		if ( $list ) {
-			$soonest = min( array_column( $list, 'expires' ) );
-			if ( $soonest - time() > self::MIN_LINK_LIFE ) {
-				set_transient( $cache_key, $list, self::CACHE_TTL );
+			// Cache only as long as every link still has MIN_LINK_LIFE left when a cached copy is served.
+			$ttl = min( self::CACHE_TTL, min( array_column( $list, 'expires' ) ) - time() - self::MIN_LINK_LIFE );
+			if ( $ttl > 0 ) {
+				set_transient( $cache_key, $list, $ttl );
 			}
 		}
 		return $list;
 	}
 
-	/** Keep MP4 renditions named like "540p" with a link; sort by height, highest first. */
+	/** Keep MP4 renditions named like "540p" with a link and a parseable expiry; sort by height, highest first. */
 	private static function parse_renditions( $download ): array {
 		$out = [];
 		foreach ( is_array( $download ) ? $download : [] as $item ) {
@@ -112,12 +113,16 @@ class Anchor_Vimeo_Api {
 			if ( ! preg_match( '/^\d{3,4}p$/', $rendition ) || 'video/mp4' !== ( $item['type'] ?? '' ) || '' === $link ) {
 				continue;
 			}
+			// A link with no parseable expiry cannot be trusted to last, so it is not offered at all.
 			$expires = isset( $item['expires'] ) ? strtotime( (string) $item['expires'] ) : false;
+			if ( ! $expires ) {
+				continue;
+			}
 			$out[]   = [
 				'rendition' => $rendition,
 				'size'      => (int) ( $item['size'] ?? 0 ),
 				'url'       => $link,
-				'expires'   => $expires ? (int) $expires : 0,
+				'expires'   => (int) $expires,
 			];
 		}
 		usort( $out, static fn( $a, $b ) => (int) $b['rendition'] <=> (int) $a['rendition'] );

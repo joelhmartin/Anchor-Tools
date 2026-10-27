@@ -122,7 +122,7 @@ Each hit adds `folder_id` (its folder) and `path` (that folder's names joined wi
 
 Off unless a Vimeo token is set (`Anchor_Vimeo_Api::is_configured()`; the Library setting "Vimeo token for app downloads"). Video rows in listings and search carry `downloadable` (that same flag), so the app hides its download control where it is off.
 
-- `/videos/{id}`: `downloads` is `[]` when downloads are off, Vimeo fails or it has no MP4s (still `200`). It holds `rendition` and `size` only, never a link.
+- `/videos/{id}`: `downloads` is `[]` unless the request has `sizes=1` (boolean, default off; without it Vimeo is not contacted, so the app's access re-check stays cheap), and also when downloads are off, Vimeo fails or it has no MP4s (still `200`). It holds `rendition` and `size` only, never a link.
 - `/videos/{id}/download`: `rendition` must match `^\d{3,4}p$` (default `540p`; else `400 rest_invalid_param`). The requested rendition is used if Vimeo has it, else the highest one below it, else the lowest. `expires_at` is the Vimeo link's expiry, UTC. Each call logs `download_video` (entity `video`, meta `source: app`) to the activity table. The link is the only place a signed Vimeo URL ever leaves the site; the token never does.
 - Both are `Cache-Control: no-store`. Order of checks matches `/link`: signed in, video exists, view right.
 - `503 anchor_library_downloads_unavailable`: no token, or Vimeo returned an error. `404 anchor_library_no_download`: Vimeo returned no MP4 renditions.

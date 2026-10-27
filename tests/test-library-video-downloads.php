@@ -99,7 +99,7 @@ class Test_Library_Video_Downloads extends Anchor_Library_TestCase {
 		$this->with_token();
 		$this->stub( [ '720p' => 300, '360p' => 100 ] );
 		wp_set_current_user( $this->admin );
-		$r = $this->get( '/videos/' . $this->video );
+		$r = $this->get( '/videos/' . $this->video, [ 'sizes' => '1' ] );
 		$this->assertSame( 200, $r->get_status() );
 		$d = $r->get_data();
 		$this->assertSame( [ 'id', 'title', 'thumbnail_url', 'embed_url', 'downloadable', 'downloads' ], array_keys( $d ) );
@@ -111,9 +111,21 @@ class Test_Library_Video_Downloads extends Anchor_Library_TestCase {
 		$this->assertStringNotContainsString( self::TOKEN, $json );
 	}
 
-	public function test_detail_without_a_token_is_200_and_not_downloadable() {
+	public function test_detail_without_sizes_never_contacts_vimeo() {
+		$this->with_token();
+		$calls = 0;
+		add_filter( 'pre_http_request', static function () use ( &$calls ) { $calls++; return new WP_Error( 'x' ); }, 10, 3 );
 		wp_set_current_user( $this->admin );
 		$r = $this->get( '/videos/' . $this->video );
+		$this->assertSame( 200, $r->get_status() );
+		$this->assertSame( [], $r->get_data()['downloads'] );
+		$this->assertTrue( $r->get_data()['downloadable'] );
+		$this->assertSame( 0, $calls );
+	}
+
+	public function test_detail_without_a_token_is_200_and_not_downloadable() {
+		wp_set_current_user( $this->admin );
+		$r = $this->get( '/videos/' . $this->video, [ 'sizes' => '1' ] );
 		$this->assertSame( 200, $r->get_status() );
 		$this->assertFalse( $r->get_data()['downloadable'] );
 		$this->assertSame( [], $r->get_data()['downloads'] );

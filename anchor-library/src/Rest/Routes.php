@@ -70,7 +70,10 @@ class Routes {
 			'methods'             => 'GET',
 			'permission_callback' => $open,
 			'callback'            => [ self::class, 'rest_video' ],
-			'args'                => [ 'id' => [ 'type' => 'integer' ] ],
+			'args'                => [
+				'id'    => [ 'type' => 'integer' ],
+				'sizes' => [ 'type' => 'boolean', 'default' => false ],
+			],
 		] );
 		\register_rest_route( self::NS, '/videos/(?P<id>\d+)/download', [
 			'methods'             => 'GET',
@@ -267,7 +270,8 @@ class Routes {
 	// ---- Videos ---------------------------------------------------------------------------------------------
 
 	/**
-	 * One video, and the sizes Vimeo can supply for saving it offline. Also the app's access check for a saved copy.
+	 * One video, and with `sizes=1` the sizes Vimeo can supply for saving it offline. Without it Vimeo is not contacted,
+	 * which is the bare call the app uses as its access check for a saved copy.
 	 * `downloads` carries rendition and size only: a signed link is minted by rest_video_download() alone.
 	 */
 	public static function rest_video( \WP_REST_Request $request ) {
@@ -276,7 +280,7 @@ class Routes {
 			return $gate;
 		}
 		$downloads = [];
-		if ( \Anchor_Vimeo_Api::is_configured() ) {
+		if ( $request['sizes'] && \Anchor_Vimeo_Api::is_configured() ) {
 			$list = \Anchor_Vimeo_Api::renditions( (string) $gate->vimeo_id );
 			foreach ( \is_array( $list ) ? $list : [] as $r ) {
 				$downloads[] = [ 'rendition' => (string) $r['rendition'], 'size' => (int) $r['size'] ];

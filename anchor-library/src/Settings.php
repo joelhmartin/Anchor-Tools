@@ -67,6 +67,9 @@ class Settings {
 	 * Blank keeps the saved token, the Clear box empties it, anything else replaces it. Must stay free of option writes:
 	 * add_option() runs this sanitizer too, so writing here recurses forever on the first save. Autoload-off is
 	 * Anchor_Vimeo_Api::default_autoload().
+	 *
+	 * Only the form's Clear box removes a saved token: a programmatic update_option( OPTION, '' ) also lands here and
+	 * keeps it. Use delete_option() or WP-CLI `option delete` to remove it from code.
 	 */
 	public static function sanitize_vimeo_token( $value ) {
 		$opt = \Anchor_Vimeo_Api::OPTION;
@@ -114,7 +117,7 @@ class Settings {
 									<input type="checkbox" name="<?php echo \esc_attr(\Anchor_Vimeo_Api::OPTION . '_clear'); ?>" value="1"> Clear the saved token
 								</label>
 							<?php endif; ?>
-							<p class="description">A Vimeo access token with the private and download scopes. It lets the member app save videos for offline viewing. Leave blank to keep the current token. If empty, the Webinars Vimeo API key is used.</p>
+							<p class="description">A Vimeo access token with the private and video_files scopes (Vimeo has no separate download scope). It lets the member app save videos for offline viewing. Leave blank to keep the current token. If empty, the Webinars Vimeo API key is used.</p>
 						</td>
 					</tr>
 					<tr>

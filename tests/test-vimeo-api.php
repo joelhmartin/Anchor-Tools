@@ -97,6 +97,25 @@ class Test_Vimeo_Api extends WP_UnitTestCase {
 		$this->assertCount( 2, $this->requests );
 	}
 
+	public function test_cache_lifetime_never_outlasts_the_two_hour_margin() {
+		update_option( Anchor_Vimeo_Api::OPTION, 't' );
+		$soon = gmdate( 'c', time() + 2 * HOUR_IN_SECONDS + 10 * MINUTE_IN_SECONDS );
+		$this->stub( [ 'download' => [ $this->item( '540p', 200, $soon ) ] ] );
+		Anchor_Vimeo_Api::renditions( '123' );
+		$left = (int) get_option( '_transient_timeout_' . Anchor_Vimeo_Api::CACHE_PREFIX . '123' ) - time();
+		$this->assertGreaterThan( 0, $left );
+		$this->assertLessThanOrEqual( 10 * MINUTE_IN_SECONDS, $left );
+	}
+
+	public function test_rendition_without_a_parseable_expiry_is_skipped() {
+		update_option( Anchor_Vimeo_Api::OPTION, 't' );
+		$noexp = [ 'rendition' => '720p', 'size' => 1, 'link' => 'https://v/720p', 'type' => 'video/mp4' ];
+		$this->stub( [ 'download' => [ $noexp, $this->item( '360p', 100, 'garbage' ), $this->item( '540p', 200 ) ] ] );
+		$list = Anchor_Vimeo_Api::renditions( '123' );
+		$this->assertSame( [ '540p' ], array_column( $list, 'rendition' ) );
+		$this->assertGreaterThan( 0, $list[0]['expires'] );
+	}
+
 	public function test_unconfigured_returns_wp_error() {
 		$this->stub( [] );
 		$r = Anchor_Vimeo_Api::renditions( '123' );

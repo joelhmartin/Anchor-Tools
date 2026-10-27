@@ -223,7 +223,7 @@ class Anchor_Library_Rest_Test extends Anchor_Library_TestCase {
 		$this->assertSame( $f, $data['files'][0]['id'] );
 		$this->assertSame( 10, $data['files'][0]['size'] );
 		$this->assertMatchesRegularExpression( '/^2026-01-02T03:04:05[+-Z]/', $data['files'][0]['updated_at'] );
-		$this->assertSame( [ 'id', 'title', 'thumbnail_url', 'embed_url' ], array_keys( $data['videos'][0] ) );
+		$this->assertSame( [ 'id', 'title', 'thumbnail_url', 'embed_url', 'downloadable' ], array_keys( $data['videos'][0] ) );
 		$this->assertSame( $v, $data['videos'][0]['id'] );
 		$this->assertSame( [ 'id', 'title', 'url' ], array_keys( $data['links'][0] ) );
 		$this->assertSame( $l, $data['links'][0]['id'] );
@@ -310,7 +310,7 @@ class Anchor_Library_Rest_Test extends Anchor_Library_TestCase {
 		$this->assertSame( [ 'quarterly.pdf' ], wp_list_pluck( $data['files'], 'name' ) );
 		$this->assertSame( [ 'id', 'name', 'mime', 'size', 'folder_id', 'path' ], array_keys( $data['files'][0] ) );
 		$this->assertSame( [ 'id', 'name', 'parent_id', 'path' ], array_keys( $data['folders'][0] ) );
-		$this->assertSame( [ 'id', 'title', 'thumbnail_url', 'embed_url', 'folder_id', 'path' ], array_keys( $data['videos'][0] ) );
+		$this->assertSame( [ 'id', 'title', 'thumbnail_url', 'embed_url', 'downloadable', 'folder_id', 'path' ], array_keys( $data['videos'][0] ) );
 		$this->assertSame( 'https://player.vimeo.com/video/987654?h=h', $data['videos'][0]['embed_url'] );
 		$this->assertSame( [ 'id', 'title', 'url', 'folder_id', 'path' ], array_keys( $data['links'][0] ) );
 		$this->assertFalse( $data['truncated'] );

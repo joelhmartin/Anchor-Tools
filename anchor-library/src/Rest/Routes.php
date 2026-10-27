@@ -66,6 +66,24 @@ class Routes {
 			'callback'            => [ self::class, 'rest_content' ],
 			'args'                => [ 'id' => [ 'type' => 'integer' ], 't' => [ 'type' => 'string' ] ],
 		] );
+		\register_rest_route( self::NS, '/videos/(?P<id>\d+)', [
+			'methods'             => 'GET',
+			'permission_callback' => $open,
+			'callback'            => [ self::class, 'rest_video' ],
+			'args'                => [
+				'id'    => [ 'type' => 'integer' ],
+				'sizes' => [ 'type' => 'boolean', 'default' => false ],
+			],
+		] );
+		\register_rest_route( self::NS, '/videos/(?P<id>\d+)/download', [
+			'methods'             => 'GET',
+			'permission_callback' => $open,
+			'callback'            => [ self::class, 'rest_video_download' ],
+			'args'                => [
+				'id'        => [ 'type' => 'integer' ],
+				'rendition' => [ 'type' => 'string', 'default' => '540p', 'pattern' => '^\d{3,4}p$' ],
+			],
+		] );
 	}
 
 	/** @internal rest_pre_dispatch: remember the route being served; changes nothing. */
@@ -247,6 +265,92 @@ class Routes {
 		}
 		Storage::stream( $path, (string) $file->mime_type, $disposition, (string) $file->original_name, Storage::discard_buffers(), true );
 		return null; // Unreachable: stream() ends the request.
+	}
+
+	// ---- Videos ---------------------------------------------------------------------------------------------
+
+	/**
+	 * One video, and with `sizes=1` the sizes Vimeo can supply for saving it offline. Without it Vimeo is not contacted,
+	 * which is the bare call the app uses as its access check for a saved copy.
+	 * `downloads` carries rendition and size only: a signed link is minted by rest_video_download() alone.
+	 */
+	public static function rest_video( \WP_REST_Request $request ) {
+		$gate = self::video_gate( (int) $request['id'] );
+		if ( $gate instanceof \WP_Error ) {
+			return $gate;
+		}
+		$downloads = [];
+		if ( $request['sizes'] && \Anchor_Vimeo_Api::is_configured() ) {
+			$list = \Anchor_Vimeo_Api::renditions( (string) $gate->vimeo_id );
+			foreach ( \is_array( $list ) ? $list : [] as $r ) {
+				$downloads[] = [ 'rendition' => (string) $r['rendition'], 'size' => (int) $r['size'] ];
+			}
+		}
+		$data     = Shapes::video( Repository::shape_video( $gate ) ) + [ 'downloads' => $downloads ];
+		$response = new \WP_REST_Response( $data, 200 );
+		$response->header( 'Cache-Control', 'no-store' );
+		return $response;
+	}
+
+	/** A short-lived Vimeo file link for one rendition. Never cached; each call is logged as a download. */
+	public static function rest_video_download( \WP_REST_Request $request ) {
+		$video_id = (int) $request['id'];
+		$gate     = self::video_gate( $video_id );
+		if ( $gate instanceof \WP_Error ) {
+			return $gate;
+		}
+		if ( ! \Anchor_Vimeo_Api::is_configured() ) {
+			return self::downloads_unavailable();
+		}
+		$list = \Anchor_Vimeo_Api::renditions( (string) $gate->vimeo_id );
+		if ( \is_wp_error( $list ) ) {
+			return self::downloads_unavailable();
+		}
+		$pick = self::pick_rendition( $list, (string) $request['rendition'] );
+		if ( ! $pick ) {
+			return new \WP_Error( 'anchor_library_no_download', \__( 'This video has no downloadable copy.', 'anchor-schema' ), [ 'status' => 404 ] );
+		}
+		Activity::log( 'download_video', 'video', $video_id, [ 'source' => 'app', 'rendition' => $pick['rendition'] ], self::user_id() );
+		$response = new \WP_REST_Response( [
+			'url'        => (string) $pick['url'],
+			'rendition'  => (string) $pick['rendition'],
+			'size'       => (int) $pick['size'],
+			'expires_at' => \gmdate( 'Y-m-d\TH:i:s\Z', (int) $pick['expires'] ),
+		], 200 );
+		$response->header( 'Cache-Control', 'no-store' );
+		return $response;
+	}
+
+	/** User, then row, then permission (as rest_link()), so a forbidden caller learns nothing. Row on success. */
+	private static function video_gate( int $video_id ) {
+		if ( ! self::user_id() ) {
+			return self::auth_error();
+		}
+		$row = Repository::video_row( $video_id );
+		if ( ! $row ) {
+			return self::not_found();
+		}
+		return Permissions::can_view_video( $video_id, self::user_id() ) ? $row : self::forbidden();
+	}
+
+	/**
+	 * The wanted rendition if Vimeo has it; else the best one below it; else the smallest there is.
+	 *
+	 * @param array[] $list Renditions, any order.
+	 */
+	private static function pick_rendition( array $list, string $wanted ): ?array {
+		$height = static fn( array $r ): int => (int) $r['rendition'];
+		\usort( $list, static fn( $a, $b ) => $height( $b ) <=> $height( $a ) ); // Highest first.
+		foreach ( $list as $r ) {
+			if ( $height( $r ) <= (int) $wanted ) {
+				return $r;
+			}
+		}
+		return $list ? $list[ \count( $list ) - 1 ] : null;
+	}
+
+	private static function downloads_unavailable(): \WP_Error {
+		return new \WP_Error( 'anchor_library_downloads_unavailable', \__( 'Downloads are not available right now.', 'anchor-schema' ), [ 'status' => 503 ] );
 	}
 
 	// ---- Plumbing -------------------------------------------------------------------------------------------

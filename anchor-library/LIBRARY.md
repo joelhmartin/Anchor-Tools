@@ -65,6 +65,8 @@ A read-only API for the member phone app, namespace `anchor-library/v1` (`Rest\R
 | `GET /wp-json/anchor-library/v1/search?q=` | `{ q, folders, files, videos, links, truncated }`, `q` at least 2 characters |
 | `GET /wp-json/anchor-library/v1/files/{id}/link?disposition=inline\|attachment` | `{ url, expires_at }` (default `attachment`) |
 | `GET /wp-json/anchor-library/v1/files/{id}/content?t=<token>` | The file bytes, with Range support |
+| `GET /wp-json/anchor-library/v1/videos/{id}` | `{ id, title, thumbnail_url, embed_url, downloadable, downloads: [{ rendition, size }] }`; also the app's access check for a saved copy |
+| `GET /wp-json/anchor-library/v1/videos/{id}/download?rendition=540p` | `{ url, rendition, size, expires_at }`: a short-lived Vimeo MP4 link |
 
 ### Folder response
 
@@ -74,7 +76,7 @@ A read-only API for the member phone app, namespace `anchor-library/v1` (`Rest\R
   "breadcrumbs": [ { "id": 3, "name": "Centre resources" }, { "id": 12, "name": "Training" } ],
   "folders": [ { "id": 20, "name": "2026", "parent_id": 12, "counts": { "folders": 0, "files": 3, "videos": 0, "links": 0 } } ],
   "files":   [ { "id": 77, "name": "Guide.pdf", "mime": "application/pdf", "size": 183004, "updated_at": "2026-01-02T03:04:05-06:00" } ],
-  "videos":  [ { "id": 5, "title": "Intro", "thumbnail_url": "https://i.vimeocdn.com/…", "embed_url": "https://player.vimeo.com/video/987654?h=abc123" } ],
+  "videos":  [ { "id": 5, "title": "Intro", "thumbnail_url": "https://i.vimeocdn.com/…", "embed_url": "https://player.vimeo.com/video/987654?h=abc123", "downloadable": true } ],
   "links":   [ { "id": 9, "title": "Portal", "url": "https://example.com/" } ]
 }
 ```
@@ -82,7 +84,7 @@ A read-only API for the member phone app, namespace `anchor-library/v1` (`Rest\R
 - `/folders/0` has `folder` = `{ "id": 0, "name": "", "parent_id": 0, "counts": … }`, empty `breadcrumbs`, and empty `files`, `videos`, `links` (the root holds folders only).
 - `counts` is what the caller can see directly inside that folder, not totals.
 - `updated_at` is the file's upload time (files are never edited), ISO 8601 with the site's offset. The files table has no separate update column.
-- `thumbnail_url` is `null` when the video has none. `embed_url` omits `?h=` when the video has no privacy hash. The app opens it in a WebView.
+- `downloadable` is true when the site has a Vimeo token for downloads. `thumbnail_url` is `null` when the video has none. `embed_url` omits `?h=` when the video has no privacy hash. The app opens it in a WebView.
 - Uploaded video files (mp4 and so on) are `files` rows. Play them through `/link` and `/content` like any file.
 - No uploader or creator names or ids, owner ids or e-mail addresses are ever returned.
 
@@ -94,7 +96,7 @@ Each hit adds `folder_id` (its folder) and `path` (that folder's names joined wi
 |---|---|
 | `folders[]` | `id, name, parent_id, path` |
 | `files[]` | `id, name, mime, size, folder_id, path` |
-| `videos[]` | `id, title, thumbnail_url, embed_url, folder_id, path` |
+| `videos[]` | `id, title, thumbnail_url, embed_url, downloadable, folder_id, path` |
 | `links[]` | `id, title, url, folder_id, path` |
 
 `truncated` is true when a kind hit the 200-row cap. Product Docs content is never listed.
@@ -116,13 +118,22 @@ Each hit adds `folder_id` (its folder) and `path` (that folder's names joined wi
   - The portal's AJAX stream (`anchor_fm_stream`) keeps its existing inline behaviour: its allowed upload types include some (bmp, tif, ...) outside the safe set, so applying it there would turn working previews into downloads. It does get the shared `Content-Disposition` helper.
 - Each read is logged to the activity table (`preview_file` for inline, `download_file` for attachment, by the disposition actually served: an `inline` request for a type outside the safe set is a download and is logged as one) with `meta` `{"source":"app"}` and the token's user as actor. As on the portal, an inline preview logs only its opening range; a download is always logged.
 
+### Video downloads
+
+Off unless a Vimeo token is set (`Anchor_Vimeo_Api::is_configured()`; the Library setting "Vimeo token for app downloads"). Video rows in listings and search carry `downloadable` (that same flag), so the app hides its download control where it is off.
+
+- `/videos/{id}`: `downloads` is `[]` unless the request has `sizes=1` (boolean, default off; without it Vimeo is not contacted, so the app's access re-check stays cheap), and also when downloads are off, Vimeo fails or it has no MP4s (still `200`). It holds `rendition` and `size` only, never a link.
+- `/videos/{id}/download`: `rendition` must match `^\d{3,4}p$` (default `540p`; else `400 rest_invalid_param`). The requested rendition is used if Vimeo has it, else the highest one below it, else the lowest. `expires_at` is the Vimeo link's expiry, UTC. Each call logs `download_video` (entity `video`, meta `source: app`) to the activity table. The link is the only place a signed Vimeo URL ever leaves the site; the token never does.
+- Both are `Cache-Control: no-store`. Order of checks matches `/link`: signed in, video exists, view right.
+- `503 anchor_library_downloads_unavailable`: no token, or Vimeo returned an error. `404 anchor_library_no_download`: Vimeo returned no MP4 renditions.
+
 ### Auth and visibility
 
 Application Passwords sent as HTTP Basic over HTTPS; core resolves the user before the route runs. Nothing reads a nonce, and a cookie without a nonce is no user at all. Signed out is `401 anchor_library_auth`; the library has no public content. A Centre user sees only the folders granted to their role or account, and the descendants those grants inherit. The Product Docs container and users' private folders are not addressable (`404`). Application Passwords must be available on the site (`wp_is_application_passwords_available()`).
 
 ### Caching
 
-`/folders/*` and `/search` carry a weak body-hash `ETag`, `Cache-Control: private, max-age=60` and `Vary: Authorization` (also on the `304`); a matching `If-None-Match` returns `304` with no body. These routes opt out of core's `rest_send_nocache_headers`, which would overwrite it for any signed-in caller. `/link` is `no-store` (every call mints a new token). `/content` is `private, no-store`. Every error response in the namespace (400/401/403/404/405) carries `Cache-Control: no-store` (`Routes::no_store_errors()`).
+`/folders/*` and `/search` carry a weak body-hash `ETag`, `Cache-Control: private, max-age=60` and `Vary: Authorization` (also on the `304`); a matching `If-None-Match` returns `304` with no body. These routes opt out of core's `rest_send_nocache_headers`, which would overwrite it for any signed-in caller. `/link`, `/videos/{id}` and `/videos/{id}/download` are `no-store` (every call mints a new token or link). `/content` is `private, no-store`. Every error response in the namespace (400/401/403/404/405) carries `Cache-Control: no-store` (`Routes::no_store_errors()`).
 
 ### Errors
 
@@ -133,6 +144,9 @@ Application Passwords sent as HTTP Basic over HTTPS; core resolves the user befo
 | Folder or file the caller (or the token's user) cannot view | `403 anchor_library_forbidden` |
 | Folder or file missing, hidden folder, or bytes missing on disk | `404 anchor_library_not_found` |
 | `q` under 2 characters | `400 anchor_library_query` |
+| Video download with no token configured, or Vimeo failing | `503 anchor_library_downloads_unavailable` |
+| Video download where Vimeo has no MP4 renditions | `404 anchor_library_no_download` |
+| `rendition` not like `540p` | `400 rest_invalid_param` (core) |
 | `disposition` not `inline` or `attachment` | `400 rest_invalid_param` (core) |
 | Bad or revoked Application Password | `401` from core |
 

@@ -73,6 +73,7 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
   "start": "2026-11-13T08:00:00-05:00",
   "end": "2026-11-15T17:00:00-05:00",
   "all_day": false,
+  "sessions": [],
   "timezone": "America/Toronto",
   "location": { "venue": "…", "city": "Toronto", "state": "ON", "country": "CA", "online": false },
   "registration": {
@@ -94,6 +95,7 @@ All of these live in the module's existing REST namespace `anchor-events/v1` (`M
   - `status` maps `bookability()` for native events: `open` → `open`, `waitlist` → `waitlist`, `full` → `sold_out`, `disabled` → `unavailable` (registration switched off), anything else → `closed`. An external-signup event is `closed` when bookability says `closed`, otherwise `open`. The module has no "not open yet" state; a registration window that hasn't opened reads `closed`.
   - `price` is the lowest Offer price in the schema node as a string with two decimals; `price_max` is the highest (same format; equal to `price` for a single price). `price`, `price_max` and `currency` are `null` when the node has no Offer. An event with no stored tiers but linked WooCommerce products takes its Offers from those products' prices.
   - `register_url` is always the event page, which shows the right button (native or external) itself.
+  - `sessions` is `[]` unless the schema node is a multisession node (a standalone multisession event, or a group child switched to multisession with sessions). Otherwise one `{ start, end, all_day, label }` per session row in date order, from the node's `subEvent`s; `label` is the raw session label (`""` when none), not the title fallback. A 2-day session is two same-label single-day rows. `start`/`end` stay the overall span.
   - All-day events send date-only `start`/`end` (`YYYY-MM-DD`), as the schema node does.
   - `location` never includes a stream or room URL.
 - **Mapping:** the field mapping is pinned in the implementation plan. Values come from the sources listed in "Reuse", never from parallel calculations.

@@ -33,9 +33,9 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 
 		$html = $this->module()->render_single_content( $event_id );
 
-		$this->assertStringContainsString( '2026-09-01', $html );
+		$this->assertStringContainsString( wp_date( get_option( 'date_format' ), strtotime( '2026-09-01 UTC' ), new DateTimeZone( 'UTC' ) ), $html );
 		$this->assertStringContainsString( 'Day 1: Orientation', $html );
-		$this->assertStringContainsString( '2026-09-02', $html );
+		$this->assertStringContainsString( wp_date( get_option( 'date_format' ), strtotime( '2026-09-02 UTC' ), new DateTimeZone( 'UTC' ) ), $html );
 		$this->assertStringContainsString( 'Day 2: Workshop', $html );
 	}
 

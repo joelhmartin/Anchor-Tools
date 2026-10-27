@@ -317,4 +317,124 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$id = $this->make_event( [ 'title' => 'Undated' ] );
 		$this->assertNull( $this->module()->feed->row( $id ) );
 	}
+
+	/* ── Multi-session rows (`sessions`) ───────────────────────── */
+
+	/** Three 2-day sessions as six single-day rows sharing a label per pair. */
+	private function pediatric_rows() {
+		$rows = [];
+		foreach ( [ [ 'Session 1', '2030-03-19' ], [ 'Session 2', '2030-04-16' ], [ 'Session 3', '2030-07-16' ] ] as $s ) {
+			$rows[] = [ 'date' => $s[1], 'start_time' => '08:00', 'end_time' => '17:00', 'label' => $s[0] ];
+			$rows[] = [ 'date' => gmdate( 'Y-m-d', strtotime( $s[1] . ' UTC' ) + DAY_IN_SECONDS ), 'start_time' => '08:00', 'end_time' => '17:00', 'label' => $s[0] ];
+		}
+		return $rows;
+	}
+
+	/** A reconciled offering parent's first child, switched to multisession with $rows. */
+	private function child( array $rows = [], array $meta = [] ) {
+		$parent = $this->make_event( [
+			'title'                => 'Pediatric OSA',
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'registration_mode'    => 'wc',
+			'timezone'             => 'UTC',
+		], [ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-03-19', 'start_time' => '08:00', 'end_time' => '17:00', 'label' => 'New Orleans', 'capacity' => 0 ],
+		] );
+		$child = (int) $this->module()->occurrences->reconcile( $parent )[0];
+		if ( $rows ) {
+			update_post_meta( $child, '_anchor_event_type', 'multisession' );
+			update_post_meta( $child, '_anchor_event_sessions', $rows );
+		}
+		foreach ( $meta as $k => $v ) {
+			update_post_meta( $child, '_anchor_event_' . $k, $v );
+		}
+		$this->module()->clear_caches();
+		return [ $parent, $child ];
+	}
+
+	public function test_multisession_child_gets_subevents_and_keeps_child_data() {
+		list( $parent, $child ) = $this->child( $this->pediatric_rows() );
+		$node = $this->module()->event_schema->for_event( $child );
+		$row  = $this->module()->feed->row( $child );
+
+		$this->assertCount( 6, $node['subEvent'] );
+		$this->assertSame( '2030-03-19T08:00:00+00:00', $node['startDate'] );
+		$this->assertSame( '2030-07-17T17:00:00+00:00', $node['endDate'] );
+		$this->assertSame( get_permalink( $child ), $node['url'] );
+		$this->assertNotEmpty( $node['offers'] );
+		$this->assertSame( get_permalink( $parent ), $node['superEvent']['url'] );
+
+		$this->assertSame( $parent, $row['parent_id'] );
+		$this->assertSame( $node['startDate'], $row['start'] );
+		$this->assertSame( $node['endDate'], $row['end'] );
+		$this->assertCount( 6, $row['sessions'] );
+		$this->assertSame( [ 'Session 1', 'Session 1', 'Session 2', 'Session 2', 'Session 3', 'Session 3' ], array_column( $row['sessions'], 'label' ) );
+		$this->assertSame( [ 'start' => '2030-04-16T08:00:00+00:00', 'end' => '2030-04-16T17:00:00+00:00', 'all_day' => false, 'label' => 'Session 2' ], $row['sessions'][2] );
+	}
+
+	public function test_session_without_a_label_reports_an_empty_label_not_the_title() {
+		$rows                = $this->pediatric_rows();
+		$rows[0]['label']    = '';
+		list( , $child )     = $this->child( $rows );
+		$row                 = $this->module()->feed->row( $child );
+		$node                = $this->module()->event_schema->for_event( $child );
+
+		$this->assertSame( '', $row['sessions'][0]['label'] );
+		$this->assertSame( $node['subEvent'][0]['name'], get_the_title( $child ) );
+	}
+
+	public function test_all_day_session_entries_are_date_only() {
+		list( , $child ) = $this->child( $this->pediatric_rows(), [ 'all_day' => true ] );
+		$row             = $this->module()->feed->row( $child );
+
+		$this->assertSame( [ 'start' => '2030-03-19', 'end' => '2030-03-19', 'all_day' => true, 'label' => 'Session 1' ], $row['sessions'][0] );
+	}
+
+	public function test_plain_single_child_and_single_event_have_no_sessions() {
+		list( , $child ) = $this->child();
+		$this->assertSame( [], $this->module()->feed->row( $child )['sessions'] );
+		$this->assertSame( [], $this->module()->feed->row( $this->event() )['sessions'] );
+	}
+
+	public function test_child_switched_to_multisession_without_sessions_stays_single() {
+		list( , $child ) = $this->child( [], [ 'type' => 'multisession' ] );
+		$this->assertSame( [], $this->module()->feed->row( $child )['sessions'] );
+		$this->assertArrayNotHasKey( 'subEvent', $this->module()->event_schema->for_event( $child ) );
+	}
+
+	public function test_standalone_multisession_event_has_sessions() {
+		$id = $this->event( [ 'type' => 'multisession', 'timezone' => 'UTC' ] );
+		update_post_meta( $id, '_anchor_event_sessions', [
+			[ 'date' => '2030-11-14', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day B' ],
+			[ 'date' => '2030-11-13', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day A' ],
+		] );
+		$this->module()->clear_caches();
+		$row = $this->module()->feed->row( $id );
+
+		$this->assertSame( [ 'Day A', 'Day B' ], array_column( $row['sessions'], 'label' ), 'Date order, labels stay paired with their rows.' );
+	}
+
+	public function test_session_list_groups_consecutive_days_sharing_a_label() {
+		$rows    = $this->pediatric_rows();
+		$rows[]  = [ 'date' => '2030-07-20', 'start_time' => '08:00', 'end_time' => '17:00', 'label' => 'Session 3' ]; // Gap: own line.
+		$groups  = $this->module()->group_session_rows( $rows );
+
+		$this->assertCount( 4, $groups );
+		$this->assertSame( [ '2030-03-19', '2030-03-20' ], [ $groups[0]['date'], $groups[0]['end_date'] ] );
+		$this->assertSame( [ '2030-07-16', '2030-07-17' ], [ $groups[2]['date'], $groups[2]['end_date'] ] );
+		$this->assertSame( '2030-07-20', $groups[3]['end_date'] );
+	}
+
+	public function test_session_list_renders_a_formatted_date_range() {
+		update_option( 'date_format', 'M j, Y' );
+		$id = $this->event( [ 'type' => 'multisession' ] );
+		update_post_meta( $id, '_anchor_event_sessions', $this->pediatric_rows() );
+		$html = $this->module()->render_single_content( $id );
+
+		$this->assertStringContainsString( 'Mar 19, 2030 – Mar 20, 2030', $html );
+		$this->assertStringNotContainsString( '2030-03-19', $html );
+		$this->assertSame( 3, substr_count( $html, '<td>Session ' ), 'One line per run of days, not per day.' );
+	}
 }

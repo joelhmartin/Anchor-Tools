@@ -175,6 +175,7 @@ class Feed {
             'end'          => (string) ( $node['endDate'] ?? $node['startDate'] ),
             // Date-only start = all day; the node is the one place that decides (themes may trim it).
             'all_day'      => $this->is_date( (string) $node['startDate'] ),
+            'sessions'     => $this->sessions( $id, $node ),
             'timezone'     => $this->module->event_timezone( $meta )->getName(),
             'location'     => $this->location( $node, (string) ( $meta['venue'] ?? '' ) ),
             'registration' => [
@@ -187,6 +188,42 @@ class Feed {
             ],
             'audience'     => $this->is_restricted( $id ) ? 'restricted' : 'public',
         ];
+    }
+
+    /**
+     * The per-session spans of a multisession node (a standalone event, or a
+     * group child switched to multisession), in date order; [] for anything
+     * else. Dates come from the node's subEvents (the node decides, as for
+     * start/end); labels are the RAW session labels, '' when none — unlike the
+     * subEvent name, which falls back to the event title. A 2-day session is two
+     * single-day rows sharing a label; the app groups them.
+     *
+     * @return array[] `{start, end, all_day, label}` each.
+     */
+    private function sessions( $id, array $node ) {
+        $subs = $node['subEvent'] ?? [];
+        if ( ! is_array( $subs ) || ! $subs ) {
+            return [];
+        }
+        // subEvents are built from usable_sessions() in order; pair labels by position.
+        $labels = array_column( $this->module->event_schema->usable_sessions( $id ), 'label' );
+        $labels = count( $labels ) === count( $subs ) ? $labels : [];
+        $out    = [];
+        foreach ( array_values( $subs ) as $i => $sub ) {
+            if ( empty( $sub['startDate'] ) ) {
+                continue;
+            }
+            $out[] = [
+                'start'   => (string) $sub['startDate'],
+                'end'     => (string) ( $sub['endDate'] ?? $sub['startDate'] ),
+                'all_day' => $this->is_date( (string) $sub['startDate'] ),
+                'label'   => (string) ( $labels[ $i ] ?? '' ),
+            ];
+        }
+        usort( $out, static function ( $a, $b ) {
+            return strcmp( $a['start'], $b['start'] );
+        } );
+        return $out;
     }
 
     /**

@@ -41,7 +41,9 @@
  *
  * OFFERS (build_offers(), keyed off Module::registration_mode()):
  *   - wc: one Offer per ACTIVE ticket tier (Ticket_Types::get()), priced
- *     from the tier's own price. No active tiers -> no offers key.
+ *     from the tier's own price. No active tiers -> no offers key. An event
+ *     with NO stored tiers but linked WooCommerce products prices its
+ *     Offers from those products instead (linked_product_prices()).
  *   - external: one Offer with `url` = external_url (or the permalink) and
  *     `price` parsed from the free-text external_display_price ("$495" ->
  *     495) when a numeric substring is found; price is omitted (not "0")
@@ -762,6 +764,14 @@ class Event_Schema {
      * @return array
      */
     private function build_wc_offers( $event_id, array $meta, $currency, $url ) {
+        $linked = $this->linked_product_prices( $event_id );
+        if ( $linked !== null ) {
+            $rows = \array_map( static function ( $price ) {
+                return [ 'price' => $price ];
+            }, $linked );
+            return $this->offers_from_rows( $event_id, $meta, $currency, $url, $rows, false );
+        }
+
         $active = \array_values( \array_filter(
             $this->module->ticket_types->get( $event_id ),
             function ( $tier ) {
@@ -773,17 +783,32 @@ class Event_Schema {
             return [];
         }
 
+        return $this->offers_from_rows( $event_id, $meta, $currency, $url, $active, true );
+    }
+
+    /**
+     * Shared Offer shape for the wc branch. Tier rows are asked about their
+     * own bookability; linked-product rows have no per-tier state, so they
+     * share the event's.
+     *
+     * @param array[] $rows     Each carries a numeric-ish `price` (tier rows are full tiers).
+     * @param bool    $per_tier Pass each row to bookability() as the tier.
+     * @return array
+     */
+    private function offers_from_rows( $event_id, array $meta, $currency, $url, array $rows, $per_tier ) {
         $valid_from = $this->registration_open_iso( $meta );
 
         $offers = [];
-        foreach ( $active as $tier ) {
-            $bookability = $this->module->bookability( $event_id, $tier );
+        foreach ( $rows as $row ) {
+            $bookability = $per_tier
+                ? $this->module->bookability( $event_id, $row )
+                : $this->module->bookability( $event_id );
             if ( self::omits_offer( $bookability ) ) {
                 continue;
             }
             $offer = [
                 '@type'         => 'Offer',
-                'price'         => $this->clean_number( (float) ( $tier['price'] ?? 0 ) ),
+                'price'         => $this->clean_number( (float) ( $row['price'] ?? 0 ) ),
                 'priceCurrency' => $currency,
                 'url'           => $url,
             ];
@@ -797,6 +822,55 @@ class Event_Schema {
             $offers[] = $offer;
         }
         return $offers;
+    }
+
+    /**
+     * Prices of the WooCommerce products linked to an event, for an event
+     * with NO stored ticket tiers (Ticket_Types::get() would otherwise answer
+     * with an implicit $0 primary — the front end's legacy "Register — $950"
+     * link prices from the product, so the schema must too).
+     *
+     * A variation link contributes that variation; a parent link to a
+     * variable product contributes its visible children. Deduped by product
+     * id, so a variation linked on its own AND via its parent counts once.
+     *
+     * @param int $event_id
+     * @return float[]|null Null when the tiers (or the free primary) apply
+     *                      instead; [] when linked but nothing has a price.
+     */
+    private function linked_product_prices( $event_id ) {
+        $stored = \get_post_meta( $event_id, Ticket_Types::META_KEY, true );
+        if ( ( \is_array( $stored ) && ! empty( $stored ) ) || ! \function_exists( 'wc_get_product' ) || ! $this->module->woocommerce ) {
+            return null;
+        }
+        $links = $this->module->woocommerce->products_for_event( $event_id );
+        if ( empty( $links ) ) {
+            return null;
+        }
+
+        $prices = [];
+        foreach ( $links as $link ) {
+            $target  = (int) $link['variation_id'] > 0 ? (int) $link['variation_id'] : (int) $link['product_id'];
+            $product = \wc_get_product( $target );
+            if ( ! $product ) {
+                continue;
+            }
+            $ids = ( (int) $link['variation_id'] === 0 && $product->is_type( 'variable' ) )
+                ? (array) $product->get_visible_children()
+                : [ $target ];
+            foreach ( $ids as $pid ) {
+                $pid = (int) $pid;
+                if ( isset( $prices[ $pid ] ) ) {
+                    continue;
+                }
+                $p     = $pid === $target ? $product : \wc_get_product( $pid );
+                $price = $p ? $p->get_price() : '';
+                if ( $price !== '' && \is_numeric( $price ) ) {
+                    $prices[ $pid ] = (float) $price;
+                }
+            }
+        }
+        return \array_values( $prices );
     }
 
     /**

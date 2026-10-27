@@ -170,6 +170,111 @@ class Test_Events_Feed_Rows extends Anchor_Events_TestCase {
 		$this->assertSame( get_woocommerce_currency(), $row['registration']['currency'] );
 	}
 
+	public function test_price_max_is_highest_managed_tier() {
+		$this->require_wc();
+		$id = $this->event( [ 'registration_mode' => 'wc' ], [
+			[ 'label' => 'A', 'price' => 2850, 'active' => true ],
+			[ 'label' => 'B', 'price' => 8685, 'active' => true ],
+			[ 'label' => 'C', 'price' => 4485, 'active' => true ],
+		] );
+		$row = $this->module()->feed->row( $id );
+		$this->assertSame( '2850.00', $row['registration']['price'] );
+		$this->assertSame( '8685.00', $row['registration']['price_max'] );
+	}
+
+	public function test_single_price_has_equal_min_and_max() {
+		$this->require_wc();
+		$id  = $this->event( [ 'registration_mode' => 'wc' ], [ [ 'label' => 'Only', 'price' => 495, 'active' => true ] ] );
+		$reg = $this->module()->feed->row( $id )['registration'];
+		$this->assertSame( '495.00', $reg['price'] );
+		$this->assertSame( '495.00', $reg['price_max'] );
+	}
+
+	public function test_free_event_reports_zero_for_both() {
+		$id  = $this->event( [ 'registration_mode' => 'free' ] );
+		$reg = $this->module()->feed->row( $id )['registration'];
+		$this->assertSame( '0.00', $reg['price'] );
+		$this->assertSame( '0.00', $reg['price_max'] );
+	}
+
+	public function test_no_offer_means_null_price_and_price_max() {
+		$id  = $this->event( [ 'registration_mode' => 'free', 'status_mode' => 'manual', 'status' => 'cancelled' ] );
+		$reg = $this->module()->feed->row( $id )['registration'];
+		$this->assertNull( $reg['price'] );
+		$this->assertNull( $reg['price_max'] );
+	}
+
+	/** Link a variable product (parent link, variation_id 0) with the given variation prices to an event. */
+	private function link_variable_product( $event_id, array $prices ) {
+		$parent = new WC_Product_Variable();
+		$parent->set_name( 'Residency' );
+		$parent->set_status( 'publish' );
+		$parent->update_meta_data( '_anchor_evt_link_enabled', '1' );
+		$parent->update_meta_data( '_anchor_evt_link_event_id', $event_id );
+		$parent->save();
+		$ids = [];
+		foreach ( $prices as $price ) {
+			$v = new WC_Product_Variation();
+			$v->set_parent_id( $parent->get_id() );
+			$v->set_status( 'publish' );
+			$v->set_regular_price( (string) $price );
+			$v->save();
+			$ids[] = $v->get_id();
+		}
+		WC_Product_Variable::sync( $parent->get_id() );
+		wc_delete_product_transients( $parent->get_id() );
+		return [ $parent->get_id(), $ids ];
+	}
+
+	public function test_linked_variable_product_without_tiers_prices_from_its_variations() {
+		$this->require_wc();
+		$id = $this->event( [ 'registration_mode' => 'wc' ] );
+		$this->link_variable_product( $id, [ 950, 1695, 1995, 3495 ] );
+
+		$node   = $this->module()->event_schema->for_event( $id );
+		$prices = array_map( function ( $o ) { return (float) $o['price']; }, $node['offers'] );
+		sort( $prices );
+		$this->assertSame( [ 950.0, 1695.0, 1995.0, 3495.0 ], $prices );
+
+		$reg = $this->module()->feed->row( $id )['registration'];
+		$this->assertSame( '950.00', $reg['price'] );
+		$this->assertSame( '3495.00', $reg['price_max'] );
+	}
+
+	public function test_variation_linked_both_ways_is_counted_once() {
+		$this->require_wc();
+		$id = $this->event( [ 'registration_mode' => 'wc' ] );
+		list( , $vids ) = $this->link_variable_product( $id, [ 950, 3495 ] );
+		update_post_meta( $vids[0], '_anchor_evt_link_event_id', $id );
+
+		$node = $this->module()->event_schema->for_event( $id );
+		$this->assertCount( 2, $node['offers'] );
+	}
+
+	public function test_linked_products_with_no_price_emit_no_offer_not_zero() {
+		$this->require_wc();
+		$id = $this->event( [ 'registration_mode' => 'wc' ] );
+		$p  = new WC_Product_Simple();
+		$p->set_name( 'Unpriced' );
+		$p->set_status( 'publish' );
+		$p->update_meta_data( '_anchor_evt_link_enabled', '1' );
+		$p->update_meta_data( '_anchor_evt_link_event_id', $id );
+		$p->save();
+
+		$reg = $this->module()->feed->row( $id )['registration'];
+		$this->assertNull( $reg['price'] );
+		$this->assertNull( $reg['price_max'] );
+	}
+
+	public function test_stored_tiers_win_over_linked_products() {
+		$this->require_wc();
+		$id = $this->event( [ 'registration_mode' => 'wc' ], [ [ 'label' => 'Tier', 'price' => 100, 'active' => true ] ] );
+		$this->link_variable_product( $id, [ 950, 3495 ] );
+		$reg = $this->module()->feed->row( $id )['registration'];
+		$this->assertSame( '100.00', $reg['price'] );
+		$this->assertSame( '100.00', $reg['price_max'] );
+	}
+
 	public function test_closed_event_has_null_price() {
 		$id = $this->event( [ 'registration_mode' => 'free', 'status_mode' => 'manual', 'status' => 'cancelled' ] );
 		$row = $this->module()->feed->row( $id );

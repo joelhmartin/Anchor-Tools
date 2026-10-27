@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.41.0
+Stable tag: 3.42.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,11 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.42.0 =
+* Library: members can save videos in the member app to watch offline. New routes `GET /videos/{id}` (with `?sizes=1` for the sizes Vimeo offers) and `GET /videos/{id}/download`, which re-check access on every call. Listings mark videos `downloadable`. Nothing changes until a Vimeo token is set.
+* Library settings: a write-only "Vimeo token for app downloads" field. Use a token with only the public, private and video_files scopes.
+* One shared Vimeo client for the Library and Webinars (Webinars thumbnails use the same token).
 
 = 3.41.0 =
 * Events: branded member-app sign-in. The app's connect link now opens /app-connect/ in the site's own theme (sign in through My Account, then an Allow / Cancel screen) instead of the WordPress admin login and Application Passwords screen. The core approval screen redirects there for the listed app schemes; nothing changes on sites without "Member app URL schemes".

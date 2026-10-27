@@ -100,7 +100,10 @@ downstream is identical.
     `_anchor_event_email_*` override (per-type template/on-off/subject/preheader/
     intro/CTA, and the From / Reply-To / Cc / Bcc sender identity). Title/content
     and ticket tiers are copied by their own code paths. A child's own `type` meta
-    is force-set to `single`.
+    is created as `single`; the occurrence's own edit screen may switch it to
+    `multisession`, and its `sessions` are per-occurrence (neither is re-copied
+    from the parent). Such a child emits a multisession node (subEvents + the
+    link to its parent) and a populated feed `sessions` list.
     Two rules apply to everything on that list:
     - Only a key the parent has a **real meta row** for is copied — never a value
       `get_meta()` defaulted at read time, so a child is never handed a
@@ -682,6 +685,7 @@ Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible*
   "start": "2026-11-13T08:00:00-05:00",
   "end": "2026-11-15T17:00:00-05:00",
   "all_day": false,
+  "sessions": [],
   "timezone": "America/Toronto",
   "location": { "venue": "…", "city": "Toronto", "state": "ON", "country": "CA", "online": false },
   "registration": {
@@ -699,6 +703,7 @@ Pagination: `total` / `total_pages` (and the `X-WP-*` headers) count **eligible*
 - `parent_id` is 0 unless the row is a group child. `image` is `null` without one.
 - `title` and `summary` are plain text, entities decoded, no HTML.
 - `start` / `end` are ISO 8601 in the event's own timezone, taken from the schema node; all-day events send date-only values (`YYYY-MM-DD`).
+- `sessions` is `[]` unless the schema node is a multisession node (a standalone multisession event, or an occurrence switched to multisession that has sessions). Then it holds one entry per session row, in date order: `{ "start", "end", "all_day", "label" }` — `start`/`end` are ISO like the row's own (date-only when all-day), taken from the node's `subEvent`s; `label` is the raw session label, `""` when none (not the title fallback the schema's subEvent `name` uses). A 2-day session is two single-day entries with the same label, so group by label/consecutive days and never count entries as sessions. `start`/`end` on the row stay the overall span.
 - `location.venue` is blank when the event has no venue (the schema node names the Place after the post title then, so the venue meta decides). `online` is true for a VirtualLocation. A stream or room URL is never included.
 - `price` is the lowest Offer price as a two-decimal string and `price_max` the highest (equal for a single price); `price`, `price_max` and `currency` are `null` when the node has no Offer. Free events report `"0.00"`, because the schema emits a zero-price Offer for them.
 - `register_url` is always the event page, which shows the right button (native or external).

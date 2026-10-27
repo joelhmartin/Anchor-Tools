@@ -191,11 +191,16 @@ class Event_Schema {
             return [];
         }
 
-        // A group CHILD is always a standalone node — even though its own
-        // `_anchor_event_type` meta is force-set to 'single' by Occurrences,
-        // this check comes first so it never falls into the group-parent
-        // branch below via some future data drift.
+        // A group CHILD is always a standalone node — it is created as 'single'
+        // by Occurrences, and this check comes first so it never falls into the
+        // group-parent branch below via some future data drift. Its own edit
+        // screen may switch it to 'multisession' (the type and sessions are
+        // per-occurrence, never re-copied from the parent): then it carries
+        // subEvents like any multisession event, plus the link to its parent.
         if ( $this->module->occurrences->is_group_child( $event_id ) ) {
+            if ( $this->module->event_type( $event_id ) === 'multisession' && $this->usable_sessions( $event_id ) ) {
+                return $this->with_super_event( $event_id, $this->build_multisession_node( $event_id ) );
+            }
             return $this->build_single_node( $event_id );
         }
 
@@ -237,14 +242,25 @@ class Event_Schema {
 
         $node = $this->assemble_node( $event_id, $meta, (int) $ts['start'], (int) $ts['end'] );
 
-        // RENDER-D38: a group child's node had no link back to its parent, so
-        // the parent/child relationship was one-directional in the markup
-        // (parent -> subEvent only). parent_of() is already validated —
-        // trashed/reissued/dead ids resolve to 0 — so this never points at a
-        // parent that is not really there.
-        $parent_id = $this->module->occurrences->is_group_child( $event_id )
-            ? $this->module->occurrences->parent_of( $event_id )
-            : 0;
+        return $this->with_super_event( $event_id, $node );
+    }
+
+    /**
+     * RENDER-D38: a group child's node needs a link back to its parent, or the
+     * relationship is one-directional in the markup (parent -> subEvent only).
+     * parent_of() is already validated — trashed/reissued/dead ids resolve to
+     * 0 — so this never points at a parent that is not really there. A no-op
+     * for anything that is not a group child.
+     *
+     * @param int   $event_id
+     * @param array $node
+     * @return array
+     */
+    private function with_super_event( $event_id, array $node ) {
+        if ( empty( $node ) || ! $this->module->occurrences->is_group_child( $event_id ) ) {
+            return $node;
+        }
+        $parent_id = $this->module->occurrences->parent_of( $event_id );
         if ( $parent_id > 0 ) {
             $node['superEvent'] = [
                 '@type' => 'Event',
@@ -252,8 +268,37 @@ class Event_Schema {
                 'url'   => (string) \get_permalink( $parent_id ),
             ];
         }
-
         return $node;
+    }
+
+    /**
+     * The session rows that become subEvents, in stored order: Module::
+     * get_sessions() rows whose date/time resolves to a real timestamp. The ONE
+     * definition of "usable", shared by the node builder and the feed (which
+     * pairs raw labels with the node's subEvents by position).
+     *
+     * @param int $event_id
+     * @return array[] Each get_sessions() row plus `ts_start` / `ts_end`.
+     */
+    public function usable_sessions( $event_id ) {
+        $meta   = $this->module->get_meta( $event_id );
+        $usable = [];
+        foreach ( $this->module->get_sessions( $event_id ) as $session ) {
+            $session_meta               = $meta;
+            $session_meta['start_date'] = $session['date'];
+            $session_meta['end_date']   = $session['date'];
+            $session_meta['start_time'] = $session['start_time'];
+            $session_meta['end_time']   = $session['end_time'];
+
+            $s_ts = $this->module->compute_timestamps( $session_meta );
+            if ( (int) $s_ts['start'] <= 0 ) {
+                continue; // Unparseable session row — skip it, don't fail the whole node.
+            }
+            $session['ts_start'] = (int) $s_ts['start'];
+            $session['ts_end']   = (int) $s_ts['end'];
+            $usable[]            = $session;
+        }
+        return $usable;
     }
 
     /**
@@ -268,11 +313,11 @@ class Event_Schema {
      */
     private function build_multisession_node( $event_id ) {
         $meta     = $this->module->get_meta( $event_id );
-        $sessions = $this->module->get_sessions( $event_id );
+        $sessions = $this->usable_sessions( $event_id );
 
         if ( empty( $sessions ) ) {
-            // No sessions authored yet — fall back to a plain single node
-            // off the event's own dates rather than returning [].
+            // No usable sessions authored yet — fall back to a plain single
+            // node off the event's own dates rather than returning [].
             return $this->build_single_node( $event_id );
         }
 
@@ -287,18 +332,8 @@ class Event_Schema {
         $max_end       = null;
 
         foreach ( $sessions as $session ) {
-            $session_meta                = $meta;
-            $session_meta['start_date']  = $session['date'];
-            $session_meta['end_date']    = $session['date'];
-            $session_meta['start_time']  = $session['start_time'];
-            $session_meta['end_time']    = $session['end_time'];
-
-            $s_ts = $this->module->compute_timestamps( $session_meta );
-            if ( (int) $s_ts['start'] <= 0 ) {
-                continue; // Unparseable session row — skip it, don't fail the whole node.
-            }
-            $start_ts = (int) $s_ts['start'];
-            $end_ts   = (int) $s_ts['end'];
+            $start_ts = $session['ts_start'];
+            $end_ts   = $session['ts_end'];
 
             if ( $min_start === null || $start_ts < $min_start ) {
                 $min_start = $start_ts;

@@ -11185,12 +11185,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output .= '<th>' . esc_html__( 'Session', 'anchor-schema' ) . '</th>';
         $output .= '</tr></thead>';
         $output .= '<tbody>';
-        foreach ( $sessions as $session ) {
-            $time_range = trim( $session['start_time'] . ( $session['end_time'] ? ' – ' . $session['end_time'] : '' ) );
+        foreach ( $this->group_session_rows( $sessions ) as $group ) {
+            $time_range = trim( $group['start_time'] . ( $group['end_time'] ? ' – ' . $group['end_time'] : '' ) );
             $output .= '<tr>';
-            $output .= '<td>' . esc_html( $session['date'] ) . '</td>';
+            $output .= '<td>' . esc_html( $this->format_session_dates( $group['date'], $group['end_date'] ) ) . '</td>';
             $output .= '<td>' . esc_html( $time_range ) . '</td>';
-            $output .= '<td>' . esc_html( $session['label'] ) . '</td>';
+            $output .= '<td>' . esc_html( $group['label'] ) . '</td>';
             $output .= '</tr>';
         }
         $output .= '</tbody>';
@@ -11198,6 +11198,53 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output .= '</section>';
 
         return $output;
+    }
+
+    /**
+     * Collapse single-day session rows into one entry per run of consecutive
+     * days that share a label and the same start/end time (a 2-day session is
+     * authored as two rows). Each entry is the first row plus `end_date`.
+     * Rows keep their stored order; a row with an unparseable date never merges.
+     *
+     * @param array[] $sessions get_sessions() rows.
+     * @return array[]
+     */
+    public function group_session_rows( array $sessions ) {
+        $groups = [];
+        foreach ( $sessions as $row ) {
+            $row['end_date'] = $row['date'];
+            $last            = \count( $groups ) - 1;
+            if ( $last >= 0 && $this->continues_session( $groups[ $last ], $row ) ) {
+                $groups[ $last ]['end_date'] = $row['date'];
+                continue;
+            }
+            $groups[] = $row;
+        }
+        return $groups;
+    }
+
+    /** Whether $row is the next calendar day of $group with the same label and times. */
+    private function continues_session( array $group, array $row ) {
+        if ( $group['label'] !== $row['label'] || $group['start_time'] !== $row['start_time'] || $group['end_time'] !== $row['end_time'] ) {
+            return false;
+        }
+        $prev = \strtotime( $group['end_date'] . ' UTC' );
+        $next = \strtotime( $row['date'] . ' UTC' );
+        return $prev !== false && $next !== false && $next - $prev === DAY_IN_SECONDS;
+    }
+
+    /** A session's date, or "first – last" for a run of days, in the site's date format. */
+    private function format_session_dates( $start, $end ) {
+        $fmt   = \get_option( 'date_format' );
+        $first = \strtotime( $start . ' UTC' );
+        if ( $first === false ) {
+            return $start; // Not a parseable date — show what was authored.
+        }
+        $text = \wp_date( $fmt, $first, new \DateTimeZone( 'UTC' ) );
+        if ( $end === $start || ( $last = \strtotime( $end . ' UTC' ) ) === false ) {
+            return $text;
+        }
+        return $text . ' – ' . \wp_date( $fmt, $last, new \DateTimeZone( 'UTC' ) );
     }
 
     /**

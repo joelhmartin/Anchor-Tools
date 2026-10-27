@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.43.0
+Stable tag: 3.44.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,11 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.44.0 =
+* Events: a course date (occurrence) switched to "Multi-session series" now uses its own sessions. Its schema lists one subEvent per session instead of one block from the first to the last day.
+* Events: the app feed adds `sessions` (start, end, all_day, label per session day) so the member app marks only the session days.
+* Events: the event page's Sessions table shows formatted dates and merges a multi-day session into one line.
 
 = 3.43.0 =
 * Events: an event sold through linked WooCommerce products (no ticket tiers of its own) is priced from those products. It used to publish a $0 Offer, so the member app and the page's schema both called it free.

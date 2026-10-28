@@ -173,6 +173,7 @@ class WooCommerce {
         // Nothing is being delivered either, so stop asking about delivery.
         \add_filter( 'woocommerce_checkout_fields', [ $this, 'filter_checkout_fields' ], 99 );
         \add_action( 'woocommerce_checkout_create_order_line_item', [ $this, 'persist_attendees_to_line_item' ], 10, 4 );
+        \add_action( 'woocommerce_email_order_meta', [ $this, 'render_new_order_email_answers' ], 20, 4 );
         \add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_checkout_assets' ] );
 
         // BLOCKER #2 — Store-API / block-checkout fail-closed guard. The classic
@@ -4279,10 +4280,6 @@ class WooCommerce {
             [ 'label' => \__( 'Buyer', 'anchor-schema' ), 'value' => $buyer ],
             [ 'label' => \__( 'Remaining capacity', 'anchor-schema' ), 'value' => $remaining ],
         ];
-        if ( $kind !== 'released' && isset( $by_event[ $event_id ] ) ) {
-            // Answers to questions ticked "Include in admin email" (new registrations only).
-            $detail_rows = \array_merge( $detail_rows, Admin_Email_Answers::detail_rows( $this->module, $event_id, $by_event[ $event_id ] ) );
-        }
 
         $ctx = [
             'event_id'      => $event_id,
@@ -4304,6 +4301,23 @@ class WooCommerce {
         // finding-13 — the order identity keeps two different orders' notices
         // on the same event from collapsing into one deduped mail-failure row.
         return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => (int) $order->get_id() ], [ 'kind' => 'events.organizer_notice', 'audience' => 'organizer' ] ), 'wp_mail' );
+    }
+
+    /**
+     * Hook: woocommerce_email_order_meta — list the answers to questions ticked
+     * "Include in admin email" in WooCommerce's own "New order" admin email,
+     * per event and per attendee. No other WooCommerce email gets them.
+     *
+     * @param mixed $order
+     * @param bool  $sent_to_admin
+     * @param bool  $plain_text
+     * @param mixed $email WC_Email instance.
+     */
+    public function render_new_order_email_answers( $order, $sent_to_admin = false, $plain_text = false, $email = null ) {
+        if ( ! $order instanceof \WC_Order || ! \is_object( $email ) || ( $email->id ?? '' ) !== 'new_order' ) {
+            return;
+        }
+        Admin_Email_Answers::render_order( $this->module, $order, (bool) $plain_text );
     }
 
     /**

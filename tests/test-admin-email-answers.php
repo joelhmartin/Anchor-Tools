@@ -1,7 +1,8 @@
 <?php
 /**
- * "Include in admin email" on attendee questions: the admin/staff registration
- * and order notices list ticked questions as `Question label: answer`.
+ * "Include in admin email" on attendee questions: the free-registration admin
+ * notice and WooCommerce's "New order" email list ticked questions as
+ * `Question label: answer`.
  *
  * @package Anchor\Events\Tests
  */
@@ -199,21 +200,37 @@ class Test_Admin_Email_Answers extends Anchor_Events_TestCase {
 		$this->assertFalse( $child_questions[2]['admin_email'] );
 	}
 
-	public function test_the_woocommerce_organizer_notice_lists_ticked_answers_per_attendee() {
+	/** An order whose line carries the checkout's attendee snapshot (no seats yet). */
+	private function order_with_attendees( $event_id, array $attendees ) {
+		$order = wc_create_order();
+		$item  = new WC_Order_Item_Product();
+		$item->set_name( 'Ticket' );
+		$item->set_quantity( count( $attendees ) );
+		$item->update_meta_data( '_anchor_event_id', $event_id );
+		$item->update_meta_data( '_anchor_attendees', $attendees );
+		$order->add_item( $item );
+		$order->save();
+		return wc_get_order( $order->get_id() );
+	}
+
+	private function render_wc_email( $order, $email_id, $plain_text = false ) {
+		$email = (object) [ 'id' => $email_id ];
+		ob_start();
+		$this->woocommerce()->render_new_order_email_answers( $order, 'new_order' === $email_id, $plain_text, $email );
+		return (string) ob_get_clean();
+	}
+
+	public function test_the_woocommerce_new_order_email_lists_ticked_answers_per_attendee() {
 		$this->require_wc();
 		$event_id = $this->event_with_questions();
-		$order    = wc_create_order();
-		$order->set_billing_email( 'buyer@example.test' );
-		$order->save();
-		$this->make_seat( $event_id, [ 'order_id' => $order->get_id(), 'name' => 'Ann', 'reg_fields' => $this->answers() ] );
-		$this->make_seat( $event_id, [ 'order_id' => $order->get_id(), 'name' => 'Bob', 'reg_fields' => [ 'heard' => 'Radio & TV <b>', 'diet' => '' ] ] );
+		$order    = $this->order_with_attendees( $event_id, [
+			1 => [ 'name' => 'Ann', 'fields' => $this->answers() ],
+			2 => [ 'name' => 'Bob', 'fields' => [ 'heard' => 'Radio & TV <b>', 'diet' => '' ] ],
+		] );
 
-		$method = new ReflectionMethod( get_class( $this->woocommerce() ), 'send_organizer_notice' );
-		$method->setAccessible( true );
-		$method->invokeArgs( $this->woocommerce(), [ $order, $this->module()->get_settings(), $event_id, [ 'confirmed' => 2, 'waitlist' => 0, 'released' => 0 ], 'confirmed' ] );
+		$html = $this->render_wc_email( $order, 'new_order' );
 
-		$this->assertNotEmpty( $this->mails, 'The organizer notice was sent.' );
-		$html = (string) $this->mails[0]['message'];
+		$this->assertStringContainsString( 'Admin Mail Event', $html );
 		$this->assertStringContainsString( 'How did you hear about us?: A friend', $html );
 		$this->assertStringContainsString( 'Dietary restrictions?: Vegan, Gluten-free, Other: shellfish', $html );
 		$this->assertStringContainsString( 'How did you hear about us?: Radio &amp; TV &lt;b&gt;', $html, 'Answers are escaped.' );
@@ -224,21 +241,43 @@ class Test_Admin_Email_Answers extends Anchor_Events_TestCase {
 			$html,
 			'Ann heading, Ann lines, Bob heading, Bob lines, in that order.'
 		);
-		$this->assertLessThan( strpos( $html, 'Radio &amp;' ), strrpos( $html, 'Dietary restrictions?' ), 'No Ann line after Bob starts.' );
 		$this->assertSame( 1, substr_count( $html, 'Dietary restrictions?' ), 'Bob left the multi-choice blank, so only Ann has that line.' );
 	}
 
-	public function test_the_released_notice_carries_no_answers() {
+	public function test_the_plain_text_new_order_email_is_not_html_encoded() {
+		$this->require_wc();
+		$event_id = $this->event_with_questions();
+		$order    = $this->order_with_attendees( $event_id, [ 1 => [ 'name' => 'Ann', 'fields' => [ 'heard' => 'R&D <b>' ] ] ] );
+
+		$text = $this->render_wc_email( $order, 'new_order', true );
+
+		$this->assertStringContainsString( "Ann\nHow did you hear about us?: R&D <b>", $text );
+		$this->assertStringNotContainsString( '<p', $text );
+	}
+
+	public function test_customer_woocommerce_emails_never_carry_the_answers() {
+		$this->require_wc();
+		$event_id = $this->event_with_questions();
+		$order    = $this->order_with_attendees( $event_id, [ 1 => [ 'name' => 'Ann', 'fields' => $this->answers() ] ] );
+
+		foreach ( [ 'customer_processing_order', 'customer_completed_order', 'customer_on_hold_order', 'cancelled_order' ] as $id ) {
+			$this->assertSame( '', $this->render_wc_email( $order, $id ), $id . ' gets no answers.' );
+		}
+	}
+
+	public function test_the_organizer_notice_no_longer_carries_the_answers() {
 		$this->require_wc();
 		$event_id = $this->event_with_questions();
 		$order    = wc_create_order();
+		$order->set_billing_email( 'buyer@example.test' );
 		$order->save();
-		$this->make_seat( $event_id, [ 'order_id' => $order->get_id(), 'reg_fields' => $this->answers() ] );
+		$this->make_seat( $event_id, [ 'order_id' => $order->get_id(), 'name' => 'Ann', 'reg_fields' => $this->answers() ] );
 
 		$method = new ReflectionMethod( get_class( $this->woocommerce() ), 'send_organizer_notice' );
 		$method->setAccessible( true );
-		$method->invokeArgs( $this->woocommerce(), [ $order, $this->module()->get_settings(), $event_id, [ 'confirmed' => 0, 'waitlist' => 0, 'released' => 1 ], 'released' ] );
+		$method->invokeArgs( $this->woocommerce(), [ $order, $this->module()->get_settings(), $event_id, [ 'confirmed' => 1, 'waitlist' => 0, 'released' => 0 ], 'confirmed' ] );
 
-		$this->assertStringNotContainsString( 'A friend', (string) ( $this->mails[0]['message'] ?? '' ) );
+		$this->assertNotEmpty( $this->mails, 'The organizer notice was sent.' );
+		$this->assertStringNotContainsString( 'A friend', (string) $this->mails[0]['message'] );
 	}
 }

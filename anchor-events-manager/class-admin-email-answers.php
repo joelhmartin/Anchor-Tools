@@ -7,8 +7,8 @@
  * `required`, so child dates inherit it exactly as they inherit the question).
  * This class is the one place that turns a seat's stored answers into the
  * `Question label: answer` lines those emails print, so the free-registration
- * notice (plain text) and the WooCommerce organizer notice (HTML detail rows)
- * cannot disagree about what is shown.
+ * notice (plain text) and WooCommerce's own "New order" admin email cannot
+ * disagree about what is shown.
  *
  * Only ticked questions, only answered ones. Multi-choice answers are already
  * one ", "-joined string (including "Other: <text>") by the time they are
@@ -79,28 +79,76 @@ class Admin_Email_Answers {
 	}
 
 	/**
-	 * Rows for the HTML email's detail table: a heading row naming the
-	 * attendee, then one `Label: answer` row per line. The text sits in the
-	 * label cell (left aligned, wraps) with an empty value cell.
+	 * Grouped per attendee, for an email that lists several (a WooCommerce
+	 * order). Attendees with nothing to show are left out.
 	 *
-	 * @param Module                        $module
-	 * @param int                           $event_id
-	 * @param array<int,array{id:int,name:string}> $seats
-	 * @return array<int,array{label:string,value:string}>
+	 * @param Module                                     $module
+	 * @param int                                        $event_id
+	 * @param array<int,array{name?:string,fields?:array}> $attendees Stored answers per attendee.
+	 * @return array<int,array{name:string,rows:array<int,array{label:string,answer:string}>}>
 	 */
-	public static function detail_rows( Module $module, $event_id, array $seats ) {
+	public static function for_attendees( Module $module, $event_id, array $attendees ) {
 		$out = [];
-		foreach ( $seats as $seat ) {
-			$lines = self::for_seat( $module, $event_id, (int) $seat['id'] );
-			if ( empty( $lines ) ) {
+		foreach ( $attendees as $att ) {
+			if ( ! \is_array( $att ) ) {
 				continue;
 			}
-			$name  = ( $seat['name'] ?? '' ) !== '' ? (string) $seat['name'] : \__( 'Guest', 'anchor-schema' );
-			$out[] = [ 'label' => $name, 'value' => '' ];
-			foreach ( $lines as $row ) {
-				$out[] = [ 'label' => $row['label'] . ': ' . $row['answer'], 'value' => '' ];
+			$rows = self::for_answers( $module, (int) $event_id, isset( $att['fields'] ) && \is_array( $att['fields'] ) ? $att['fields'] : [] );
+			if ( empty( $rows ) ) {
+				continue;
 			}
+			$name  = (string) ( $att['name'] ?? '' );
+			$out[] = [ 'name' => $name !== '' ? $name : \__( 'Guest', 'anchor-schema' ), 'rows' => $rows ];
 		}
 		return $out;
+	}
+
+	/**
+	 * Print an order's answers into a WooCommerce email body, one heading per
+	 * event and one block per attendee.
+	 *
+	 * Read from the line items' `_anchor_attendees` snapshot, not the seats:
+	 * WooCommerce sends "New order" on the status transition, before the
+	 * order's seats are created.
+	 *
+	 * @param Module    $module
+	 * @param \WC_Order $order
+	 * @param bool      $plain_text
+	 */
+	public static function render_order( Module $module, $order, $plain_text ) {
+		$by_event = [];
+		foreach ( $order->get_items() as $item ) {
+			$event_id  = (int) $item->get_meta( '_anchor_event_id', true );
+			$attendees = $item->get_meta( '_anchor_attendees', true );
+			if ( $event_id <= 0 || ! \is_array( $attendees ) ) {
+				continue;
+			}
+			$grouped = self::for_attendees( $module, $event_id, $attendees );
+			if ( $grouped ) {
+				$by_event[ $event_id ] = \array_merge( $by_event[ $event_id ] ?? [], $grouped );
+			}
+		}
+
+		foreach ( $by_event as $event_id => $attendees ) {
+			$title = \wp_strip_all_tags( \get_the_title( $event_id ) );
+			if ( $plain_text ) {
+				echo "\n" . $title . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput -- plain-text email.
+				foreach ( $attendees as $att ) {
+					echo "\n" . $att['name'] . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput -- plain-text email.
+					foreach ( $att['rows'] as $row ) {
+						echo $row['label'] . ': ' . $row['answer'] . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput -- plain-text email.
+					}
+				}
+				continue;
+			}
+			echo '<h2>' . \esc_html( $title ) . '</h2>';
+			foreach ( $attendees as $att ) {
+				echo '<p style="margin:0 0 12px;"><strong>' . \esc_html( $att['name'] ) . '</strong>';
+				foreach ( $att['rows'] as $row ) {
+					echo '<br />' . \esc_html( $row['label'] ) . ': ' . \esc_html( $row['answer'] );
+				}
+				echo '</p>';
+			}
+		}
 	}
 }

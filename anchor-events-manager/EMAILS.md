@@ -85,9 +85,9 @@ All settings below are registered in the Events tab of **Settings > Anchor Tools
 
 ### Attendee answers in the admin email
 
-Each attendee question has an **Include in admin email** checkbox (event edit screen > Attendee questions; off by default, inherited by child dates with the question). Ticked, answered questions are listed as `Question label: answer` per attendee in the admin notice for a free registration (plain text) and the organizer new-registration notice for a WooCommerce order (HTML). Multi-choice answers are joined with ", " including the "Other" write-in; unanswered questions are skipped. Attendee-facing emails, the seats-released notice and the roster digest are unchanged. Logic lives in `class-admin-email-answers.php`.
+Each attendee question has an **Include in admin email** checkbox (event edit screen > Attendee questions; off by default, inherited by child dates with the question). Ticked, answered questions are listed as `Question label: answer` per attendee in the admin notice for a free registration (plain text) and in WooCommerce's own "New order" admin email for a paid order (under the order table, grouped by event then attendee; HTML or plain text to match the email). The WooCommerce answers come from the checkout snapshot on the order lines, because "New order" goes out before the order's seats exist. Multi-choice answers are joined with ", " including the "Other" write-in; unanswered questions are skipped. Attendee-facing emails (including WooCommerce's customer emails), the plugin's organizer new-registration notice, the seats-released notice and the roster digest are unchanged. Logic lives in `class-admin-email-answers.php`.
 
-Limits: WooCommerce's own "New order" admin email does not include the answers. A custom organiser email template that leaves out `{detail_rows}` drops them from the organizer notice. Multi-line answers are flattened to one line.
+Limits: an order line added in the admin (no checkout snapshot) has no answers to show. Multi-line answers are flattened to one line.
 
 ### Organizer Roster Digest
 

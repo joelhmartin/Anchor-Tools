@@ -7,3 +7,21 @@
   line-height:1.4;
   color:#646970;
 }
+
+/* wp-admin table layout (the Events console supplies its own front-end styles). */
+.wp-admin .anchor-questions-editor .anchor-questions-table th,
+.wp-admin .anchor-questions-editor .anchor-questions-table td{
+  padding:8px;
+  vertical-align:top;
+  text-align:left;
+}
+.wp-admin .anchor-questions-editor .anchor-questions-table input[type="text"],
+.wp-admin .anchor-questions-editor .anchor-questions-table select,
+.wp-admin .anchor-questions-editor .anchor-questions-table textarea{
+  width:100%;
+  box-sizing:border-box;
+}
+.wp-admin .anchor-questions-editor .anchor-questions-table td label{
+  display:block;
+  margin-bottom:4px;
+}

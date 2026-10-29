@@ -2239,6 +2239,11 @@ class Module {
         return self::$instance;
     }
 
+    /** Whether a product/variation line registers for an event (false without the WooCommerce integration). */
+    public function product_is_event_ticket( int $product_id, int $variation_id = 0 ): bool {
+        return $this->woocommerce && $this->woocommerce->event_for_line( $product_id, $variation_id ) > 0;
+    }
+
     /**
      * The single events-management capability (audit REG-D20 / REG-D62 / WOO-D41).
      *
@@ -15155,7 +15160,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /**
      * One row of the question repeater. Mirrors event_label_row_html(): the
-     * template copy uses __INDEX__, which manager.js rewrites on add.
+     * template copy uses __INDEX__, which the shared questions-editor.js rewrites on add.
      *
      * @param int        $index
      * @param array|null $row
@@ -15173,6 +15178,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'table'       => 'anchor-event-questions-table',
             'rows'        => 'anchor-event-questions-rows',
             'row'         => 'anchor-event-question-row',
+            'add_base'    => 'anchor-event-button-secondary anchor-question-add',
             'add'         => 'anchor-event-question-add',
             'remove'      => 'anchor-event-question-remove',
             'template_id' => 'anchor-event-question-template',

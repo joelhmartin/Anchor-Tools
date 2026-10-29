@@ -343,6 +343,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-agreements/anchor-agreements.php',
                 'class'       => '\\Anchor\\Agreements\\Module',
             ],
+            'checkout_questions' => [
+                'label'       => __( 'Anchor Checkout Questions', 'anchor-schema' ),
+                'description' => __( 'Ask buyers questions at WooCommerce checkout and see the answers on the order and in the New order email.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-checkout-questions/anchor-checkout-questions.php',
+                'class'       => '\\Anchor\\CheckoutQuestions\\Module',
+            ],
             'announcements' => [
                 'label'       => __( 'Anchor Announcements', 'anchor-schema' ),
                 'description' => __( 'Compose and send tracked email announcements to filtered audiences.', 'anchor-schema' ),

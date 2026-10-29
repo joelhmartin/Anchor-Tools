@@ -15,6 +15,7 @@ return array(
     'Anchor\\Shipping\\' => array($baseDir . '/anchor-shipping/src'),
     'Anchor\\Library\\' => array($baseDir . '/anchor-library/src'),
     'Anchor\\Courses\\' => array($baseDir . '/anchor-courses/src'),
+    'Anchor\\CheckoutQuestions\\' => array($baseDir . '/anchor-checkout-questions/src'),
     'Anchor\\Announcements\\' => array($baseDir . '/anchor-announcements/src'),
     'Anchor\\Agreements\\' => array($baseDir . '/anchor-agreements/src'),
 );

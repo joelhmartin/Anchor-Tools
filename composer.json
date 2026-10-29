@@ -18,7 +18,8 @@
             "Anchor\\Announcements\\": "anchor-announcements/src/",
             "Anchor\\Agreements\\": "anchor-agreements/src/",
             "Anchor\\Shipping\\": "anchor-shipping/src/",
-            "Anchor\\Library\\": "anchor-library/src/"
+            "Anchor\\Library\\": "anchor-library/src/",
+            "Anchor\\CheckoutQuestions\\": "anchor-checkout-questions/src/"
         }
     },
     "scripts": {

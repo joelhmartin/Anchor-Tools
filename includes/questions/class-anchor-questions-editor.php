@@ -81,7 +81,8 @@ class Anchor_Questions_Editor {
      * @param string $name_prefix Field-name prefix for every row.
      * @param array  $rows        Existing question rows.
      * @param array  $aliases     Optional legacy classes keyed wrapper|table|rows|row|add|remove,
-     *                            plus template_id for the template script's id attribute.
+     *                            plus template_id for the template script's id attribute and add_base to replace
+     *                            the Add button's base classes (default `button anchor-question-add`).
      * @return string Escaped HTML.
      */
     public static function repeater_html( $name_prefix, array $rows, array $aliases = [] ) {
@@ -108,7 +109,7 @@ class Anchor_Questions_Editor {
                         </tbody>
                     </table>
                     <p>
-                        <button type="button" class="<?php echo esc_attr( self::classes( 'anchor-event-button-secondary anchor-question-add', $aliases, 'add' ) ); ?>"><?php echo esc_html__( 'Add question', 'anchor-schema' ); ?></button>
+                        <button type="button" class="<?php echo esc_attr( self::classes( $aliases['add_base'] ?? 'button anchor-question-add', $aliases, 'add' ) ); ?>"><?php echo esc_html__( 'Add question', 'anchor-schema' ); ?></button>
                     </p>
                     <script type="text/template" class="anchor-question-template"<?php echo ! empty( $aliases['template_id'] ) ? ' id="' . esc_attr( $aliases['template_id'] ) . '"' : ''; ?>>
                         <?php echo self::row_html( $name_prefix, 0, null, true, $aliases ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in row_html ?>

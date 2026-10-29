@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true,"announcements":true,"agreements":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true,"announcements":true,"agreements":true,"checkout_questions":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery + Compliance + Courses + Announcements + Agreements modules enabled."
+log "Events + Gallery + Compliance + Courses + Announcements + Agreements + Checkout Questions modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -923,5 +923,53 @@ wp post meta update "${AAGR_PRODUCT2}" _anchor_agreement_id "${AAGR_DOC2}" >/dev
 wp eval '$p = ABSPATH . "wp-content/plugins/'"${PLUGIN_SLUG}"'/e2e/.seed.json"; $d = json_decode( (string) file_get_contents( $p ), true ) ?: []; $d["agreements_product_id"] = '"${AAGR_PRODUCT}"'; $d["agreements_product2_id"] = '"${AAGR_PRODUCT2}"'; file_put_contents( $p, json_encode( $d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );'
 log "Agreements fixture ready: agreement #${AAGR_DOC}, product #${AAGR_PRODUCT}."
 echo "AAGR_PRODUCT_ID=${AAGR_PRODUCT}"
+
+
+# ---------------------------------------------------------------------------
+# Anchor Checkout Questions fixture: a simple virtual product in a "Courses"
+# product category, and a published set "Course intake" assigned to that
+# category with one required text question "Licence number" flagged for the
+# admin email. Idempotent: found by slug/title, rewritten each run. Any leftover
+# "E2E UI set" from an aborted checkout-questions UI test is removed so it can
+# never ask extra required questions of the Courses product.
+# Ids are merged into e2e/.seed.json as cq_product_id / cq_set_id / cq_category_id.
+# ---------------------------------------------------------------------------
+CQ_IDS="$(wp eval '
+  $term = get_term_by( "slug", "courses", "product_cat" );
+  $cat  = $term ? (int) $term->term_id : (int) wp_insert_term( "Courses", "product_cat", [ "slug" => "courses" ] )["term_id"];
+  $found = get_posts( [ "post_type" => "product", "name" => "cq-course-product", "post_status" => "any", "posts_per_page" => 1, "fields" => "ids" ] );
+  if ( $found ) {
+      $pid = (int) $found[0];
+  } else {
+      $prod = new WC_Product_Simple();
+      $prod->set_name( "CQ Course Product" );
+      $prod->set_slug( "cq-course-product" );
+      $prod->set_regular_price( "10" );
+      $prod->set_virtual( true );
+      $prod->set_status( "publish" );
+      $pid = $prod->save();
+  }
+  wp_set_object_terms( $pid, [ $cat ], "product_cat" );
+  $sets = get_posts( [ "post_type" => "anchor_question_set", "post_status" => "any", "posts_per_page" => -1 ] );
+  $set  = 0;
+  foreach ( $sets as $s ) {
+      if ( "Course intake" === $s->post_title && ! $set ) { $set = (int) $s->ID; continue; }
+      if ( "E2E UI set" === $s->post_title ) { wp_delete_post( $s->ID, true ); }
+  }
+  if ( ! $set ) {
+      $set = (int) wp_insert_post( [ "post_type" => "anchor_question_set", "post_title" => "Course intake", "post_status" => "publish" ] );
+  }
+  wp_update_post( [ "ID" => $set, "post_status" => "publish" ] );
+  update_post_meta( $set, "_anchor_cq_questions", [ [ "key" => "licence_number", "label" => "Licence number", "type" => "text", "options" => [], "required" => true, "admin_email" => true ] ] );
+  update_post_meta( $set, "_anchor_cq_category_ids", [ $cat ] );
+  delete_post_meta( $set, "_anchor_cq_product_ids" );
+  echo $pid . "|" . $set . "|" . $cat;
+')"
+CQ_PRODUCT_ID="${CQ_IDS%%|*}"
+CQ_REST="${CQ_IDS#*|}"
+CQ_SET_ID="${CQ_REST%%|*}"
+CQ_CAT_ID="${CQ_REST##*|}"
+wp eval '$p = ABSPATH . "wp-content/plugins/'"${PLUGIN_SLUG}"'/e2e/.seed.json"; $d = json_decode( (string) file_get_contents( $p ), true ) ?: []; $d["cq_product_id"] = '"${CQ_PRODUCT_ID}"'; $d["cq_set_id"] = '"${CQ_SET_ID}"'; $d["cq_category_id"] = '"${CQ_CAT_ID}"'; file_put_contents( $p, json_encode( $d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );'
+log "Checkout Questions fixture ready: product #${CQ_PRODUCT_ID}, set #${CQ_SET_ID}, category #${CQ_CAT_ID}."
 
 log "Seed complete."

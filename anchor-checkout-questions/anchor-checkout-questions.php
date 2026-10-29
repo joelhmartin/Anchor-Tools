@@ -31,6 +31,9 @@ class Module {
 		// Not gated on is_admin(): its hooks are CPT-scoped, and set saves must also work from tests and imports.
 		new Admin\SetEditor();
 		new Frontend\Checkout();
+		new Admin\OrderMetabox();
+		new Admin\ProductNotice();
+		new Admin\BlockCheckoutNotice();
 	}
 
 	public static function missing_woocommerce_notice(): void {

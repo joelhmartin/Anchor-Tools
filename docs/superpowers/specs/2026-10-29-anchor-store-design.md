@@ -58,21 +58,25 @@ The settings page lives under WooCommerce → Anchor Store, with option `anchor_
 - **Settings:**
   - checkout button label (default "Checkout"; TMJ sets "Register Now");
   - empty-cart link label and URL (default "Continue shopping" → shop page; TMJ sets "Browse courses" → `/for-doctors/upcoming-courses/`);
-  - whether the floating button shows (default on).
+  - whether the floating button shows (default on);
+  - the coupon field placeholder (default "Coupon code"; TMJ sets "Promo code");
+  - "Return to the page and open the cart after adding" (`return_after_add`, default on; DEKA sets it off, because DEKA leaves the visitor on the product page today).
+
+  An empty-cart link URL left blank prints no link, as on DEKA today.
 - **Theme API:** `\Anchor\Store\Api::cart_toggle()` echoes the header cart link with its live count. The drawer, overlay and floating button print on `wp_footer` when the feature is on.
 - **Fragments** (`woocommerce_add_to_cart_fragments`): the header count, the floating-button count and the whole drawer body.
 - **AJAX:**
-  - actions `anchor_store_cart_qty` (qty <= 0 removes the line) and `anchor_store_cart_coupon` (apply/remove; returns WooCommerce's own notice as plain text);
+  - actions `anchor_store_cart_qty` (qty <= 0 removes the line; an increase runs `woocommerce_update_cart_validation` first and returns its error — my call: today's theme stepper skips it, and Anchor Events re-checks seats only at checkout) and `anchor_store_cart_coupon` (apply/remove; returns WooCommerce's own notice as plain text);
   - nonce action `anchor-store-cart`;
   - logged-in and `nopriv` variants.
 - **Coupon field:** one renderer, a `<div>` and never a `<form>` (it sits inside the checkout form). It is used in the drawer foot, with applied codes listed with a remove link, and as a checkout order-box row on `woocommerce_review_order_before_order_total`, without the list. When the feature is on, WooCommerce's top-of-checkout "Have a coupon?" form is removed.
-- **Non-AJAX add to cart:** when WooCommerce's own redirect is empty and the request isn't AJAX, send the visitor back to the referring page with the `add-to-cart` / `added-to-cart` arguments removed. Set a session flag that opens the drawer on that page view, and drop WooCommerce's "added to your cart" success notice.
+- **Non-AJAX add to cart** (only when `return_after_add` is on): when WooCommerce's own redirect is empty and the request isn't AJAX, send the visitor back to the referring page with the `add-to-cart` / `added-to-cart` arguments removed. Set a session flag that opens the drawer on that page view, and drop WooCommerce's "added to your cart" success notice.
 - **JS** (`anchor-store/assets/cart-drawer.js`, jQuery IIFE per CLAUDE.md, depends on `wc-cart-fragments`):
   - Open from the toggle and floating button; close on overlay, close button and Esc.
   - A focus trap while open, with focus returned to the opener; `aria-expanded` on the toggle; no slide under `prefers-reduced-motion`.
   - Auto-open on WooCommerce's `added_to_cart`, and on the new `anchor_events_added_to_cart` body event (below).
   - Use the in-page flash region for messages, never `alert()`.
-- **Anchor Events change:** `assets/event-storefront.js` triggers `$( document.body ).trigger( 'anchor_events_added_to_cart' )` after a successful add, plus `wc_fragment_refresh`. That replaces TMJ's `ajaxSuccess` sniff on `action=anchor_events_add_to_cart`.
+- **Anchor Events change:** `assets/event-storefront.js` triggers `$( document.body ).trigger( 'anchor_events_added_to_cart' )` after a successful add, plus `wc_fragment_refresh`. That replaces TMJ's `ajaxSuccess` sniff on `action=anchor_events_add_to_cart`. DEKA's drawer doesn't open after an event-ticket add today; with the plugin it will (my call: same as TMJ, and the visitor sees what they added).
 - **CSS** (`cart-drawer.css`): a complete neutral default, driven by custom properties on `.anchor-cart-drawer`: accent, text, muted, surface, border, radius, font, width. Each theme sets the properties and deletes its own drawer CSS.
 
 ## Feature: ticket upsells
@@ -88,13 +92,14 @@ The rule is per variation, ported unchanged from TMJ `inc/upsells.php`:
   - anything not purchasable or out of stock.
 
   It is filtered by `anchor_store_variation_upsells`.
+- **Depends on the plugin drawer:** offers render only in the plugin drawer, so `upsells` is active only while `cart_drawer` is active (on and not deferring). In TMJ the theme drawer calls the theme's offers, so the two move over together.
 - **Admin:** on the variation panel, `woocommerce_product_after_variable_attributes` shows "Upsells in the cart drawer": an "Upsell products" product/variation search and "Upsell tickets from this product" checkboxes. When a rule is inherited, a line says where it came from. Saving goes through `woocommerce_save_product_variation`, which clears the cache.
 - **Drawer:** an "Add to your registration" section of cards, one per offer however many lines trigger it. Each card has an image, a name ("Staff ticket" for a sibling, otherwise the product name), the parent name for siblings, the price and an Add button. The section is omitted when empty.
 - **Add:** AJAX `anchor_store_cart_upsell_add` with the trigger line's key and the offer id.
   - It is refused unless the offer is still in `for_variation()` of that line's variation.
   - It runs `woocommerce_add_to_cart_validation` by hand before `WC()->cart->add_to_cart()`, which is how Anchor Events' seat check runs.
   - It returns WooCommerce's error notice, or "That add-on is no longer available."
-- **Migration:** module setup copies `_tmj_upsell_ids` / `_tmj_upsell_siblings` to the new keys where the new key is absent, once, gated by option `anchor_store_db_version`. The old rows are left in place. On TMJ today that's 5 variations with `_tmj_upsell_siblings`.
+- **Migration:** the first request on which `upsells` is active (not deferring) copies `_tmj_upsell_ids` / `_tmj_upsell_siblings` to the new keys where the new key is absent, then sets option `anchor_store_upsells_migrated`. Running at takeover rather than at module setup keeps any rule an admin edited in the theme's panel in the meantime. The old rows are left in place. On TMJ today that's 5 variations with `_tmj_upsell_siblings`. `_tmj_assoc_discount` → `_anchor_store_tier_eligible` copies the same way when `coupon_rules` takes over (option `anchor_store_coupons_migrated`).
 
 ## Feature: coupon rules
 
@@ -117,7 +122,8 @@ Both are per-coupon settings on the coupon edit screen (`woocommerce_coupon_opti
   - (b) a variation ticked "Eligible for tier-restricted coupons" (`_anchor_store_tier_eligible`) on its variation options (`woocommerce_variation_options`);
   - (c) a product that isn't a variation and isn't variable (one price for everyone).
 - This runs on `woocommerce_coupon_is_valid_for_product` (priority 20), so WooCommerce shows its own "not applicable" message.
-- Migration copies `_tmj_assoc_discount` to `_anchor_store_tier_eligible`. That's 0 rows on TMJ today, but the code path stays.
+- Migration (see upsells): `_tmj_assoc_discount` → `_anchor_store_tier_eligible`. That's 0 rows on TMJ today, but the code path stays.
+- AIRWAYZ's auto-apply (`inc/airwayz.php`) stays in the theme. It only applies the existing AIRWAYZ coupon from the database (percent 20), so the plugin's rule sees the same coupon the theme's did.
 
 ## Feature: GA4 ecommerce events
 
@@ -125,7 +131,7 @@ Ported from TMJ `inc/ecommerce-tracking.php`:
 
 - **Events:** `view_item` (single product), `add_to_cart` (queued in the WooCommerce session and printed on the next page view, which covers the AJAX drawer add and a normal POST + redirect), `begin_checkout`, and `purchase` (order-received, once per order).
 - Each event is pushed to `dataLayer` in GA4's ecommerce shape and sent with `gtag('event', …)` only `if ( typeof gtag === 'function' )`.
-- The feature setting replaces TMJ's "is the GA4 snippet on" lookup. On staging, where the snippet is off, there's no `gtag`, so only the dataLayer push happens and nothing reaches GA4. This keeps today's guarantee without the plugin knowing about a snippet's title.
+- The feature setting replaces TMJ's "is the GA4 snippet on" lookup. The feature also prints nothing on a non-production environment: `KINSTA_DEV_ENV` true (Kinsta staging, where `wp_get_environment_type()` still says production) or `wp_get_environment_type() !== 'production'`. Both gates are needed because TMJ also loads GTM (GTM-T6XVML9V), so a bare dataLayer push on a staging copy with snippets on would still reach Google.
 - **Purchase de-dupe:** order meta `_anchor_store_ga4_purchase_tracked`, with existing `_tmj_ga4_purchase_tracked` also honoured. There are 38 TMJ orders carrying it, so an old order's refreshed thank-you page never re-sends.
 - The item shape, currency and value are as TMJ builds them (`tmj_ga4_item()`).
 
@@ -135,8 +141,8 @@ Each feature defers to a theme copy that's still present. It checks on `after_se
 
 | Feature | Defers when any of these exist |
 |---|---|
-| cart_drawer | `tmj_cart_drawer`, `deka_drawer_cart_content` |
-| upsells | `tmj_variation_upsells` |
+| cart_drawer | `tmj_cart_drawer`, `deka_drawer_cart_content`, `deka_coupon_field`, `deka_cart_fab` (DEKA's checkout coupon row and coupon-form removal are closures beside `deka_coupon_field`, so its presence stands for them) |
+| upsells | `tmj_variation_upsells`, or `cart_drawer` not active |
 | coupon_rules | `tmj_better_of_two_target`, `tmj_assoc_discount_applies` |
 | ga4 | `tmj_ga4_enabled` |
 
@@ -152,7 +158,10 @@ The list is filterable via `anchor_store_legacy_functions`. When a switched-on f
    - in header/footer, swap `tmj_cart_toggle()` / `tmj_cart_drawer()` for the plugin API;
    - delete `inc/upsells.php`, `inc/coupons.php`, `inc/ecommerce-tracking.php`, the drawer half of `inc/commerce.php`, `assets/js/cart.js` and the theme's drawer CSS.
    - Check one cart for each coupon example, an upsell Add, and one GA4 purchase in DebugView.
-3. **DEKA** (staging first): the same for the drawer and coupon row only.
+3. **DEKA** (staging first), drawer and coupon row only:
+   - set `return_after_add` off, the placeholder to "Coupon code", and leave the empty-cart link blank;
+   - swap the header cart link for `Api::cart_toggle()`;
+   - delete from `functions.php`: the nav-badge fragment filter, `deka_coupon_field`, the checkout coupon row and the coupon-form removal, `deka_drawer_cart_content` and its fragment, `deka_cart_fab`, `deka_ajax_qty` / the coupon AJAX handler, and the `deka-cart-drawer` enqueue; delete `assets/js/cart-drawer.js` and the drawer CSS.
 
 ## Tests
 
@@ -161,7 +170,7 @@ The list is filterable via `anchor_store_legacy_functions`. When a switched-on f
   - Coupons: the TMJ examples. Toronto Dentist is regular $3,495, sale $2,995. VECTOR $500 targets $2,995, so it takes 0 off. TOR750 $750 targets $2,745, so the customer pays $2,745. A percent 20 coupon on a non-sale $1,000 item takes $200; with qty 2 it takes $400 (or $200 per unit when `$single`). Tier prefixes: "Dentist" and "Dentists" match; "MD, DC, PT, DO or Non-Dental Professional", "Staff" and "Students" don't; the eligibility tick matches; a simple product matches; a variable parent doesn't.
   - Drawer: fragments contain the body and counts; the qty AJAX removes on 0; the coupon AJAX returns WooCommerce's notice text; the non-AJAX redirect returns to the referer and sets the open flag.
   - GA4: purchase prints once, and is skipped when the legacy meta is present.
-  - Coexistence: a defined legacy function makes the feature register nothing.
+  - Coexistence: a defined legacy function makes the feature register nothing; `upsells` stays off while `cart_drawer` defers; GA4 prints nothing under `KINSTA_DEV_ENV`; the stepper refuses an increase that `woocommerce_update_cart_validation` rejects; the migration runs only at takeover and never overwrites.
 - **Playwright (wp-env):** add a product → drawer opens; the stepper changes the quantity; a bad coupon shows WooCommerce's message in the field; an upsell card's Add puts the sibling ticket in the cart.
 
 ## Left to the builder

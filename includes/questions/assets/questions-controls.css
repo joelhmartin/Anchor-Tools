@@ -1,0 +1,13 @@
+/* Styles for Anchor_Questions::render_control() output on the front end (checkout),
+   for sites where the Events stylesheet is not loaded. Neutral; a theme can restyle. */
+.anchor-cq-set{margin:0 0 1.5em;}
+.anchor-cq-question{clear:both;width:100%;}
+.anchor-event-multi{position:relative;width:100%;}
+.anchor-event-multi__summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:10px 14px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;cursor:pointer;list-style:none;}
+.anchor-event-multi__summary::-webkit-details-marker{display:none;}
+.anchor-event-multi__summary::after{content:"";flex:none;width:8px;height:8px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg) translateY(-2px);opacity:.6;}
+.anchor-event-multi[open] > .anchor-event-multi__summary::after{transform:rotate(-135deg) translateY(-2px);}
+.anchor-event-multi__list{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 16px;margin-top:6px;padding:12px 14px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;}
+.anchor-event-multi__opt{display:flex !important;align-items:center;gap:8px;margin:0 !important;font-weight:400 !important;text-transform:none !important;letter-spacing:normal !important;cursor:pointer;}
+.anchor-event-multi__opt input[type="checkbox"]{width:auto !important;margin:0;flex:none;}
+.anchor-event-multi__other{grid-column:1 / -1;width:100%;}

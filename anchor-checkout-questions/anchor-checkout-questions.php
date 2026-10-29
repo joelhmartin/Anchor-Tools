@@ -30,6 +30,7 @@ class Module {
 		\add_action( 'init', [ Content\QuestionSetPostType::class, 'register' ] );
 		// Not gated on is_admin(): its hooks are CPT-scoped, and set saves must also work from tests and imports.
 		new Admin\SetEditor();
+		new Frontend\Checkout();
 	}
 
 	public static function missing_woocommerce_notice(): void {

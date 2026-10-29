@@ -2239,6 +2239,11 @@ class Module {
         return self::$instance;
     }
 
+    /** Whether a product/variation line registers for an event (false without the WooCommerce integration). */
+    public function product_is_event_ticket( int $product_id, int $variation_id = 0 ): bool {
+        return $this->woocommerce && $this->woocommerce->event_for_line( $product_id, $variation_id ) > 0;
+    }
+
     /**
      * The single events-management capability (audit REG-D20 / REG-D62 / WOO-D41).
      *

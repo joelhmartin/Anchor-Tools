@@ -191,9 +191,36 @@ class Test_Checkout_Questions_Checkout extends WP_UnitTestCase {
 	public function test_store_api_guard_silent_for_optional_or_no_set() {
 		$p = $this->product();
 		$this->set_for( $p, [ $this->q( 'a' ) ] );
-		$this->checkout()->guard_block_checkout( $this->order_for( $p ) );
-		$this->checkout()->guard_block_checkout( $this->order_for( $this->product() ) );
-		$this->assertTrue( true );
+		foreach ( [ $this->order_for( $p ), $this->order_for( $this->product() ) ] as $order ) {
+			$status = $order->get_status();
+			$this->checkout()->guard_block_checkout( $order );
+			$this->assertSame( $status, $order->get_status() );
+			$this->assertCount( 0, wc_get_order_notes( [ 'order_id' => $order->get_id() ] ) );
+		}
+	}
+
+	public function test_guard_without_exception_class_holds_order_and_notes_labels_only() {
+		$p = $this->product();
+		$this->set_for( $p, [ $this->q( 'ssn', 'text', true, 'Medical history' ) ] );
+		$c = new class() extends Checkout {
+			protected function store_api_exception_available(): bool {
+				return false;
+			}
+		};
+		$order = $this->order_for( $p );
+		$c->guard_block_checkout( $order );
+		$this->assertSame( 'on-hold', wc_get_order( $order->get_id() )->get_status() );
+		$notes = wc_get_order_notes( [ 'order_id' => $order->get_id() ] );
+		$this->assertStringContainsString( 'Medical history', implode( ' | ', wp_list_pluck( $notes, 'content' ) ) );
+	}
+
+	public function test_set_title_stored_verbatim() {
+		$p = $this->product();
+		$this->set_for( $p, [ $this->q( 'a' ) ], "Q & A: Don't" );
+		WC()->cart->add_to_cart( $p );
+		$order = $this->order_for( $p );
+		$this->checkout()->store( $order, [] );
+		$this->assertSame( "Q & A: Don't", $order->get_meta( '_anchor_cq_answers' )[0]['set_title'] );
 	}
 
 	public function test_hooks_are_wired() {
@@ -202,5 +229,6 @@ class Test_Checkout_Questions_Checkout extends WP_UnitTestCase {
 		$this->assertNotFalse( has_action( 'woocommerce_after_checkout_validation', [ $c, 'validate' ] ) );
 		$this->assertNotFalse( has_action( 'woocommerce_checkout_create_order', [ $c, 'store' ] ) );
 		$this->assertNotFalse( has_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $c, 'guard_block_checkout' ] ) );
+		$this->assertNotFalse( has_action( 'woocommerce_blocks_checkout_order_processed', [ $c, 'guard_block_checkout' ] ) );
 	}
 }

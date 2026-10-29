@@ -15,7 +15,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  *
  * Answers are never logged (health information).
  */
-final class Checkout {
+class Checkout {
 
 	public const ORDER_META = '_anchor_cq_answers';
 	public const FIELD      = 'anchor_cq';
@@ -25,6 +25,8 @@ final class Checkout {
 		\add_action( 'woocommerce_after_checkout_validation', [ $this, 'validate' ], 10, 2 );
 		\add_action( 'woocommerce_checkout_create_order', [ $this, 'store' ], 10, 2 );
 		\add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'guard_block_checkout' ], 10, 2 );
+		// Older WooCommerce Blocks builds fire this hook instead.
+		\add_action( 'woocommerce_blocks_checkout_order_processed', [ $this, 'guard_block_checkout' ], 10, 1 );
 		\add_action( 'wp_enqueue_scripts', [ $this, 'enqueue' ] );
 	}
 
@@ -110,7 +112,7 @@ final class Checkout {
 			}
 			$entries[] = [
 				'set_id'    => $set_id,
-				'set_title' => \get_the_title( $set_id ),
+				'set_title' => \html_entity_decode( (string) \get_post_field( 'post_title', $set_id ), ENT_QUOTES, 'UTF-8' ), // not get_the_title(): it texturizes, and WP stores &amp; in post_title; either would print as entities in the plain-text email.
 				'questions' => $questions,
 				'answers'   => \Anchor_Questions::sanitize_answers( $questions, $posted[ $set_id ] ?? [] )['answers'],
 			];
@@ -131,21 +133,40 @@ final class Checkout {
 		if ( ! $order instanceof \WC_Order ) {
 			return;
 		}
+		$labels = [];
 		foreach ( Matcher::for_order( $order ) as $set_id ) {
 			foreach ( QuestionSets::questions( $set_id ) as $q ) {
-				if ( empty( $q['required'] ) ) {
-					continue;
+				if ( ! empty( $q['required'] ) ) {
+					$labels[] = (string) $q['label'];
 				}
-				if ( \class_exists( '\\Automattic\\WooCommerce\\StoreApi\\Exceptions\\RouteException' ) ) {
-					throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException(
-						'anchor_cq_block_checkout',
-						\esc_html__( 'This order has required questions that the block checkout cannot show. Please use the classic checkout.', 'anchor-schema' ),
-						400
-					);
-				}
-				return;
 			}
 		}
+		if ( ! $labels ) {
+			return;
+		}
+		if ( $this->store_api_exception_available() ) {
+			throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException(
+				'anchor_cq_block_checkout',
+				\esc_html__( 'This order has required questions that the block checkout cannot show. Please use the classic checkout.', 'anchor-schema' ),
+				400
+			);
+		}
+		// No exception class to refuse with: fail closed visibly instead. Hold the
+		// order and leave a private note naming the unanswered questions (labels only).
+		$order->add_order_note(
+			\sprintf(
+				/* translators: %s: comma-separated question labels. */
+				\__( 'Placed through the block checkout without these required questions being asked: %s. Contact the buyer before fulfilling.', 'anchor-schema' ),
+				\implode( ', ', $labels )
+			)
+		);
+		$order->update_status( 'on-hold' );
+		$order->save();
+	}
+
+	/** Test seam: the Store API exception class may be absent on old WooCommerce builds. */
+	protected function store_api_exception_available(): bool {
+		return \class_exists( '\\Automattic\\WooCommerce\\StoreApi\\Exceptions\\RouteException' );
 	}
 
 	/** Woo's own field classes; none on a checkbox (Storefront would stretch it). */

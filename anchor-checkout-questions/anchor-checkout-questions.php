@@ -34,6 +34,7 @@ class Module {
 		new Admin\OrderMetabox();
 		new Admin\ProductNotice();
 		new Admin\BlockCheckoutNotice();
+		new Services\OrderEmail();
 	}
 
 	public static function missing_woocommerce_notice(): void {

@@ -9032,6 +9032,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         \wp_enqueue_media();
         \wp_enqueue_style( 'dashicons' );
         \wp_enqueue_script( 'jquery-ui-sortable' );
+        \Anchor_Questions_Editor::enqueue(); // the attendee-questions repeater below
         \wp_register_script( 'anchor-events-registration-mode', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/registration-mode.js' ), [], $this->asset_version( 'anchor-events-manager/assets/registration-mode.js' ), true );
         \wp_enqueue_script(
             'anchor-events-manager-frontend',
@@ -9845,34 +9846,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc free" data-step="4">
                 <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
-                <div class="anchor-event-questions">
-                    <?php // Task 28 — tells save_registration_questions() the repeater was on
-                          // screen, so removing the last row CLEARS the questions instead of
-                          // reading as "this form did not edit them". ?>
-                    <input type="hidden" name="anchor_event_questions_present" value="1" />
-                    <table class="widefat anchor-event-questions-table">
-                        <thead>
-                            <tr>
-                                <th><?php echo esc_html__( 'Question', 'anchor-schema' ); ?></th>
-                                <th><?php echo esc_html__( 'Answer type', 'anchor-schema' ); ?></th>
-                                <th><?php echo esc_html__( 'Choices', 'anchor-schema' ); ?></th>
-                                <th><?php echo esc_html__( 'Required', 'anchor-schema' ); ?></th>
-                                <th aria-hidden="true"></th>
-                            </tr>
-                        </thead>
-                        <tbody class="anchor-event-questions-rows">
-                            <?php foreach ( $this->get_registration_questions( $event_id ) as $qi => $q_row ) : ?>
-                                <?php echo $this->event_question_row_html( (int) $qi, $q_row ); // already escaped ?>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                    <p>
-                        <button type="button" class="anchor-event-button-secondary anchor-event-question-add"><?php echo esc_html__( 'Add question', 'anchor-schema' ); ?></button>
-                    </p>
-                    <script type="text/html" id="anchor-event-question-template">
-                        <?php echo $this->event_question_row_html( 0, null, true ); // already escaped ?>
-                    </script>
-                </div>
+                <?php echo \Anchor_Questions_Editor::repeater_html( 'anchor_event_questions', $this->get_registration_questions( $event_id ) ); // already escaped ?>
             </div>
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc" data-step="4">
@@ -15189,45 +15163,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function event_question_row_html( $index, $row = null, $template = false ) {
-        $idx  = $template ? '__INDEX__' : (string) $index;
-        $base = 'anchor_event_questions[' . $idx . ']';
-
-        $label    = $row['label'] ?? '';
-        $key      = $row['key'] ?? '';
-        $type     = $row['type'] ?? 'text';
-        $options  = isset( $row['options'] ) && \is_array( $row['options'] ) ? \implode( "\n", $row['options'] ) : '';
-        $required = ! empty( $row['required'] );
-        $in_admin = ! empty( $row['admin_email'] );
-
-        \ob_start();
-        ?>
-        <tr class="anchor-event-question-row">
-            <td>
-                <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" placeholder="<?php echo esc_attr__( 'e.g. Company or organization', 'anchor-schema' ); ?>" />
-                <input type="hidden" name="<?php echo esc_attr( $base . '[key]' ); ?>" value="<?php echo esc_attr( $key ); ?>" />
-            </td>
-            <td>
-                <select name="<?php echo esc_attr( $base . '[type]' ); ?>" class="anchor-question-type">
-                    <option value="text" <?php selected( $type, 'text' ); ?>><?php echo esc_html__( 'Short text', 'anchor-schema' ); ?></option>
-                    <option value="textarea" <?php selected( $type, 'textarea' ); ?>><?php echo esc_html__( 'Long text', 'anchor-schema' ); ?></option>
-                    <option value="select" <?php selected( $type, 'select' ); ?>><?php echo esc_html__( 'Choose one', 'anchor-schema' ); ?></option>
-                    <option value="multiselect" <?php selected( $type, 'multiselect' ); ?>><?php echo esc_html__( 'Choose any', 'anchor-schema' ); ?></option>
-                    <option value="checkbox" <?php selected( $type, 'checkbox' ); ?>><?php echo esc_html__( 'Yes / no', 'anchor-schema' ); ?></option>
-                </select>
-            </td>
-            <td>
-                <textarea name="<?php echo esc_attr( $base . '[options]' ); ?>" rows="2" placeholder="<?php echo esc_attr__( 'One choice per line', 'anchor-schema' ); ?>"><?php echo esc_textarea( $options ); ?></textarea>
-            </td>
-            <td>
-                <label><input type="checkbox" name="<?php echo esc_attr( $base . '[required]' ); ?>" value="1" <?php checked( $required ); ?> /> <?php echo esc_html__( 'Required', 'anchor-schema' ); ?></label>
-                <label><input type="checkbox" name="<?php echo esc_attr( $base . '[admin_email]' ); ?>" value="1" <?php checked( $in_admin ); ?> /> <?php echo esc_html__( 'Include in admin email', 'anchor-schema' ); ?></label>
-            </td>
-            <td>
-                <button type="button" class="button-link-delete anchor-event-question-remove" aria-label="<?php echo esc_attr__( 'Remove question', 'anchor-schema' ); ?>">&times;</button>
-            </td>
-        </tr>
-        <?php
-        return (string) \ob_get_clean();
+        return \Anchor_Questions_Editor::row_html( 'anchor_event_questions', (int) $index, $row, $template );
     }
 
     public function ajax_calendar() {

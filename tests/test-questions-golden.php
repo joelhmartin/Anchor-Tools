@@ -119,7 +119,7 @@ How did you hear about us?: R&D <b>
 		$method = new ReflectionMethod( $this->module(), 'event_question_row_html' );
 		$method->setAccessible( true );
 		$row = [ 'key' => 'diet', 'label' => 'Diet <x>', 'type' => 'multiselect', 'options' => [ 'Vegan', 'Other' ], 'required' => true, 'admin_email' => true ];
-		$this->assertSame( '        <tr class="anchor-event-question-row">
+		$this->assertSame( '        <tr class="anchor-question-row">
             <td>
                 <input type="text" name="anchor_event_questions[0][label]" value="Diet &lt;x&gt;" placeholder="e.g. Company or organization" />
                 <input type="hidden" name="anchor_event_questions[0][key]" value="diet" />
@@ -140,13 +140,14 @@ Other</textarea>
             <td>
                 <label><input type="checkbox" name="anchor_event_questions[0][required]" value="1"  checked=\'checked\' /> Required</label>
                 <label><input type="checkbox" name="anchor_event_questions[0][admin_email]" value="1"  checked=\'checked\' /> Include in admin email</label>
+                <span class="anchor-question-help">Answers are sent by plain email. Don&#039;t tick this for health information.</span>
             </td>
             <td>
-                <button type="button" class="button-link-delete anchor-event-question-remove" aria-label="Remove question">&times;</button>
+                <button type="button" class="button-link-delete anchor-question-remove" aria-label="Remove question">&times;</button>
             </td>
         </tr>
         ', $method->invoke( $this->module(), 0, $row ) );
-		$this->assertSame( '        <tr class="anchor-event-question-row">
+		$this->assertSame( '        <tr class="anchor-question-row">
             <td>
                 <input type="text" name="anchor_event_questions[__INDEX__][label]" value="" placeholder="e.g. Company or organization" />
                 <input type="hidden" name="anchor_event_questions[__INDEX__][key]" value="" />
@@ -166,9 +167,10 @@ Other</textarea>
             <td>
                 <label><input type="checkbox" name="anchor_event_questions[__INDEX__][required]" value="1"  /> Required</label>
                 <label><input type="checkbox" name="anchor_event_questions[__INDEX__][admin_email]" value="1"  /> Include in admin email</label>
+                <span class="anchor-question-help">Answers are sent by plain email. Don&#039;t tick this for health information.</span>
             </td>
             <td>
-                <button type="button" class="button-link-delete anchor-event-question-remove" aria-label="Remove question">&times;</button>
+                <button type="button" class="button-link-delete anchor-question-remove" aria-label="Remove question">&times;</button>
             </td>
         </tr>
         ', $method->invoke( $this->module(), 0, null, true ) );

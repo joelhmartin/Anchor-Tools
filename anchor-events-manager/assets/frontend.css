@@ -1527,19 +1527,19 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
  * collapse, the remove button sits on top of the Required label, and a Choices
  * textarea overlaps the row beneath it.
  * ------------------------------------------------------------------------- */
-.anchor-event-questions{
+.anchor-questions-editor{
   margin-top:8px;
 }
-.anchor-event-questions > h4{
+.anchor-questions-editor > h4{
   margin:0 0 4px;
   font-size:16px;
 }
-.anchor-event-questions-table{
+.anchor-questions-table{
   width:100%;
   border-collapse:collapse;
   table-layout:fixed;
 }
-.anchor-event-questions-table th{
+.anchor-questions-table th{
   text-align:left;
   font-size:12px;
   text-transform:uppercase;
@@ -1548,31 +1548,31 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   font-weight:600;
   padding:0 10px 8px 0;
 }
-.anchor-event-questions-table th:nth-child(1){ width:30%; }
-.anchor-event-questions-table th:nth-child(2){ width:18%; }
-.anchor-event-questions-table th:nth-child(3){ width:30%; }
-.anchor-event-questions-table th:nth-child(4){ width:16%; }
-.anchor-event-questions-table th:nth-child(5){ width:6%; }
-.anchor-event-questions-table td{
+.anchor-questions-table th:nth-child(1){ width:30%; }
+.anchor-questions-table th:nth-child(2){ width:18%; }
+.anchor-questions-table th:nth-child(3){ width:30%; }
+.anchor-questions-table th:nth-child(4){ width:16%; }
+.anchor-questions-table th:nth-child(5){ width:6%; }
+.anchor-questions-table td{
   padding:0 10px 12px 0;
   vertical-align:top;
 }
-.anchor-event-questions-table td:last-child{
+.anchor-questions-table td:last-child{
   padding-right:0;
   text-align:right;
 }
-.anchor-event-questions-table input[type="text"],
-.anchor-event-questions-table select,
-.anchor-event-questions-table textarea{
+.anchor-questions-table input[type="text"],
+.anchor-questions-table select,
+.anchor-questions-table textarea{
   width:100%;
   box-sizing:border-box;
 }
-.anchor-event-questions-table textarea{
+.anchor-questions-table textarea{
   min-height:64px;
   resize:vertical;
 }
 /* The Required cell is a checkbox with a word, not a form row. */
-.anchor-event-questions-table td label{
+.anchor-questions-table td label{
   display:inline-flex;
   align-items:center;
   gap:8px;
@@ -1581,7 +1581,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   margin:0;
   padding-top:9px;
 }
-.anchor-event-question-remove{
+.anchor-question-remove{
   border:0;
   background:none;
   cursor:pointer;
@@ -1590,21 +1590,21 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   padding:9px 4px 0;
   color:var(--anchor-event-muted,#6b7280);
 }
-.anchor-event-question-remove:hover{ color:#b32d2e; }
+.anchor-question-remove:hover{ color:#b32d2e; }
 
 @media (max-width:782px){
-  .anchor-event-questions-table,
-  .anchor-event-questions-table tbody,
-  .anchor-event-questions-table tr,
-  .anchor-event-questions-table td{ display:block; width:100%; }
-  .anchor-event-questions-table thead{ display:none; }
-  .anchor-event-questions-table tr{
+  .anchor-questions-table,
+  .anchor-questions-table tbody,
+  .anchor-questions-table tr,
+  .anchor-questions-table td{ display:block; width:100%; }
+  .anchor-questions-table thead{ display:none; }
+  .anchor-questions-table tr{
     border:1px solid var(--anchor-event-border,#e2e4e8);
     border-radius:8px;
     padding:12px;
     margin-bottom:12px;
   }
-  .anchor-event-questions-table td:last-child{ text-align:left; }
+  .anchor-questions-table td:last-child{ text-align:left; }
 }
 
 /* ===========================================================================
@@ -1620,7 +1620,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form .anchor-event-offering-table,
 .anchor-event-manager-form .anchor-event-sessions-table,
 .anchor-event-manager-form .anchor-event-labels-table,
-.anchor-event-manager-form .anchor-event-questions-table{
+.anchor-event-manager-form .anchor-questions-table{
   width:100%;
   border-collapse:collapse;
   margin:6px 0 14px;
@@ -1628,7 +1628,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form .anchor-event-offering-table th,
 .anchor-event-manager-form .anchor-event-sessions-table th,
 .anchor-event-manager-form .anchor-event-labels-table th,
-.anchor-event-manager-form .anchor-event-questions-table th{
+.anchor-event-manager-form .anchor-questions-table th{
   text-align:left;
   font-size:13px;
   font-weight:600;
@@ -1641,7 +1641,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form .anchor-event-offering-table td,
 .anchor-event-manager-form .anchor-event-sessions-table td,
 .anchor-event-manager-form .anchor-event-labels-table td,
-.anchor-event-manager-form .anchor-event-questions-table td{
+.anchor-event-manager-form .anchor-questions-table td{
   padding:10px 12px 10px 0;
   vertical-align:middle;
   border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
@@ -1649,18 +1649,18 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form .anchor-event-offering-table tr:last-child td,
 .anchor-event-manager-form .anchor-event-sessions-table tr:last-child td,
 .anchor-event-manager-form .anchor-event-labels-table tr:last-child td,
-.anchor-event-manager-form .anchor-event-questions-table tr:last-child td{
+.anchor-event-manager-form .anchor-questions-table tr:last-child td{
   border-bottom:0;
 }
 /* The remove column: same narrow, right-aligned slot in every repeater. */
 .anchor-event-manager-form .anchor-event-offering-table th:last-child,
 .anchor-event-manager-form .anchor-event-sessions-table th:last-child,
 .anchor-event-manager-form .anchor-event-labels-table th:last-child,
-.anchor-event-manager-form .anchor-event-questions-table th:last-child,
+.anchor-event-manager-form .anchor-questions-table th:last-child,
 .anchor-event-manager-form .anchor-event-offering-table td:last-child,
 .anchor-event-manager-form .anchor-event-sessions-table td:last-child,
 .anchor-event-manager-form .anchor-event-labels-table td:last-child,
-.anchor-event-manager-form .anchor-event-questions-table td:last-child{
+.anchor-event-manager-form .anchor-questions-table td:last-child{
   width:40px;
   padding-right:0;
   text-align:right;
@@ -1671,15 +1671,15 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form .anchor-event-sessions-table select,
 .anchor-event-manager-form .anchor-event-labels-table input,
 .anchor-event-manager-form .anchor-event-labels-table select,
-.anchor-event-manager-form .anchor-event-questions-table input:not([type="checkbox"]),
-.anchor-event-manager-form .anchor-event-questions-table select,
-.anchor-event-manager-form .anchor-event-questions-table textarea{
+.anchor-event-manager-form .anchor-questions-table input:not([type="checkbox"]),
+.anchor-event-manager-form .anchor-questions-table select,
+.anchor-event-manager-form .anchor-questions-table textarea{
   width:100%;
   box-sizing:border-box;
   margin:0;
 }
-.anchor-event-manager-form .anchor-event-questions-table{ table-layout:fixed; }
-.anchor-event-manager-form .anchor-event-questions-table textarea{
+.anchor-event-manager-form .anchor-questions-table{ table-layout:fixed; }
+.anchor-event-manager-form .anchor-questions-table textarea{
   min-height:60px;
   resize:vertical;
 }
@@ -1688,7 +1688,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form .anchor-event-offering-remove,
 .anchor-event-manager-form .anchor-event-session-remove,
 .anchor-event-manager-form .anchor-event-label-remove,
-.anchor-event-manager-form .anchor-event-question-remove{
+.anchor-event-manager-form .anchor-question-remove{
   border:0;
   background:none;
   cursor:pointer;
@@ -1700,7 +1700,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form .anchor-event-offering-remove:hover,
 .anchor-event-manager-form .anchor-event-session-remove:hover,
 .anchor-event-manager-form .anchor-event-label-remove:hover,
-.anchor-event-manager-form .anchor-event-question-remove:hover{ color:#b32d2e; }
+.anchor-event-manager-form .anchor-question-remove:hover{ color:#b32d2e; }
 
 /* The offering repeater is shared with the metabox and carries wp-admin's
    .button, which has no styling out here — "Add date" rendered as bare text

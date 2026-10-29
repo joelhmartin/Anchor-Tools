@@ -101,4 +101,22 @@ class Test_Questions_Kit extends WP_UnitTestCase {
 		$this->assertSame( 'x[a__other]', Anchor_Questions::other_field_name( 'x[a]' ) );
 		$this->assertSame( 'a__other', Anchor_Questions::other_field_name( 'a' ) );
 	}
+
+	public function test_editor_row_posts_under_the_given_prefix_with_admin_email_help() {
+		$html = Anchor_Questions_Editor::row_html( 'anchor_event_questions', 0, [ 'label' => 'Q', 'admin_email' => true ] );
+		$this->assertStringContainsString( 'name="anchor_event_questions[0][admin_email]" value="1"  checked=\'checked\'', $html );
+		$this->assertStringContainsString( 'Answers are sent by plain email. Don&#039;t tick this for health information.', $html );
+		$other = Anchor_Questions_Editor::row_html( 'anchor_cq_questions', 0, [ 'label' => 'Q' ] );
+		$this->assertStringContainsString( 'name="anchor_cq_questions[0][label]"', $other );
+		$this->assertStringNotContainsString( 'anchor_event_questions', $other );
+	}
+
+	public function test_editor_repeater_carries_marker_and_template() {
+		$html = Anchor_Questions_Editor::repeater_html( 'anchor_event_questions', [ $this->q( [ 'label' => 'Diet' ] ) ] );
+		$this->assertStringContainsString( 'name="anchor_event_questions_present"', $html );
+		$this->assertStringContainsString( 'anchor-questions-editor', $html );
+		$this->assertStringContainsString( 'data-prefix="anchor_event_questions"', $html );
+		$this->assertStringContainsString( 'anchor_event_questions[__INDEX__][label]', $html );
+		$this->assertStringContainsString( 'value="Diet"', $html );
+	}
 }

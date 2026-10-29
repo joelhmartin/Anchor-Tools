@@ -1,0 +1,9 @@
+/* Shared question-row editor: only what both wp-admin and the front-end
+ * consoles need. Table layout stays with the host module's stylesheet. */
+.anchor-questions-editor .anchor-question-help{
+  display:block;
+  margin-top:2px;
+  font-size:12px;
+  line-height:1.4;
+  color:#646970;
+}

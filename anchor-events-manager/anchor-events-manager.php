@@ -9846,7 +9846,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc free" data-step="4">
                 <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
-                <?php echo \Anchor_Questions_Editor::repeater_html( 'anchor_event_questions', $this->get_registration_questions( $event_id ) ); // already escaped ?>
+                <?php echo \Anchor_Questions_Editor::repeater_html( 'anchor_event_questions', $this->get_registration_questions( $event_id ), self::question_alias_classes() ); // already escaped ?>
             </div>
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc" data-step="4">
@@ -15163,7 +15163,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function event_question_row_html( $index, $row = null, $template = false ) {
-        return \Anchor_Questions_Editor::row_html( 'anchor_event_questions', (int) $index, $row, $template );
+        return \Anchor_Questions_Editor::row_html( 'anchor_event_questions', (int) $index, $row, $template, self::question_alias_classes() );
+    }
+
+    /** Pre-kit class names, kept alongside the shared ones for theme CSS / stored snippets targeting them. */
+    private static function question_alias_classes() {
+        return [
+            'wrapper'     => 'anchor-event-questions',
+            'table'       => 'anchor-event-questions-table',
+            'rows'        => 'anchor-event-questions-rows',
+            'row'         => 'anchor-event-question-row',
+            'add'         => 'anchor-event-question-add',
+            'remove'      => 'anchor-event-question-remove',
+            'template_id' => 'anchor-event-question-template',
+        ];
     }
 
     public function ajax_calendar() {

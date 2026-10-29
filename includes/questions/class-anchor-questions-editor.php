@@ -28,9 +28,11 @@ class Anchor_Questions_Editor {
      * @param int        $index       Row position.
      * @param array|null $row         Question row (key,label,type,options,required,admin_email).
      * @param bool       $template    True for the blank clone-me row.
+     * @param array      $aliases     Optional extra classes per element (row, remove), so a
+     *                                module can keep legacy class names that theme CSS targets.
      * @return string Escaped HTML.
      */
-    public static function row_html( $name_prefix, $index, $row = null, $template = false ) {
+    public static function row_html( $name_prefix, $index, $row = null, $template = false, array $aliases = [] ) {
         $idx  = $template ? '__INDEX__' : (string) (int) $index;
         $base = $name_prefix . '[' . $idx . ']';
 
@@ -43,7 +45,7 @@ class Anchor_Questions_Editor {
 
         ob_start();
         ?>
-        <tr class="anchor-question-row">
+        <tr class="<?php echo esc_attr( self::classes( 'anchor-question-row', $aliases, 'row' ) ); ?>">
             <td>
                 <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" placeholder="<?php echo esc_attr__( 'e.g. Company or organization', 'anchor-schema' ); ?>" />
                 <input type="hidden" name="<?php echo esc_attr( $base . '[key]' ); ?>" value="<?php echo esc_attr( $key ); ?>" />
@@ -66,7 +68,7 @@ class Anchor_Questions_Editor {
                 <span class="anchor-question-help"><?php echo esc_html__( "Answers are sent by plain email. Don't tick this for health information.", 'anchor-schema' ); ?></span>
             </td>
             <td>
-                <button type="button" class="button-link-delete anchor-question-remove" aria-label="<?php echo esc_attr__( 'Remove question', 'anchor-schema' ); ?>">&times;</button>
+                <button type="button" class="<?php echo esc_attr( self::classes( 'button-link-delete anchor-question-remove', $aliases, 'remove' ) ); ?>" aria-label="<?php echo esc_attr__( 'Remove question', 'anchor-schema' ); ?>">&times;</button>
             </td>
         </tr>
         <?php
@@ -78,16 +80,18 @@ class Anchor_Questions_Editor {
      *
      * @param string $name_prefix Field-name prefix for every row.
      * @param array  $rows        Existing question rows.
+     * @param array  $aliases     Optional legacy classes keyed wrapper|table|rows|row|add|remove,
+     *                            plus template_id for the template script's id attribute.
      * @return string Escaped HTML.
      */
-    public static function repeater_html( $name_prefix, array $rows ) {
+    public static function repeater_html( $name_prefix, array $rows, array $aliases = [] ) {
         ob_start();
         ?>
-                <div class="anchor-questions-editor" data-prefix="<?php echo esc_attr( $name_prefix ); ?>">
+                <div class="<?php echo esc_attr( self::classes( 'anchor-questions-editor', $aliases, 'wrapper' ) ); ?>" data-prefix="<?php echo esc_attr( $name_prefix ); ?>">
                     <?php // Tells the save handler the repeater was on screen, so removing the last
                           // row CLEARS the questions instead of reading as "this form did not edit them". ?>
                     <input type="hidden" name="<?php echo esc_attr( $name_prefix . '_present' ); ?>" value="1" />
-                    <table class="widefat anchor-questions-table">
+                    <table class="<?php echo esc_attr( self::classes( 'widefat anchor-questions-table', $aliases, 'table' ) ); ?>">
                         <thead>
                             <tr>
                                 <th><?php echo esc_html__( 'Question', 'anchor-schema' ); ?></th>
@@ -97,21 +101,26 @@ class Anchor_Questions_Editor {
                                 <th aria-hidden="true"></th>
                             </tr>
                         </thead>
-                        <tbody class="anchor-questions-rows">
+                        <tbody class="<?php echo esc_attr( self::classes( 'anchor-questions-rows', $aliases, 'rows' ) ); ?>">
                             <?php foreach ( $rows as $i => $row ) : ?>
-                                <?php echo self::row_html( $name_prefix, (int) $i, $row ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in row_html ?>
+                                <?php echo self::row_html( $name_prefix, (int) $i, $row, false, $aliases ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in row_html ?>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
                     <p>
-                        <button type="button" class="anchor-event-button-secondary anchor-question-add"><?php echo esc_html__( 'Add question', 'anchor-schema' ); ?></button>
+                        <button type="button" class="<?php echo esc_attr( self::classes( 'anchor-event-button-secondary anchor-question-add', $aliases, 'add' ) ); ?>"><?php echo esc_html__( 'Add question', 'anchor-schema' ); ?></button>
                     </p>
-                    <script type="text/template" class="anchor-question-template">
-                        <?php echo self::row_html( $name_prefix, 0, null, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in row_html ?>
+                    <script type="text/template" class="anchor-question-template"<?php echo ! empty( $aliases['template_id'] ) ? ' id="' . esc_attr( $aliases['template_id'] ) . '"' : ''; ?>>
+                        <?php echo self::row_html( $name_prefix, 0, null, true, $aliases ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in row_html ?>
                     </script>
                 </div>
         <?php
         return (string) ob_get_clean();
+    }
+
+    /** Base classes plus any legacy alias classes for one element. */
+    private static function classes( $base, array $aliases, $key ) {
+        return trim( $base . ' ' . ( $aliases[ $key ] ?? '' ) );
     }
 
     /** Enqueue the shared editor script + style. Safe to call more than once. */

@@ -119,7 +119,7 @@ How did you hear about us?: R&D <b>
 		$method = new ReflectionMethod( $this->module(), 'event_question_row_html' );
 		$method->setAccessible( true );
 		$row = [ 'key' => 'diet', 'label' => 'Diet <x>', 'type' => 'multiselect', 'options' => [ 'Vegan', 'Other' ], 'required' => true, 'admin_email' => true ];
-		$this->assertSame( '        <tr class="anchor-question-row">
+		$this->assertSame( '        <tr class="anchor-question-row anchor-event-question-row">
             <td>
                 <input type="text" name="anchor_event_questions[0][label]" value="Diet &lt;x&gt;" placeholder="e.g. Company or organization" />
                 <input type="hidden" name="anchor_event_questions[0][key]" value="diet" />
@@ -143,11 +143,11 @@ Other</textarea>
                 <span class="anchor-question-help">Answers are sent by plain email. Don&#039;t tick this for health information.</span>
             </td>
             <td>
-                <button type="button" class="button-link-delete anchor-question-remove" aria-label="Remove question">&times;</button>
+                <button type="button" class="button-link-delete anchor-question-remove anchor-event-question-remove" aria-label="Remove question">&times;</button>
             </td>
         </tr>
         ', $method->invoke( $this->module(), 0, $row ) );
-		$this->assertSame( '        <tr class="anchor-question-row">
+		$this->assertSame( '        <tr class="anchor-question-row anchor-event-question-row">
             <td>
                 <input type="text" name="anchor_event_questions[__INDEX__][label]" value="" placeholder="e.g. Company or organization" />
                 <input type="hidden" name="anchor_event_questions[__INDEX__][key]" value="" />
@@ -170,9 +170,119 @@ Other</textarea>
                 <span class="anchor-question-help">Answers are sent by plain email. Don&#039;t tick this for health information.</span>
             </td>
             <td>
-                <button type="button" class="button-link-delete anchor-question-remove" aria-label="Remove question">&times;</button>
+                <button type="button" class="button-link-delete anchor-question-remove anchor-event-question-remove" aria-label="Remove question">&times;</button>
             </td>
         </tr>
         ', $method->invoke( $this->module(), 0, null, true ) );
+	}
+
+	public function test_repeater_markup_with_events_prefix_is_unchanged() {
+		$alias = new ReflectionMethod( $this->module(), 'question_alias_classes' );
+		$alias->setAccessible( true );
+		$rows = [
+			[ 'key' => 'a', 'label' => 'A', 'type' => 'text' ],
+			[ 'key' => 'b', 'label' => 'B', 'type' => 'select', 'options' => [ 'x' ] ],
+		];
+		$html = Anchor_Questions_Editor::repeater_html( 'anchor_event_questions', $rows, $alias->invoke( null ) );
+		$this->assertSame( '                <div class="anchor-questions-editor anchor-event-questions" data-prefix="anchor_event_questions">
+                                        <input type="hidden" name="anchor_event_questions_present" value="1" />
+                    <table class="widefat anchor-questions-table anchor-event-questions-table">
+                        <thead>
+                            <tr>
+                                <th>Question</th>
+                                <th>Answer type</th>
+                                <th>Choices</th>
+                                <th>Required</th>
+                                <th aria-hidden="true"></th>
+                            </tr>
+                        </thead>
+                        <tbody class="anchor-questions-rows anchor-event-questions-rows">
+                                                                    <tr class="anchor-question-row anchor-event-question-row">
+            <td>
+                <input type="text" name="anchor_event_questions[0][label]" value="A" placeholder="e.g. Company or organization" />
+                <input type="hidden" name="anchor_event_questions[0][key]" value="a" />
+            </td>
+            <td>
+                <select name="anchor_event_questions[0][type]" class="anchor-question-type">
+                    <option value="text"  selected=\'selected\'>Short text</option>
+                    <option value="textarea" >Long text</option>
+                    <option value="select" >Choose one</option>
+                    <option value="multiselect" >Choose any</option>
+                    <option value="checkbox" >Yes / no</option>
+                </select>
+            </td>
+            <td>
+                <textarea name="anchor_event_questions[0][options]" rows="2" placeholder="One choice per line"></textarea>
+            </td>
+            <td>
+                <label><input type="checkbox" name="anchor_event_questions[0][required]" value="1"  /> Required</label>
+                <label><input type="checkbox" name="anchor_event_questions[0][admin_email]" value="1"  /> Include in admin email</label>
+                <span class="anchor-question-help">Answers are sent by plain email. Don&#039;t tick this for health information.</span>
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-question-remove anchor-event-question-remove" aria-label="Remove question">&times;</button>
+            </td>
+        </tr>
+                                                                            <tr class="anchor-question-row anchor-event-question-row">
+            <td>
+                <input type="text" name="anchor_event_questions[1][label]" value="B" placeholder="e.g. Company or organization" />
+                <input type="hidden" name="anchor_event_questions[1][key]" value="b" />
+            </td>
+            <td>
+                <select name="anchor_event_questions[1][type]" class="anchor-question-type">
+                    <option value="text" >Short text</option>
+                    <option value="textarea" >Long text</option>
+                    <option value="select"  selected=\'selected\'>Choose one</option>
+                    <option value="multiselect" >Choose any</option>
+                    <option value="checkbox" >Yes / no</option>
+                </select>
+            </td>
+            <td>
+                <textarea name="anchor_event_questions[1][options]" rows="2" placeholder="One choice per line">x</textarea>
+            </td>
+            <td>
+                <label><input type="checkbox" name="anchor_event_questions[1][required]" value="1"  /> Required</label>
+                <label><input type="checkbox" name="anchor_event_questions[1][admin_email]" value="1"  /> Include in admin email</label>
+                <span class="anchor-question-help">Answers are sent by plain email. Don&#039;t tick this for health information.</span>
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-question-remove anchor-event-question-remove" aria-label="Remove question">&times;</button>
+            </td>
+        </tr>
+                                                            </tbody>
+                    </table>
+                    <p>
+                        <button type="button" class="anchor-event-button-secondary anchor-question-add anchor-event-question-add">Add question</button>
+                    </p>
+                    <script type="text/template" class="anchor-question-template" id="anchor-event-question-template">
+                                <tr class="anchor-question-row anchor-event-question-row">
+            <td>
+                <input type="text" name="anchor_event_questions[__INDEX__][label]" value="" placeholder="e.g. Company or organization" />
+                <input type="hidden" name="anchor_event_questions[__INDEX__][key]" value="" />
+            </td>
+            <td>
+                <select name="anchor_event_questions[__INDEX__][type]" class="anchor-question-type">
+                    <option value="text"  selected=\'selected\'>Short text</option>
+                    <option value="textarea" >Long text</option>
+                    <option value="select" >Choose one</option>
+                    <option value="multiselect" >Choose any</option>
+                    <option value="checkbox" >Yes / no</option>
+                </select>
+            </td>
+            <td>
+                <textarea name="anchor_event_questions[__INDEX__][options]" rows="2" placeholder="One choice per line"></textarea>
+            </td>
+            <td>
+                <label><input type="checkbox" name="anchor_event_questions[__INDEX__][required]" value="1"  /> Required</label>
+                <label><input type="checkbox" name="anchor_event_questions[__INDEX__][admin_email]" value="1"  /> Include in admin email</label>
+                <span class="anchor-question-help">Answers are sent by plain email. Don&#039;t tick this for health information.</span>
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-question-remove anchor-event-question-remove" aria-label="Remove question">&times;</button>
+            </td>
+        </tr>
+                            </script>
+                </div>
+        ', $html );
 	}
 }

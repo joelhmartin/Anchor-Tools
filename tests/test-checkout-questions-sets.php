@@ -43,6 +43,28 @@ class Test_Checkout_Questions_Sets extends WP_UnitTestCase {
 		$this->assertSame( [ 5, 7 ], QuestionSets::category_ids( $id ) );
 	}
 
+	public function test_save_maps_variation_ids_to_parent_and_dedupes() {
+		$parent = (int) self::factory()->post->create( [ 'post_type' => 'product' ] );
+		$var    = (int) self::factory()->post->create( [ 'post_type' => 'product_variation', 'post_parent' => $parent ] );
+		$id     = $this->new_set();
+		$this->save_as_admin( $id, [ 'anchor_cq_product_ids' => [ (string) $var, (string) $parent ] ] );
+		$this->assertSame( [ $parent ], QuestionSets::product_ids( $id ) );
+		$this->assertSame( [ $id ], Anchor\CheckoutQuestions\Services\Matcher::for_lines( [ [ 'product_id' => $parent, 'variation_id' => $var ] ] ) );
+	}
+
+	public function test_picker_searches_parent_products_only() {
+		$id   = $this->new_set();
+		$html = $this->render_where_html( $id );
+		$this->assertStringContainsString( 'data-action="woocommerce_json_search_products"', $html );
+		$this->assertStringNotContainsString( 'products_and_variations', $html );
+	}
+
+	private function render_where_html( int $id ): string {
+		ob_start();
+		( new Anchor\CheckoutQuestions\Admin\SetEditor() )->render_where( get_post( $id ) );
+		return ob_get_clean();
+	}
+
 	public function test_save_without_marker_or_rows_leaves_questions_untouched() {
 		$id = $this->new_set();
 		$this->save_as_admin( $id, [ 'anchor_cq_questions_present' => '1', 'anchor_cq_questions' => [ [ 'label' => 'Keep me', 'type' => 'text' ] ] ] );

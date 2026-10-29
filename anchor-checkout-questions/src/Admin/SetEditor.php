@@ -61,7 +61,7 @@ final class SetEditor {
 		?>
 		<p>
 			<label for="anchor_cq_product_ids"><strong><?php echo \esc_html__( 'Products', 'anchor-schema' ); ?></strong></label><br />
-			<select id="anchor_cq_product_ids" class="wc-product-search" multiple="multiple" style="width:100%;" name="anchor_cq_product_ids[]" data-placeholder="<?php echo \esc_attr__( 'Search for a product…', 'anchor-schema' ); ?>" data-action="woocommerce_json_search_products_and_variations">
+			<select id="anchor_cq_product_ids" class="wc-product-search" multiple="multiple" style="width:100%;" name="anchor_cq_product_ids[]" data-placeholder="<?php echo \esc_attr__( 'Search for a product…', 'anchor-schema' ); ?>" data-action="woocommerce_json_search_products">
 				<?php foreach ( $products as $pid => $name ) : ?>
 					<option value="<?php echo \esc_attr( (string) $pid ); ?>" selected="selected"><?php echo \wp_kses_post( $name ); ?></option>
 				<?php endforeach; ?>
@@ -90,7 +90,7 @@ final class SetEditor {
 		$this->save_questions( $post_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verified above
 		if ( isset( $_POST['anchor_cq_where_present'] ) || isset( $_POST['anchor_cq_product_ids'] ) || isset( $_POST['anchor_cq_category_ids'] ) ) {
 			// phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- verified above; reduced to ints by QuestionSets::ids
-			$this->save_ids( $post_id, QuestionSets::META_PRODUCTS, $_POST['anchor_cq_product_ids'] ?? [] );
+			$this->save_ids( $post_id, QuestionSets::META_PRODUCTS, self::parent_product_ids( $_POST['anchor_cq_product_ids'] ?? [] ) );
 			$this->save_ids( $post_id, QuestionSets::META_CATEGORIES, $_POST['anchor_cq_category_ids'] ?? [] );
 			// phpcs:enable
 		}
@@ -119,5 +119,25 @@ final class SetEditor {
 		} else {
 			\delete_post_meta( $post_id, $meta_key );
 		}
+	}
+
+	/**
+	 * The matcher compares parent product ids only, so a posted variation id
+	 * (hand-posted or legacy) is mapped to its parent product; deduped after mapping.
+	 *
+	 * @param mixed $raw
+	 * @return int[]
+	 */
+	private static function parent_product_ids( $raw ): array {
+		$out = [];
+		foreach ( QuestionSets::ids( \is_array( $raw ) ? $raw : [] ) as $id ) {
+			if ( 'product_variation' === \get_post_type( $id ) ) {
+				$id = (int) \wp_get_post_parent_id( $id );
+			}
+			if ( $id > 0 ) {
+				$out[ $id ] = $id;
+			}
+		}
+		return \array_values( $out );
 	}
 }

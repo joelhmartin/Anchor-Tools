@@ -184,7 +184,7 @@ class Test_Checkout_Questions_Checkout extends WP_UnitTestCase {
 		$p = $this->product();
 		$this->set_for( $p, [ $this->q( 'a', 'text', true ) ] );
 		$this->expectException( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class );
-		$this->expectExceptionMessage( 'classic checkout' );
+		$this->expectExceptionMessage( 'Place order button' );
 		$this->checkout()->guard_block_checkout( $this->order_for( $p ) );
 	}
 
@@ -229,6 +229,27 @@ class Test_Checkout_Questions_Checkout extends WP_UnitTestCase {
 		$this->assertNotFalse( has_action( 'woocommerce_after_checkout_validation', [ $c, 'validate' ] ) );
 		$this->assertNotFalse( has_action( 'woocommerce_checkout_create_order', [ $c, 'store' ] ) );
 		$this->assertNotFalse( has_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $c, 'guard_block_checkout' ] ) );
-		$this->assertNotFalse( has_action( 'woocommerce_blocks_checkout_order_processed', [ $c, 'guard_block_checkout' ] ) );
+		// Deprecated since WC 7.2: hooking it logs on every Store API checkout.
+		$this->assertTrue( version_compare( WC_VERSION, '7.2', '>=' ) );
+		$this->assertFalse( has_action( 'woocommerce_blocks_checkout_order_processed', [ $c, 'guard_block_checkout' ] ) );
+	}
+
+	public function test_guard_still_works_with_legacy_single_arg_shape() {
+		$p = $this->product();
+		$this->set_for( $p, [ $this->q( 'a', 'text', true ) ] );
+		$this->expectException( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class );
+		// The legacy hook passes only the order.
+		$this->checkout()->guard_block_checkout( $this->order_for( $p ) );
+	}
+
+	public function test_labels_are_tied_to_controls() {
+		$p = $this->product();
+		$s = $this->set_for( $p, [ $this->q( 'a', 'text' ) ] );
+		WC()->cart->add_to_cart( $p );
+		ob_start();
+		$this->checkout()->render();
+		$html = ob_get_clean();
+		$this->assertStringContainsString( '<label for="anchor-cq-' . $s . '-a">', $html );
+		$this->assertStringContainsString( 'id="anchor-cq-' . $s . '-a"', $html );
 	}
 }

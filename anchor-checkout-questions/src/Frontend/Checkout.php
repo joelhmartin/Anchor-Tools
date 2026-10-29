@@ -25,8 +25,11 @@ class Checkout {
 		\add_action( 'woocommerce_after_checkout_validation', [ $this, 'validate' ], 10, 2 );
 		\add_action( 'woocommerce_checkout_create_order', [ $this, 'store' ], 10, 2 );
 		\add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'guard_block_checkout' ], 10, 2 );
-		// Older WooCommerce Blocks builds fire this hook instead.
-		\add_action( 'woocommerce_blocks_checkout_order_processed', [ $this, 'guard_block_checkout' ], 10, 1 );
+		// Older WooCommerce Blocks builds fire this hook instead. Newer WooCommerce logs a
+		// deprecation notice on every Store API checkout when it is hooked, so gate it.
+		if ( \defined( 'WC_VERSION' ) && \version_compare( \WC_VERSION, '7.2', '<' ) ) {
+			\add_action( 'woocommerce_blocks_checkout_order_processed', [ $this, 'guard_block_checkout' ], 10, 1 );
+		}
 		\add_action( 'wp_enqueue_scripts', [ $this, 'enqueue' ] );
 	}
 
@@ -55,11 +58,14 @@ class Checkout {
 			echo '<div class="anchor-cq-set">';
 			echo '<h3>' . \esc_html( \get_the_title( $set_id ) ) . '</h3>';
 			foreach ( $questions as $q ) {
+				$control_id = 'anchor-cq-' . $set_id . '-' . $q['key'];
 				$req_mark = $q['required'] ? ' <abbr class="required" title="required">*</abbr>' : '';
 				// A <div>, not a <p>: a multiselect is a <details>, which a <p> cannot contain.
 				echo '<div class="form-row form-row-wide anchor-cq-question anchor-cq-question--' . \esc_attr( $q['type'] ) . '">';
-				echo '<label>' . \esc_html( $q['label'] ) . $req_mark . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- $req_mark is a literal.
+				$for_attr = \in_array( $q['type'], [ 'multiselect', 'checkbox' ], true ) ? '' : ' for="' . \esc_attr( $control_id ) . '"';
+				echo '<label' . $for_attr . '>' . \esc_html( $q['label'] ) . $req_mark . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- $req_mark is a literal.
 				echo \Anchor_Questions::render_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
+					'id'             => $control_id,
 					'name'           => self::FIELD . '[' . $set_id . '][' . $q['key'] . ']',
 					'value'          => (string) ( $values[ $q['key'] ] ?? '' ),
 					'class'          => self::control_class( $q['type'] ),
@@ -147,7 +153,7 @@ class Checkout {
 		if ( $this->store_api_exception_available() ) {
 			throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException(
 				'anchor_cq_block_checkout',
-				\esc_html__( 'This order has required questions that the block checkout cannot show. Please use the classic checkout.', 'anchor-schema' ),
+				\esc_html__( 'Please answer the checkout questions and use the Place order button.', 'anchor-schema' ),
 				400
 			);
 		}

@@ -119,4 +119,41 @@ class Test_Questions_Kit extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'anchor_event_questions[__INDEX__][label]', $html );
 		$this->assertStringContainsString( 'value="Diet"', $html );
 	}
+
+	private function email_rows() {
+		return [ [ 'label' => 'Q1', 'answer' => 'a' ], [ 'label' => 'Q2', 'answer' => 'b' ] ];
+	}
+
+	public function test_email_nameless_entry_html_is_exact() {
+		$groups = [ [ 'heading' => 'Set', 'entries' => [ [ 'name' => null, 'rows' => $this->email_rows() ] ] ] ];
+		$this->assertSame( '<h2>Set</h2><p style="margin:0 0 12px;">Q1: a<br />Q2: b</p>', Anchor_Questions_Email::render_order_groups( $groups, false ) );
+	}
+
+	public function test_email_nameless_entry_plain_is_exact() {
+		$groups = [ [ 'heading' => 'Set', 'entries' => [ [ 'name' => null, 'rows' => $this->email_rows() ] ] ] ];
+		$this->assertSame( "\nSet\nQ1: a\nQ2: b\n", Anchor_Questions_Email::render_order_groups( $groups, true ) );
+	}
+
+	public function test_email_named_entry_html_and_plain() {
+		$groups = [ [ 'heading' => 'Ev', 'entries' => [ [ 'name' => 'Ann', 'rows' => $this->email_rows() ] ] ] ];
+		$this->assertSame( '<h2>Ev</h2><p style="margin:0 0 12px;"><strong>Ann</strong><br />Q1: a<br />Q2: b</p>', Anchor_Questions_Email::render_order_groups( $groups, false ) );
+		$this->assertSame( "\nEv\n\nAnn\nQ1: a\nQ2: b\n", Anchor_Questions_Email::render_order_groups( $groups, true ) );
+	}
+
+	public function test_email_rows_omit_unflagged_and_blank() {
+		$qs = [
+			$this->q( [ 'key' => 'a', 'label' => 'A', 'admin_email' => true ] ),
+			$this->q( [ 'key' => 'b', 'label' => 'B' ] ),
+			$this->q( [ 'key' => 'c', 'label' => 'C', 'admin_email' => true ] ),
+			$this->q( [ 'key' => 'd', 'label' => 'D', 'admin_email' => true ] ),
+		];
+		$rows = Anchor_Questions_Email::rows_for( $qs, [ 'a' => "x \n  y", 'b' => 'hidden', 'c' => '   ' ] );
+		$this->assertSame( [ [ 'label' => 'A', 'answer' => 'x y' ] ], $rows );
+	}
+
+	public function test_email_escapes_html_but_not_plain() {
+		$groups = [ [ 'heading' => 'S', 'entries' => [ [ 'name' => null, 'rows' => [ [ 'label' => 'Q', 'answer' => '<b>x</b>' ] ] ] ] ] ];
+		$this->assertStringContainsString( '&lt;b&gt;x&lt;/b&gt;', Anchor_Questions_Email::render_order_groups( $groups, false ) );
+		$this->assertStringContainsString( 'Q: <b>x</b>', Anchor_Questions_Email::render_order_groups( $groups, true ) );
+	}
 }

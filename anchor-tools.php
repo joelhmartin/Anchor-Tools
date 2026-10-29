@@ -81,6 +81,9 @@ if ( ! class_exists( 'Anchor_Questions' ) ) {
 if ( ! class_exists( 'Anchor_Questions_Editor' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/questions/class-anchor-questions-editor.php';
 }
+if ( ! class_exists( 'Anchor_Questions_Email' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/questions/class-anchor-questions-email.php';
+}
 if ( ! class_exists( 'Anchor_Groups' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-groups.php';
 }

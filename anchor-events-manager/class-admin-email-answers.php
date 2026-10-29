@@ -51,18 +51,7 @@ class Admin_Email_Answers {
 		}
 		$questions = $module->get_registration_questions( (int) $event_id );
 		$answers   = $module->resolve_registration_answers( (int) $event_id, $stored, $questions );
-		$rows      = [];
-		foreach ( $questions as $q ) {
-			if ( empty( $q['admin_email'] ) || ! isset( $answers[ $q['key'] ] ) || ! \is_scalar( $answers[ $q['key'] ] ) ) {
-				continue;
-			}
-			$answer = \trim( (string) \preg_replace( '/\s+/', ' ', (string) $answers[ $q['key'] ] ) );
-			if ( $answer === '' ) {
-				continue; // unanswered: never printed
-			}
-			$rows[] = [ 'label' => (string) $q['label'], 'answer' => $answer ];
-		}
-		return $rows;
+		return \Anchor_Questions_Email::rows_for( $questions, $answers );
 	}
 
 	/**
@@ -129,26 +118,13 @@ class Admin_Email_Answers {
 			}
 		}
 
+		$groups = [];
 		foreach ( $by_event as $event_id => $attendees ) {
-			$title = \wp_strip_all_tags( \get_the_title( $event_id ) );
-			if ( $plain_text ) {
-				echo "\n" . $title . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput -- plain-text email.
-				foreach ( $attendees as $att ) {
-					echo "\n" . $att['name'] . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput -- plain-text email.
-					foreach ( $att['rows'] as $row ) {
-						echo $row['label'] . ': ' . $row['answer'] . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput -- plain-text email.
-					}
-				}
-				continue;
-			}
-			echo '<h2>' . \esc_html( $title ) . '</h2>';
-			foreach ( $attendees as $att ) {
-				echo '<p style="margin:0 0 12px;"><strong>' . \esc_html( $att['name'] ) . '</strong>';
-				foreach ( $att['rows'] as $row ) {
-					echo '<br />' . \esc_html( $row['label'] ) . ': ' . \esc_html( $row['answer'] );
-				}
-				echo '</p>';
-			}
+			$groups[] = [
+				'heading' => \wp_strip_all_tags( \get_the_title( $event_id ) ),
+				'entries' => $attendees,
+			];
 		}
+		echo \Anchor_Questions_Email::render_order_groups( $groups, $plain_text ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped per format in the kit.
 	}
 }

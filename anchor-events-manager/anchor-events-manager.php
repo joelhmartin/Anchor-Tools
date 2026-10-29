@@ -15155,7 +15155,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /**
      * One row of the question repeater. Mirrors event_label_row_html(): the
-     * template copy uses __INDEX__, which manager.js rewrites on add.
+     * template copy uses __INDEX__, which the shared questions-editor.js rewrites on add.
      *
      * @param int        $index
      * @param array|null $row
@@ -15173,6 +15173,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'table'       => 'anchor-event-questions-table',
             'rows'        => 'anchor-event-questions-rows',
             'row'         => 'anchor-event-question-row',
+            'add_base'    => 'anchor-event-button-secondary anchor-question-add',
             'add'         => 'anchor-event-question-add',
             'remove'      => 'anchor-event-question-remove',
             'template_id' => 'anchor-event-question-template',

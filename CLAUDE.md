@@ -69,6 +69,7 @@ See `ADDING-MODULES.md` for the full module development guide.
 | `blocks` | `Anchor_Blocks_Module` | CPT |
 | `courses` | `\Anchor\Courses\Module` | CPT (namespaced, PSR-4) |
 | `announcements` | `\Anchor\Announcements\Module` | CPT (namespaced, PSR-4) |
+| `checkout_questions` | `\Anchor\CheckoutQuestions\Module` | CPT (namespaced, PSR-4) |
 
 ### Core Classes (`includes/`)
 

@@ -37,6 +37,7 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
             'Anchor\\Shipping\\' => 16,
             'Anchor\\Library\\' => 15,
             'Anchor\\Courses\\' => 15,
+            'Anchor\\CheckoutQuestions\\' => 25,
             'Anchor\\Announcements\\' => 21,
             'Anchor\\Agreements\\' => 18,
         ),
@@ -78,6 +79,10 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
         'Anchor\\Courses\\' => 
         array (
             0 => __DIR__ . '/../..' . '/anchor-courses/src',
+        ),
+        'Anchor\\CheckoutQuestions\\' => 
+        array (
+            0 => __DIR__ . '/../..' . '/anchor-checkout-questions/src',
         ),
         'Anchor\\Announcements\\' => 
         array (

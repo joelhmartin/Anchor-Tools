@@ -2147,6 +2147,27 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
   margin-top:8px;
 }
 
+/* Payment-plan choice (Payment_Plans::render), shown only when the managed
+   product carries a WC Subscriptions plan. */
+.anchor-event-plan{
+  border:1px solid var(--anchor-event-border);
+  border-radius:8px;
+  padding:10px 14px;
+  margin:0;
+  display:grid;
+  gap:6px;
+}
+.anchor-event-plan legend{
+  font-weight:600;
+  padding:0 4px;
+}
+.anchor-event-plan-option{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  cursor:pointer;
+}
+
 .anchor-event-cart-msg{
   margin-top:8px;
   font-size:13px;

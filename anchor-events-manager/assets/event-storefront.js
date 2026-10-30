@@ -118,7 +118,8 @@
             action: cfg.addAction || 'anchor_events_add_to_cart',
             nonce: cfg.nonce,
             event_id: eventId,
-            tiers: tiers
+            tiers: tiers,
+            plan: $block.find('[data-plan-choice] input:checked').val() || ''
         }).done(function (res) {
             if (res && res.success && res.data) {
                 render($msg, res.data.messages || [], true, res.data.cart_url, res.data.checkout_url);

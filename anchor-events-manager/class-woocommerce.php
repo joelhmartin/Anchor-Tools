@@ -949,6 +949,9 @@ class WooCommerce {
         // No row can be bought → no button that would only fail. The rows
         // themselves already say why (sold out / closed / not on sale yet).
         if ( $any_sellable ) {
+            // A plan on the managed product ("3 monthly payments") is chosen here:
+            // APFS reads it only at add-to-cart, never in the cart.
+            $out .= Payment_Plans::render( (int) $this->module->product_sync->managed_product_id( $event_id ) );
             $out .= '<div class="anchor-event-tickets-actions">';
             $out .= '<button type="button" class="anchor-event-button anchor-event-register" data-add-to-cart>'
                 . \esc_html__( 'Register / Add to cart', 'anchor-schema' ) . '</button>';
@@ -1347,6 +1350,7 @@ class WooCommerce {
             }
 
             // 'open' or 'waitlist' → add (waitlist seats are resolved at creation).
+            Payment_Plans::apply_posted( $parent_product_id );
             $key = WC()->cart->add_to_cart( $parent_product_id, $qty, $variation_id, [], [] );
             if ( $key ) {
                 $added           += $qty;

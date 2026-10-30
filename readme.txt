@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.44.3
+Stable tag: 3.44.4
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.44.4 =
+* Events: when an event's ticket product has a WooCommerce Subscriptions payment plan (e.g. "3 monthly payments"), the event registration form offers "Pay in full" or the plan, and Register / Add to cart applies the choice. The plan was unreachable from the event page because WooCommerce Subscriptions only reads it at add-to-cart.
 
 = 3.44.3 =
 * Events: a WooCommerce Subscriptions installment plan (a subscription with an end date, e.g. "3 monthly payments") no longer creates a new seat and re-sends registration emails on every renewal payment; the first order holds the seat. Open-ended subscriptions renew seats as before. Override with the `anchor_events_renewal_creates_seats` filter.

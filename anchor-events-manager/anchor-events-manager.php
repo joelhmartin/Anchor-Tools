@@ -495,6 +495,7 @@ class Module {
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
         if ( \class_exists( 'WooCommerce' ) ) {
+            require_once $dir . 'class-subscription-renewals.php';
             require_once $dir . 'class-woocommerce.php';
             $this->woocommerce = new WooCommerce( $this, $this->registrations );
             // Event→managed-product sync (spec §4–5). Constructed only when WC is

@@ -2551,6 +2551,17 @@ class WooCommerce {
                     continue;
                 }
 
+                // An installment-plan renewal pays for the seat the first order
+                // already created; it must not create another one per payment.
+                // A renewal line that already HAS seats (made before this rule, or
+                // via the filter) still reconciles, so a refund/cancel releases them.
+                if (
+                    ! Subscription_Renewals::creates_seats( $order_id, $event_id )
+                    && empty( $this->registrations->get_seats_for_order_item( $item_id ) )
+                ) {
+                    continue;
+                }
+
                 $this->reconcile_line(
                     $order,
                     $order_id,

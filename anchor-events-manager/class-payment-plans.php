@@ -15,6 +15,11 @@
  * before handing it to APFS. Inert (renders nothing, applies nothing) when
  * WC Subscriptions is absent or the product has no plans.
  *
+ * A pay-in-full discount (event meta, per seat) makes paying up front cheaper
+ * than the plan: the ticket price is what the plan totals, and a one-time line
+ * is charged that price less the discount. APFS can only DISCOUNT a plan below
+ * the one-time price, never the reverse, so the reverse lives here.
+ *
  * Renewal orders of a fixed-length plan do not create seats — see
  * Subscription_Renewals.
  *
@@ -31,6 +36,119 @@ class Payment_Plans {
 
     /** POST field the storefront sends with the chosen plan ('' = pay in full). */
     const POST_FIELD = 'plan';
+
+    /** Event meta: amount off each seat bought outright (no plan). */
+    const DISCOUNT_META = '_anchor_event_pay_in_full_discount';
+
+    /** Admin form field carrying DISCOUNT_META. */
+    const DISCOUNT_FIELD = 'anchor_event_pay_in_full_discount';
+
+    /**
+     * The event's pay-in-full discount per seat. A date (child) event with none
+     * of its own inherits its offering's, the same way dates inherit e-mails.
+     *
+     * @param int $event_id
+     * @param int $parent_id Offering the date belongs to (0 = none).
+     * @return float
+     */
+    public static function discount( $event_id, $parent_id = 0 ) {
+        $own = \get_post_meta( (int) $event_id, self::DISCOUNT_META, true );
+        if ( '' !== (string) $own ) {
+            return \max( 0.0, (float) $own );
+        }
+        return $parent_id > 0 ? \max( 0.0, (float) \get_post_meta( (int) $parent_id, self::DISCOUNT_META, true ) ) : 0.0;
+    }
+
+    /**
+     * Persist the admin field. Blank removes the meta (a date then inherits).
+     *
+     * @param int   $event_id
+     * @param array $src Unslashed request data.
+     */
+    public static function save_discount( $event_id, array $src ) {
+        if ( ! \array_key_exists( self::DISCOUNT_FIELD, $src ) ) {
+            return;
+        }
+        $raw = \trim( (string) $src[ self::DISCOUNT_FIELD ] );
+        if ( '' === $raw ) {
+            \delete_post_meta( (int) $event_id, self::DISCOUNT_META );
+            return;
+        }
+        $amount = \max( 0.0, (float) $raw );
+        \update_post_meta( (int) $event_id, self::DISCOUNT_META, \function_exists( 'wc_format_decimal' ) ? \wc_format_decimal( $amount ) : (string) $amount );
+    }
+
+    /**
+     * Admin input under the ticket table (escaped HTML).
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public static function render_discount_field( $event_id ) {
+        $value = \get_post_meta( (int) $event_id, self::DISCOUNT_META, true );
+        return '<p class="anchor-event-pay-in-full"><label>' . \esc_html__( 'Pay-in-full discount per seat', 'anchor-schema' )
+            . ' <input type="number" min="0" step="0.01" name="' . \esc_attr( self::DISCOUNT_FIELD ) . '" value="' . \esc_attr( (string) $value ) . '" class="small-text" /></label>'
+            . '<br><span class="description">' . \esc_html__( 'Only used when the ticket product offers a payment plan: the ticket price is what the plan totals, and buyers who pay in full are charged that price minus this amount. Blank on a date = use the main event\'s amount.', 'anchor-schema' ) . '</span></p>';
+    }
+
+    /**
+     * Price of a seat bought outright.
+     *
+     * @param float $price    Ticket (plan-total) price.
+     * @param float $discount Pay-in-full discount.
+     * @return float
+     */
+    public static function one_time_price( $price, $discount ) {
+        return \max( 0.0, \round( (float) $price - \max( 0.0, (float) $discount ), 2 ) );
+    }
+
+    /**
+     * Whether a cart line is a fresh one-time purchase the discount applies to:
+     * no active plan, and not a renewal / resubscribe / switch cart.
+     *
+     * @param array $cart_item
+     * @return bool
+     */
+    public static function is_one_time_line( array $cart_item ) {
+        foreach ( [ 'subscription_renewal', 'subscription_resubscribe', 'subscription_initial_payment', 'subscription_switch' ] as $key ) {
+            if ( ! empty( $cart_item[ $key ] ) ) {
+                return false;
+            }
+        }
+        return empty( $cart_item['wcsatt_data']['active_subscription_scheme'] );
+    }
+
+    /**
+     * woocommerce_before_calculate_totals: charge one-time event lines the
+     * pay-in-full price. Re-reads the stored price each pass (this hook runs
+     * more than once per request), so the discount is never applied twice.
+     *
+     * @param \WC_Cart  $cart
+     * @param callable  $discount_for Event id → discount.
+     */
+    public static function apply_cart_discounts( $cart, callable $discount_for ) {
+        if ( ! \is_object( $cart ) || ! \method_exists( $cart, 'get_cart' ) ) {
+            return;
+        }
+        foreach ( $cart->get_cart() as $item ) {
+            $event_id = isset( $item['anchor_event_id'] ) ? (int) $item['anchor_event_id'] : 0;
+            if ( $event_id <= 0 || empty( $item['data'] ) || ! self::is_one_time_line( $item ) ) {
+                continue;
+            }
+            $discount = (float) $discount_for( $event_id );
+            if ( $discount <= 0 ) {
+                continue;
+            }
+            $plans = self::for_product( (int) $item['product_id'] );
+            if ( empty( $plans['plans'] ) || $plans['forced'] ) {
+                continue; // No plan to compare against: the ticket price is the price.
+            }
+            $stored = \wc_get_product( ! empty( $item['variation_id'] ) ? (int) $item['variation_id'] : (int) $item['product_id'] );
+            if ( $stored ) {
+                $item['data']->set_price( self::one_time_price( (float) $stored->get_price( 'edit' ), $discount ) );
+            }
+        }
+    }
 
     /**
      * The product's plans as [ key => label ], plus whether one is forced.
@@ -99,19 +217,37 @@ class Payment_Plans {
      * The choice under the ticket rows ('' when the product offers no plan).
      *
      * @param int $product_id
+     * @param float $discount     Pay-in-full discount per seat.
+     * @param int   $variation_id When the event sells ONE ticket type: its
+     *                            variation, so each option can state its amount.
      * @return string
      */
-    public static function render( $product_id ) {
+    public static function render( $product_id, $discount = 0.0, $variation_id = 0 ) {
         $info = self::for_product( $product_id );
         if ( empty( $info['plans'] ) ) {
             return '';
         }
-        $name    = \wp_unique_id( 'anchor_event_plan_' );
-        $options = [];
+        $variation = ( $variation_id > 0 && \function_exists( 'wc_get_product' ) ) ? \wc_get_product( (int) $variation_id ) : null;
+        $name      = \wp_unique_id( 'anchor_event_plan_' );
+        $options   = [];
         if ( ! $info['forced'] ) {
-            $options[''] = \__( 'Pay in full', 'anchor-schema' );
+            $full = \__( 'Pay in full', 'anchor-schema' );
+            if ( $variation ) {
+                $full .= ': ' . self::money( self::one_time_price( (float) $variation->get_price( 'edit' ), $discount ) );
+            }
+            if ( $discount > 0 ) {
+                /* translators: %s: amount saved. */
+                $full .= ' (' . \sprintf( \__( 'save %s', 'anchor-schema' ), self::money( $discount ) ) . ')';
+            }
+            $options[''] = $full;
         }
-        $options += $info['plans'];
+        foreach ( $info['plans'] as $key => $label ) {
+            $each = ( $variation && \class_exists( '\WCS_ATT_Product_Prices' ) )
+                ? \WCS_ATT_Product_Prices::get_price( $variation, (string) $key )
+                : '';
+            /* translators: 1: e.g. "3 monthly payments", 2: amount of each. */
+            $options[ $key ] = ( '' !== (string) $each ) ? \sprintf( \__( '%1$s of %2$s', 'anchor-schema' ), $label, self::money( (float) $each ) ) : $label;
+        }
 
         $out   = '<fieldset class="anchor-event-plan" data-plan-choice>';
         $out  .= '<legend>' . \esc_html__( 'Payment', 'anchor-schema' ) . '</legend>';
@@ -122,6 +258,13 @@ class Payment_Plans {
             $first = false;
         }
         return $out . '</fieldset>';
+    }
+
+    /** Plain-text money for a radio label ("$2,431.67"). */
+    private static function money( $amount ) {
+        return \function_exists( 'wc_price' )
+            ? \html_entity_decode( \wp_strip_all_tags( \wc_price( (float) $amount ) ), ENT_QUOTES, 'UTF-8' )
+            : \number_format_i18n( (float) $amount, 2 );
     }
 
     /**

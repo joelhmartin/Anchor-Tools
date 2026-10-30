@@ -3167,6 +3167,7 @@ class Module {
                     <?php endforeach; ?>
                 </tbody>
             </table>
+            <?php echo Payment_Plans::render_discount_field( (int) $event_id ); // already escaped ?>
             <p>
                 <button type="button" class="<?php echo esc_attr( $button_class ); ?> anchor-event-ticket-add"><?php echo esc_html__( 'Add ticket tier', 'anchor-schema' ); ?></button>
             </p>
@@ -6405,6 +6406,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 ? \wp_unslash( $src['anchor_event_tickets'] )
                 : [];
             $this->ticket_types->save( $post_id, $ticket_rows );
+            Payment_Plans::save_discount( $post_id, \wp_unslash( $src ) );
         }
 
         $this->maybe_append_registration_shortcode( $post_id, $input );

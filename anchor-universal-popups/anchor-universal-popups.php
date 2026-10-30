@@ -235,6 +235,7 @@ class Anchor_Universal_Popups_Module {
             'flyin_max_width' => '',        // e.g. 420px or 30%, blank = default 400px
             'lock_scroll' => '1',           // 0 or 1 — freeze the page behind screen-covering popups
             'autoplay' => '0',              // 0 or 1 for video popups
+            'video_end' => 'default',       // default (player's end screen), hold (stay on the last frame), close (fade out + close)
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
             'close_color' => '#ffffff',     // close icon color
@@ -796,6 +797,14 @@ class Anchor_Universal_Popups_Module {
             <option value="1" <?php selected($m['autoplay'],'1'); ?>>Yes</option>
           </select>
 
+          <label>When the video ends</label>
+          <select name="up_video_end">
+            <option value="default" <?php selected($m['video_end'],'default'); ?>>Show the player&rsquo;s end screen</option>
+            <option value="hold" <?php selected($m['video_end'],'hold'); ?>>Stay on the last frame</option>
+            <option value="close" <?php selected($m['video_end'],'close'); ?>>Fade out and close the popup</option>
+          </select>
+          <p class="description">YouTube and Vimeo videos only. The popup acts just before the final frame, so the player&rsquo;s end screen never appears.</p>
+
           <label>Trigger type</label>
           <select name="up_trigger_type">
             <option value="page_load" <?php selected($m['trigger_type'],'page_load'); ?>>Page load</option>
@@ -957,7 +966,7 @@ class Anchor_Universal_Popups_Module {
             'mode','video_url','video_id','aspect_ratio','thumb_size','custom_thumb',
             'tile_style','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
-            'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','lock_scroll','autoplay','close_color',
+            'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','lock_scroll','autoplay','video_end','close_color',
             'html','css','js',
             'trigger_type','trigger_value','delay_ms',
             'scroll_mode','scroll_percent','scroll_target',
@@ -1196,6 +1205,7 @@ class Anchor_Universal_Popups_Module {
                 'flyin_max_width' => $m['flyin_max_width'],
                 'lock_scroll' => ($m['lock_scroll'] === '0' ? '0' : '1'),
                 'autoplay' => ($m['autoplay'] === '1'),
+                'video_end' => in_array($m['video_end'], ['hold', 'close'], true) ? $m['video_end'] : 'default',
                 'close_color' => $m['close_color'],
                 'html' => do_shortcode( $m['html'] ), // HTML supports embedded shortcodes
                 'shortcode_content' => $rendered_shortcode, // legacy pre-rendered shortcode content

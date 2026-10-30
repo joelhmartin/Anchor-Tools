@@ -235,6 +235,134 @@
     }catch(e){}
   }
 
+  // ── Video end behaviour ("When the video ends" setting) ─────────────────
+  // Uses the providers' own postMessage APIs (no SDK): Vimeo sends timeupdate /
+  // ended once subscribed; YouTube streams infoDelivery after a "listening"
+  // handshake. We act END_LEAD seconds before the end so the player's end
+  // screen (Vimeo's grey replay panel, YouTube's suggestions) never shows.
+  var END_LEAD = 0.6;      // seconds before the end to act
+  var END_FADE_MS = 600;   // fade duration for video_end = 'close'
+  var endModals = [];      // modals whose video_end is hold/close
+
+  function endIframe(modal){ return modal.querySelector('[data-frame] iframe'); }
+
+  function endCommand(modal, cmd, arg){
+    var iframe = endIframe(modal);
+    if(!iframe || !iframe.contentWindow) return;
+    var msg;
+    if(modal._endProvider === 'youtube'){
+      var yt = { pause: 'pauseVideo', seek: 'seekTo' };
+      msg = { event: 'command', func: yt[cmd], args: cmd === 'seek' ? [arg, true] : [] };
+    } else {
+      var vm = { pause: 'pause', seek: 'setCurrentTime' };
+      msg = cmd === 'seek' ? { method: vm[cmd], value: arg } : { method: vm[cmd] };
+    }
+    try{ iframe.contentWindow.postMessage(JSON.stringify(msg), '*'); }catch(e){}
+  }
+
+  function endSubscribe(modal){
+    var iframe = endIframe(modal);
+    if(!iframe || !iframe.contentWindow) return;
+    try{
+      if(modal._endProvider === 'youtube'){
+        iframe.contentWindow.postMessage(JSON.stringify({ event: 'listening', id: 'up-' + modal._endId, channel: 'widget' }), '*');
+      } else {
+        iframe.contentWindow.postMessage(JSON.stringify({ method: 'addEventListener', value: 'timeupdate' }), '*');
+        iframe.contentWindow.postMessage(JSON.stringify({ method: 'addEventListener', value: 'ended' }), '*');
+      }
+    }catch(e){}
+  }
+
+  function fadeOutAndClose(modal){
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if(reduce){ closeModal(modal); return; }
+    modal.classList.add('up-modal--ending');
+    modal.style.setProperty('--up-end-fade', END_FADE_MS + 'ms');
+    setTimeout(function(){
+      closeModal(modal);
+      modal.classList.remove('up-modal--ending');
+    }, END_FADE_MS);
+  }
+
+  // Called with the playhead position; `ended` is true when the player
+  // reported the end itself (we missed the lead window, e.g. a seek to the end).
+  function endTick(modal, seconds, duration, ended){
+    if(modal.hidden || !(duration > 0)) return;
+    // Closing fades over the tail, so it can start early; holding should cut as
+    // late as the ~250ms timeupdate cadence safely allows.
+    var lead = modal._videoEnd === 'close' ? END_LEAD : 0.3;
+    if(!ended && duration - seconds > lead){
+      // Rewound / replayed: re-arm.
+      if(duration - seconds > lead + 1) modal._endHandled = false;
+      return;
+    }
+    if(modal._endHandled) return;
+    modal._endHandled = true;
+    if(modal._videoEnd === 'close'){
+      fadeOutAndClose(modal);
+    } else {
+      if(ended) endCommand(modal, 'seek', Math.max(0, duration - 0.1));
+      endCommand(modal, 'pause');
+    }
+  }
+
+  function endModalFor(source){
+    for(var i = 0; i < endModals.length; i++){
+      var f = endIframe(endModals[i]);
+      if(f && f.contentWindow === source) return endModals[i];
+    }
+    return null;
+  }
+
+  window.addEventListener('message', function(e){
+    if(!endModals.length) return;
+    if(!/^https:\/\/(player\.vimeo\.com|www\.youtube(-nocookie)?\.com)$/.test(e.origin)) return;
+    var modal = endModalFor(e.source);
+    if(!modal) return;
+    var d = e.data;
+    if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(err){ return; } }
+    if(!d || typeof d !== 'object') return;
+    if(modal._endProvider === 'youtube'){
+      if(d.event !== 'infoDelivery' || !d.info) return;
+      if(typeof d.info.duration === 'number') modal._endDuration = d.info.duration;
+      if(d.info.playerState === 0){ endTick(modal, modal._endDuration || 0, modal._endDuration || 0, true); return; }
+      if(typeof d.info.currentTime === 'number') endTick(modal, d.info.currentTime, modal._endDuration || 0, false);
+    } else {
+      if(d.event === 'ready'){ endSubscribe(modal); return; }
+      if(d.event === 'timeupdate' && d.data){
+        modal._endDuration = d.data.duration;
+        endTick(modal, d.data.seconds, d.data.duration, false);
+      } else if(d.event === 'ended'){
+        var dur = (d.data && d.data.duration) || modal._endDuration || 0;
+        endTick(modal, dur, dur, true);
+      }
+    }
+  });
+
+  // iframe load doesn't bubble, but it does reach a capturing listener. Covers
+  // every (re)build of the player: open, and the src reset on close.
+  document.addEventListener('load', function(e){
+    var t = e.target;
+    if(!t || t.tagName !== 'IFRAME') return;
+    for(var i = 0; i < endModals.length; i++){
+      if(endIframe(endModals[i]) === t){
+        endModals[i]._endHandled = false;
+        endSubscribe(endModals[i]);
+        return;
+      }
+    }
+  }, true);
+
+  function registerVideoEnd(modal, sn, provider){
+    var mode = sn.video_end;
+    if(mode !== 'hold' && mode !== 'close') return;
+    if(provider !== 'youtube' && provider !== 'vimeo') return;
+    modal._videoEnd = mode;
+    modal._endProvider = provider;
+    modal._endId = sn.id;
+    endModals.push(modal);
+  }
+
   function isFullscreen(modal){
     return modal.classList.contains('up-style-fullscreen');
   }
@@ -536,6 +664,7 @@
 
     // Resolve provider from snippet (for unified video mode)
     var provider = resolveProvider(sn);
+    if(isVideo) registerVideoEnd(modal, sn, provider);
 
     // Apply close icon color if set
     if(sn.close_color){

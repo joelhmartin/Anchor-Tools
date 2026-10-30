@@ -594,3 +594,9 @@ html.up-scroll-lock body {
 .up-tiles-cinematic.up-video-card {
   background: #000;
 }
+
+/* "When the video ends" = fade out and close (frontend.js fadeOutAndClose). */
+.up-modal.up-modal--ending {
+  opacity: 0;
+  transition: opacity var(--up-end-fade, 600ms) ease;
+}

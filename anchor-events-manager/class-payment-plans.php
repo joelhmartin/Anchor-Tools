@@ -86,9 +86,10 @@ class Payment_Plans {
      */
     public static function render_discount_field( $event_id ) {
         $value = \get_post_meta( (int) $event_id, self::DISCOUNT_META, true );
+        $step  = self::decimals() > 0 ? '0.' . \str_repeat( '0', self::decimals() - 1 ) . '1' : '1';
         return '<p class="anchor-event-pay-in-full"><label>' . \esc_html__( 'Pay-in-full discount per seat', 'anchor-schema' )
-            . ' <input type="number" min="0" step="0.01" name="' . \esc_attr( self::DISCOUNT_FIELD ) . '" value="' . \esc_attr( (string) $value ) . '" class="small-text" /></label>'
-            . '<br><span class="description">' . \esc_html__( 'Only used when the ticket product offers a payment plan: the ticket price is what the plan totals, and buyers who pay in full are charged that price minus this amount. Blank on a date = use the main event\'s amount.', 'anchor-schema' ) . '</span></p>';
+            . ' <input type="number" min="0" step="' . \esc_attr( $step ) . '" name="' . \esc_attr( self::DISCOUNT_FIELD ) . '" value="' . \esc_attr( (string) $value ) . '" class="small-text" /></label>'
+            . '<br><span class="description">' . \esc_html__( 'Only used when the ticket product offers a payment plan. Buyers who pay in full are charged the ticket price minus this amount; set the plan\'s own price (on the product) so its payments total what you intend. Blank on a date = use the main event\'s amount.', 'anchor-schema' ) . '</span></p>';
     }
 
     /**
@@ -99,7 +100,12 @@ class Payment_Plans {
      * @return float
      */
     public static function one_time_price( $price, $discount ) {
-        return \max( 0.0, \round( (float) $price - \max( 0.0, (float) $discount ), 2 ) );
+        return \max( 0.0, \round( (float) $price - \max( 0.0, (float) $discount ), self::decimals() ) );
+    }
+
+    /** The store's price precision (2 without WooCommerce). */
+    private static function decimals() {
+        return \function_exists( 'wc_get_price_decimals' ) ? (int) \wc_get_price_decimals() : 2;
     }
 
     /**
@@ -231,13 +237,17 @@ class Payment_Plans {
         $name      = \wp_unique_id( 'anchor_event_plan_' );
         $options   = [];
         if ( ! $info['forced'] ) {
-            $full = \__( 'Pay in full', 'anchor-schema' );
+            $full   = \__( 'Pay in full', 'anchor-schema' );
+            $saving = (float) $discount;
             if ( $variation ) {
-                $full .= ': ' . self::money( self::one_time_price( (float) $variation->get_price( 'edit' ), $discount ) );
+                $list   = (float) $variation->get_price( 'edit' );
+                $charge = self::one_time_price( $list, $discount );
+                $saving = $list - $charge; // What the buyer actually saves (the charge floors at 0).
+                $full  .= ': ' . self::money( $charge );
             }
-            if ( $discount > 0 ) {
+            if ( $saving > 0 ) {
                 /* translators: %s: amount saved. */
-                $full .= ' (' . \sprintf( \__( 'save %s', 'anchor-schema' ), self::money( $discount ) ) . ')';
+                $full .= ' (' . \sprintf( \__( 'save %s', 'anchor-schema' ), self::money( $saving ) ) . ')';
             }
             $options[''] = $full;
         }

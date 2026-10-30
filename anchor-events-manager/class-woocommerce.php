@@ -2551,6 +2551,12 @@ class WooCommerce {
                     continue;
                 }
 
+                // An installment-plan renewal pays for the seat the first order
+                // already created; it must not create another one per payment.
+                if ( ! Subscription_Renewals::creates_seats( $order_id, $event_id ) ) {
+                    continue;
+                }
+
                 $this->reconcile_line(
                     $order,
                     $order_id,

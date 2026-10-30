@@ -67,8 +67,12 @@ class Test_Subscription_Renewals extends Anchor_Events_TestCase {
 		];
 	}
 
-	/** A processing order with one attendee on one line. */
-	private function paid_order( $variation_id ) {
+	/**
+	 * A processing order with one attendee on one line. $renewal_subs, when
+	 * given, registers the order as a renewal of those subscriptions BEFORE it
+	 * turns processing: the status change itself runs reconcile.
+	 */
+	private function paid_order( $variation_id, ?array $renewal_subs = null ) {
 		$item = new WC_Order_Item_Product();
 		$item->set_product( wc_get_product( $variation_id ) );
 		$item->set_quantity( 1 );
@@ -81,6 +85,9 @@ class Test_Subscription_Renewals extends Anchor_Events_TestCase {
 		$order->set_billing_email( 'a@example.test' );
 		$order->calculate_totals( false );
 		$order->save();
+		if ( null !== $renewal_subs ) {
+			$GLOBALS['anchor_test_wcs_renewals'][ $order->get_id() ] = $renewal_subs;
+		}
 		$order->set_status( 'processing' );
 		$order->save();
 		return $order->get_id();
@@ -101,8 +108,7 @@ class Test_Subscription_Renewals extends Anchor_Events_TestCase {
 		$this->woocommerce()->reconcile_order( wc_get_order( $first ), 'initial' );
 
 		foreach ( [ 1, 2 ] as $n ) {
-			$renewal = $this->paid_order( $ctx['variation_id'] );
-			$GLOBALS['anchor_test_wcs_renewals'][ $renewal ] = [ $sub ];
+			$renewal = $this->paid_order( $ctx['variation_id'], [ $sub ] );
 			$this->woocommerce()->reconcile_order( wc_get_order( $renewal ), 'renewal ' . $n );
 		}
 
@@ -112,8 +118,7 @@ class Test_Subscription_Renewals extends Anchor_Events_TestCase {
 	/** An open-ended subscription renewal still creates its seat (unchanged behavior). */
 	public function test_open_ended_renewal_still_creates_seat() {
 		$ctx     = $this->paid_event();
-		$renewal = $this->paid_order( $ctx['variation_id'] );
-		$GLOBALS['anchor_test_wcs_renewals'][ $renewal ] = [ new Anchor_Test_Subscription_Stub( 0 ) ];
+		$renewal = $this->paid_order( $ctx['variation_id'], [ new Anchor_Test_Subscription_Stub( 0 ) ] );
 
 		$this->woocommerce()->reconcile_order( wc_get_order( $renewal ), 'renewal' );
 
@@ -123,12 +128,26 @@ class Test_Subscription_Renewals extends Anchor_Events_TestCase {
 	/** The filter can opt an installment renewal back into seat creation. */
 	public function test_filter_overrides_default() {
 		$ctx     = $this->paid_event();
-		$renewal = $this->paid_order( $ctx['variation_id'] );
-		$GLOBALS['anchor_test_wcs_renewals'][ $renewal ] = [ new Anchor_Test_Subscription_Stub( time() + DAY_IN_SECONDS ) ];
 		add_filter( 'anchor_events_renewal_creates_seats', '__return_true' );
+		$renewal = $this->paid_order( $ctx['variation_id'], [ new Anchor_Test_Subscription_Stub( time() + DAY_IN_SECONDS ) ] );
 
 		$this->woocommerce()->reconcile_order( wc_get_order( $renewal ), 'renewal' );
 
 		$this->assertSame( 1, $this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ) );
+	}
+
+	/** A renewal seat that already exists (pre-fix, or via the filter) is still released on cancel. */
+	public function test_existing_renewal_seat_still_reconciles() {
+		$ctx = $this->paid_event();
+		add_filter( 'anchor_events_renewal_creates_seats', '__return_true' );
+		$renewal = $this->paid_order( $ctx['variation_id'], [ new Anchor_Test_Subscription_Stub( time() + DAY_IN_SECONDS ) ] );
+		$this->assertSame( 1, $this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		remove_all_filters( 'anchor_events_renewal_creates_seats' );
+		$order = wc_get_order( $renewal );
+		$order->set_status( 'cancelled' );
+		$order->save();
+
+		$this->assertSame( 0, $this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ) );
 	}
 }

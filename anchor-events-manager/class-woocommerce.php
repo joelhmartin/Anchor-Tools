@@ -152,6 +152,8 @@ class WooCommerce {
         // event line mid-cart — no attendee fields, no capacity check, and a
         // paid order reconciles as a complete no-op with nothing recorded.
         \add_filter( 'woocommerce_add_cart_item_data', [ $this, 'snapshot_event_on_add_to_cart' ], 10, 3 );
+        // Pay-in-full discount on one-time event lines (Payment_Plans).
+        \add_action( 'woocommerce_before_calculate_totals', [ $this, 'apply_pay_in_full_discounts' ], 20 );
 
         // Checkout attendee capture (classic shortcode checkout).
         //
@@ -951,7 +953,15 @@ class WooCommerce {
         if ( $any_sellable ) {
             // A plan on the managed product ("3 monthly payments") is chosen here:
             // APFS reads it only at add-to-cart, never in the cart.
-            $out .= Payment_Plans::render( (int) $this->module->product_sync->managed_product_id( $event_id ) );
+            // With ONE ticket type each option can state its own amount.
+            $only_variation = ( 1 === \count( $paid_active ) )
+                ? (int) $this->module->product_sync->variation_for_tier( $event_id, (string) $paid_active[0]['id'] )
+                : 0;
+            $out .= Payment_Plans::render(
+                (int) $this->module->product_sync->managed_product_id( $event_id ),
+                $this->pay_in_full_discount( $event_id ),
+                $only_variation
+            );
             $out .= '<div class="anchor-event-tickets-actions">';
             $out .= '<button type="button" class="anchor-event-button anchor-event-register" data-add-to-cart>'
                 . \esc_html__( 'Register / Add to cart', 'anchor-schema' ) . '</button>';
@@ -982,6 +992,38 @@ class WooCommerce {
         $this->enqueue_storefront_assets();
 
         return $out;
+    }
+
+    /**
+     * The event's pay-in-full discount, inherited from its offering when a
+     * date sets none.
+     *
+     * @param int $event_id
+     * @return float
+     */
+    private function pay_in_full_discount( $event_id ) {
+        $parent = $this->module->occurrences ? (int) $this->module->occurrences->parent_of( (int) $event_id ) : 0;
+        return Payment_Plans::discount( (int) $event_id, $parent );
+    }
+
+    /**
+     * woocommerce_before_calculate_totals: one-time event lines pay the
+     * ticket price less the event's pay-in-full discount.
+     *
+     * @param \WC_Cart $cart
+     */
+    public function apply_pay_in_full_discounts( $cart ) {
+        Payment_Plans::apply_cart_discounts( $cart, [ $this, 'pay_in_full_discount_for' ] );
+    }
+
+    /**
+     * Public adapter for apply_pay_in_full_discounts().
+     *
+     * @param int $event_id
+     * @return float
+     */
+    public function pay_in_full_discount_for( $event_id ) {
+        return $this->pay_in_full_discount( (int) $event_id );
     }
 
     /**

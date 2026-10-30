@@ -492,11 +492,14 @@ class Module {
         // Branded front-end replacement for wp-admin/authorize-application.php (same gate: "Member app URL schemes").
         $this->app_connect = new App_Connect( $this, $this->app_auth );
 
+        // Always loaded: the ticket authoring forms render and save its
+        // pay-in-full field on every site; it is inert without WooCommerce.
+        require_once $dir . 'class-payment-plans.php';
+
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
         if ( \class_exists( 'WooCommerce' ) ) {
             require_once $dir . 'class-subscription-renewals.php';
-            require_once $dir . 'class-payment-plans.php';
             require_once $dir . 'class-woocommerce.php';
             $this->woocommerce = new WooCommerce( $this, $this->registrations );
             // Event→managed-product sync (spec §4–5). Constructed only when WC is
@@ -3167,6 +3170,7 @@ class Module {
                     <?php endforeach; ?>
                 </tbody>
             </table>
+            <?php echo Payment_Plans::render_discount_field( (int) $event_id ); // already escaped ?>
             <p>
                 <button type="button" class="<?php echo esc_attr( $button_class ); ?> anchor-event-ticket-add"><?php echo esc_html__( 'Add ticket tier', 'anchor-schema' ); ?></button>
             </p>
@@ -6405,6 +6409,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 ? \wp_unslash( $src['anchor_event_tickets'] )
                 : [];
             $this->ticket_types->save( $post_id, $ticket_rows );
+            Payment_Plans::save_discount( $post_id, \wp_unslash( $src ) );
         }
 
         $this->maybe_append_registration_shortcode( $post_id, $input );

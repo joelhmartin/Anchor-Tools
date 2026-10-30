@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.44.4
+Stable tag: 3.44.6
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.44.6 =
+* Events: a pay-in-full discount per seat (Tickets panel, beside the ticket tiers). When the ticket product offers a payment plan, buyers who choose "Pay in full" are charged the ticket price minus the discount. The plan's own price is set on the product as before (e.g. a 3-payment plan at 66.67% off charges a third of the ticket price each month), so configure it to total what you intend. A date with no amount of its own uses its main event's. With a single ticket type, the payment choice now states each option's amount ("Pay in full: $6,545 (save $750)", "3 monthly payments of $2,431.67").
 
 = 3.44.4 =
 * Events: when an event's ticket product has a WooCommerce Subscriptions payment plan (e.g. "3 monthly payments"), the event registration form offers "Pay in full" or the plan, and Register / Add to cart applies the choice. The plan was unreachable from the event page because WooCommerce Subscriptions only reads it at add-to-cart.

@@ -267,8 +267,12 @@
       if(modal._endProvider === 'youtube'){
         iframe.contentWindow.postMessage(JSON.stringify({ event: 'listening', id: 'up-' + modal._endId, channel: 'widget' }), '*');
       } else {
-        iframe.contentWindow.postMessage(JSON.stringify({ method: 'addEventListener', value: 'timeupdate' }), '*');
-        iframe.contentWindow.postMessage(JSON.stringify({ method: 'addEventListener', value: 'ended' }), '*');
+        // Vimeo answers string-encoded messages with its legacy event names
+        // (playProgress / finish) and object messages with the modern ones
+        // (timeupdate / ended). Subscribe to both so either protocol reports.
+        ['timeupdate', 'ended', 'playProgress', 'finish'].forEach(function(ev){
+          iframe.contentWindow.postMessage(JSON.stringify({ method: 'addEventListener', value: ev }), '*');
+        });
       }
     }catch(e){}
   }
@@ -329,10 +333,10 @@
       if(typeof d.info.currentTime === 'number') endTick(modal, d.info.currentTime, modal._endDuration || 0, false);
     } else {
       if(d.event === 'ready'){ endSubscribe(modal); return; }
-      if(d.event === 'timeupdate' && d.data){
+      if((d.event === 'timeupdate' || d.event === 'playProgress') && d.data){
         modal._endDuration = d.data.duration;
         endTick(modal, d.data.seconds, d.data.duration, false);
-      } else if(d.event === 'ended'){
+      } else if(d.event === 'ended' || d.event === 'finish'){
         var dur = (d.data && d.data.duration) || modal._endDuration || 0;
         endTick(modal, dur, dur, true);
       }

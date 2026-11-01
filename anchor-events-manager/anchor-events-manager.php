@@ -2939,6 +2939,10 @@ class Module {
             // alongside the explicit sanitize_external_embed() call in save_meta().
             'external_embed' => [ 'type' => 'string', 'show_in_rest' => false, 'sanitize_callback' => [ $this, 'sanitize_external_embed' ] ],
             'external_display_price' => [ 'type' => 'string', 'show_in_rest' => false ],
+            // Free-text dates shown INSTEAD of the computed ones on public
+            // surfaces ("February – June 2027"). Display only: the real dates
+            // still drive status, sorting, schema, emails and the admin.
+            'display_dates' => [ 'type' => 'string', 'show_in_rest' => false ],
             // Occurrences engine (Phase 2, Task 2.1) — parent/child group meta.
             // Engine-owned: written only by Occurrences, never by save_meta()'s
             // allow-list (see the $input array in save_meta() below — these five
@@ -3045,6 +3049,7 @@ class Module {
             'external_url' => '',
             'external_embed' => '',
             'external_display_price' => '',
+            'display_dates' => '',
             // Occurrences engine (Phase 2, Task 2.1) — see get_meta_schema().
             'group_role' => '',
             'group_id' => 0,
@@ -3490,6 +3495,62 @@ class Module {
         </div>
         <?php
         return (string) \ob_get_clean();
+    }
+
+    /**
+     * The optional "Display dates" field, shared by the admin metabox and the
+     * front-end manager form so the two can never drift. Saved by
+     * sanitize_event_type_input(); read through display_dates_text().
+     *
+     * @param array $meta  get_meta() result.
+     * @param bool  $admin Metabox styling when true.
+     * @return string Escaped HTML.
+     */
+    public function render_display_dates_field( array $meta, $admin = true ) {
+        $hint = $admin ? 'description' : 'anchor-event-hint';
+        \ob_start();
+        ?>
+        <div class="anchor-event-field anchor-event-field-wide" style="grid-column:1/-1;">
+            <label for="anchor_event_display_dates"><?php echo esc_html__( 'Display dates', 'anchor-schema' ); ?></label>
+            <input type="text" id="anchor_event_display_dates" name="anchor_event_display_dates" class="large-text" value="<?php echo esc_attr( (string) ( $meta['display_dates'] ?? '' ) ); ?>" placeholder="<?php echo esc_attr__( 'e.g. February – June 2027', 'anchor-schema' ); ?>" />
+            <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Optional. Shown on the site instead of the dates worked out from the schedule, for a course with too many dates to list. The real dates still decide when it is upcoming or past, and still go in emails. Dates under a main event use the main event\'s text.', 'anchor-schema' ); ?></p>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * The author's "Display dates" text for an event, or '' when none is set.
+     * The ONE reader of that field: every public date surface (event card,
+     * single page, the registration date picker, themes via
+     * anchor_event_display_dates()) asks here and falls back to its own
+     * computed dates when it gets ''. A date under a main event inherits the
+     * main event's value (Occurrences::INHERITED_KEYS), so asking for either
+     * gives the same answer.
+     *
+     * @param int        $post_id Event post ID.
+     * @param array|null $meta    Already-loaded get_meta() result, when held.
+     * @return string Plain text (unescaped).
+     */
+    public function display_dates_text( $post_id, $meta = null ) {
+        if ( ! \is_array( $meta ) ) {
+            $meta = $this->get_meta( (int) $post_id );
+        }
+        return \trim( (string) ( $meta['display_dates'] ?? '' ) );
+    }
+
+    /**
+     * Public date text: the author's Display dates when set, else the
+     * computed format_date_time() string.
+     *
+     * @param int   $post_id       Event post ID.
+     * @param array $meta          get_meta() result.
+     * @param bool  $include_range Passed to format_date_time().
+     * @return string Plain text (unescaped).
+     */
+    private function public_date_text( $post_id, array $meta, $include_range = false ) {
+        $override = $this->display_dates_text( $post_id, $meta );
+        return $override !== '' ? $override : $this->format_date_time( $meta, $include_range );
     }
 
     /**
@@ -4347,6 +4408,7 @@ class Module {
                             <?php echo esc_html__( 'All day event', 'anchor-schema' ); ?>
                         </label>
                     </div>
+                    <?php echo $this->render_display_dates_field( $meta, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                 </div>
             </div>
 
@@ -6543,6 +6605,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *     external_url: string,
      *     external_embed: string,
      *     external_display_price: string,
+     *     display_dates: string,
      * }
      */
     private function sanitize_event_type_input( array $src, $registration_mode_fallback, $post_id = 0 ) {
@@ -6579,6 +6642,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'external_url' => esc_url_raw( \wp_unslash( $src['anchor_event_external_url'] ?? '' ) ),
             'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
             'external_display_price' => sanitize_text_field( \wp_unslash( $src['anchor_event_external_display_price'] ?? '' ) ),
+            'display_dates' => sanitize_text_field( \wp_unslash( $src['anchor_event_display_dates'] ?? '' ) ),
         ] );
     }
 
@@ -9734,6 +9798,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     </div>
                     <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Duration', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_all_day" name="anchor_event_all_day" value="1" <?php checked( $meta['all_day'] ); ?> /> <?php echo esc_html__( 'All-day event', 'anchor-schema' ); ?></label>
                     </div>
+                    <?php echo $this->render_display_dates_field( $meta, false ); // already escaped ?>
                 </div>
             </div>
 
@@ -10721,7 +10786,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $output .= '<h3 class="anchor-event-title"><a href="' . esc_url( \get_permalink( $post_id ) ) . '">' . esc_html( \get_the_title( $post_id ) ) . '</a></h3>';
         $output .= '</div>';
-        $output .= '<div class="anchor-event-meta">' . esc_html( $this->format_date_time( $meta ) ) . '</div>';
+        $output .= '<div class="anchor-event-meta">' . esc_html( $this->public_date_text( $post_id, $meta ) ) . '</div>';
         if ( $meta['venue'] ) {
             $output .= '<div class="anchor-event-meta">' . esc_html( $meta['venue'] ) . '</div>';
         }
@@ -11129,7 +11194,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $output = '<section class="anchor-event-detail">';
         $output .= '<div class="anchor-event-detail-meta">';
-        $output .= '<div><strong>' . esc_html__( 'Date', 'anchor-schema' ) . ':</strong> ' . esc_html( $this->format_date_time( $meta, true ) ) . '</div>';
+        $output .= '<div><strong>' . esc_html__( 'Date', 'anchor-schema' ) . ':</strong> ' . esc_html( $this->public_date_text( $post_id, $meta, true ) ) . '</div>';
         if ( $meta['venue'] ) {
             $output .= '<div><strong>' . esc_html__( 'Venue', 'anchor-schema' ) . ':</strong> ' . esc_html( $meta['venue'] ) . '</div>';
         }
@@ -11636,7 +11701,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
             $meta  = $this->get_meta( $child_id );
             $label = $this->occurrence_label( $child_id, $meta );
-            $when  = $this->format_date_time( $meta, true );
+            $when  = $this->public_date_text( $child_id, $meta, true );
 
             $blocks .= '<div class="anchor-event-inline-date" data-event="' . esc_attr( $child_id ) . '">';
             $blocks .= '<div class="anchor-event-inline-date-head">';
@@ -11728,7 +11793,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $meta     = $this->get_meta( $event_id );
         $label    = $this->occurrence_label( $event_id, $meta );
 
-        $date_text = $this->format_date_time( $meta, true );
+        $date_text = $this->public_date_text( $event_id, $meta, true );
 
         // Same predicate the ordering above ranks on, so the row's mark and
         // its position can never describe the date differently.

@@ -62,3 +62,23 @@ if ( ! function_exists( 'anchor_event_labels' ) ) {
 		return $module ? $module->get_labels( $post_id ) : [];
 	}
 }
+
+if ( ! function_exists( 'anchor_event_display_dates' ) ) {
+	/**
+	 * The author's optional "Display dates" text for an event ("February –
+	 * June 2027"), or '' when none is set. A date under a main event inherits
+	 * the main event's value. A theme that prints its own computed dates
+	 * should print this instead whenever it is not empty.
+	 *
+	 * @param int $post_id Event post ID (a main event or one of its dates).
+	 * @return string Plain text — escape at the point of output.
+	 */
+	function anchor_event_display_dates( $post_id ) {
+		if ( ! class_exists( '\Anchor\Events\Module' ) ) {
+			return '';
+		}
+		$module = \Anchor\Events\Module::instance();
+
+		return $module ? $module->display_dates_text( (int) $post_id ) : '';
+	}
+}

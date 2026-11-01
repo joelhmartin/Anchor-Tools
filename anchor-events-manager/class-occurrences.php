@@ -202,6 +202,9 @@ class Occurrences {
         'external_url',
         'external_embed',
         'external_display_price',
+        // Display-only date text (owner, 2026-11-01): one value per offering,
+        // so every date under it reads the same.
+        'display_dates',
     ];
 
     /**

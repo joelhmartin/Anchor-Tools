@@ -173,6 +173,17 @@ unchanged after upgrade.
   - When both `external_embed` and `external_url` are set, the embed renders and the
     plain link does not.
 
+### Display dates
+
+`_anchor_event_display_dates` is an optional free-text line ("February – June 2027")
+shown on public surfaces **instead of** the computed dates: the event card, the single
+event page, the registration date picker and choose-a-date rows. Set it in the
+"Date & Time" section of either form. It is **display only**: status, sorting, the
+JSON-LD, emails and the admin lists keep using the real dates. It is in
+`Occurrences::INHERITED_KEYS`, so every date under a main event reads the main
+event's value. Themes call `anchor_event_display_dates( $post_id )` (returns `''`
+when unset) and fall back to their own date text.
+
 ### Attendee questions
 
 An event can ask anything on top of name/email/phone: rows in

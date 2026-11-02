@@ -184,6 +184,17 @@ JSON-LD, emails and the admin lists keep using the real dates. It is in
 event's value. Themes call `anchor_event_display_dates( $post_id )` (returns `''`
 when unset) and fall back to their own date text.
 
+### Pay-in-full discount per tier
+
+The event's "Pay-in-full discount per seat" (`_anchor_event_pay_in_full_discount`)
+applies to every ticket tier unless the tier's **Pay-in-full discount** box is
+unticked (tier key `pay_in_full`, default on; rows saved before the key existed
+read as on). The cart (`Woocommerce::pay_in_full_discount_for( $event_id,
+$variation_id )`) charges an unticked tier its full price. `Payment_Plans::scope(
+$tiers, $discount )` returns the amount to advertise and, when only some tiers
+qualify, their labels, which `Payment_Plans::render()` prints as "save $750 on
+Dentist". Themes that draw their own plan picker should pass both through.
+
 ### Attendee questions
 
 An event can ask anything on top of name/email/phone: rows in

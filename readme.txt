@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.44.10
+Stable tag: 3.44.11
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.44.11 =
+* Events: each ticket tier has a "Pay-in-full discount" checkbox (ticked by default, so existing tiers are unchanged). An unticked tier is charged its full price even when paid in full, and the "Pay in full" option reads "save $750 on Dentist" when the saving reaches only some tiers. Themes drawing their own plan picker can use Payment_Plans::scope().
 
 = 3.44.10 =
 * Popups: an "Entrance effect" setting for the Modal and Theater styles: None (default, unchanged), Fade in, Fade and zoom, or Fade and slide up. The same animation plays in reverse when the popup is closed with the X, Esc or the backdrop. Visitors with reduced motion turned on see it appear instantly.

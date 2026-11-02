@@ -1029,8 +1029,11 @@ class WooCommerce {
     public function pay_in_full_discount_for( $event_id, $variation_id = 0 ) {
         $discount = $this->pay_in_full_discount( (int) $event_id );
         if ( $discount > 0 && (int) $variation_id > 0 && $this->module->product_sync ) {
-            $tier_id = (string) $this->module->product_sync->tier_for_variation( (int) $variation_id )['tier_id'];
-            $tier    = '' !== $tier_id ? $this->module->ticket_types->find( (int) $event_id, $tier_id ) : null;
+            // Only a variation of THIS event's product names one of its tiers.
+            $map  = $this->module->product_sync->tier_for_variation( (int) $variation_id );
+            $tier = ( '' !== (string) $map['tier_id'] && (int) $map['event_id'] === (int) $event_id )
+                ? $this->module->ticket_types->find( (int) $event_id, (string) $map['tier_id'] )
+                : null;
             if ( $tier && ! Ticket_Types::gets_pay_in_full( $tier ) ) {
                 return 0.0;
             }

@@ -86,13 +86,21 @@ class Test_Payment_Plans extends Anchor_Events_TestCase {
 		$product = new WC_Product_Simple();
 		$product->set_regular_price( '7295' );
 		$product->save();
-		$line = [ 'anchor_event_id' => 99, 'product_id' => $product->get_id(), 'variation_id' => 0, 'data' => $product ];
+		$line = [ 'anchor_event_id' => 99, 'product_id' => $product->get_id(), 'variation_id' => 123, 'data' => $product ];
 		$cart = new class( [ $line ] ) {
 			private $items;
 			public function __construct( $items ) { $this->items = $items; }
 			public function get_cart() { return $this->items; }
 		};
-		Payment_Plans::apply_cart_discounts( $cart, function () { return 750.0; } );
+		$received = null;
+		Payment_Plans::apply_cart_discounts(
+			$cart,
+			function ( $event_id, $variation_id ) use ( &$received ) {
+				$received = [ $event_id, $variation_id ];
+				return 750.0;
+			}
+		);
+		$this->assertSame( [ 99, 123 ], $received, 'The line\'s variation reaches the discount lookup (per-tier opt-out).' );
 		$this->assertEquals( 7295, $product->get_price() );
 	}
 

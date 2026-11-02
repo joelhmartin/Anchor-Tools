@@ -252,24 +252,67 @@ class Payment_Plans {
     }
 
     /**
-     * The choice under the ticket rows ('' when the product offers no plan).
+     * The radio fieldset a buyer picks "Pay in full" or a plan from.
      *
-     * @param int $product_id
-     * @param float $discount     Pay-in-full discount per seat.
-     * @param int   $variation_id When the event sells ONE ticket type: its
-     *                            variation, so each option can state its amount.
-     * @param string[] $only      Tier labels the saving is limited to (from
-     *                            scope()); empty = every ticket.
+     * @param int      $product_id   Managed (parent) product.
+     * @param float    $discount     Pay-in-full discount per seat.
+     * @param int      $variation_id When the event sells ONE ticket type: its
+     *                               variation, so each option can state its amount.
+     * @param string[] $only         Tier labels the saving is limited to (from
+     *                               scope()); empty = every ticket.
+     * @param array    $by_variation Several ticket types: variation id => that
+     *                               ticket's pay-in-full discount. Each ticket's
+     *                               own wording goes in `data-plan-labels`, and
+     *                               event-storefront.js swaps it in when the buyer
+     *                               picks that ticket (WooCommerce's variation
+     *                               select, or one ticket row with a quantity).
      * @return string
      */
-    public static function render( $product_id, $discount = 0.0, $variation_id = 0, array $only = [] ) {
+    public static function render( $product_id, $discount = 0.0, $variation_id = 0, array $only = [], array $by_variation = [] ) {
         $info = self::for_product( $product_id );
         if ( empty( $info['plans'] ) ) {
             return '';
         }
         $variation = ( $variation_id > 0 && \function_exists( 'wc_get_product' ) ) ? \wc_get_product( (int) $variation_id ) : null;
-        $name      = \wp_unique_id( 'anchor_event_plan_' );
-        $options   = [];
+        $options   = self::option_labels( $info, $variation, (float) $discount, $only );
+
+        $per_ticket = [];
+        if ( ! $variation && \function_exists( 'wc_get_product' ) ) {
+            foreach ( $by_variation as $vid => $amount ) {
+                $v = \wc_get_product( (int) $vid );
+                if ( $v ) {
+                    $per_ticket[ (string) (int) $vid ] = self::option_labels( $info, $v, (float) $amount );
+                }
+            }
+        }
+
+        $name  = \wp_unique_id( 'anchor_event_plan_' );
+        $out   = '<fieldset class="anchor-event-plan" data-plan-choice'
+            . ( $per_ticket ? ' data-plan-labels="' . \esc_attr( (string) \wp_json_encode( $per_ticket ) ) . '"' : '' ) . '>';
+        $out  .= '<legend>' . \esc_html__( 'Payment', 'anchor-schema' ) . '</legend>';
+        $first = true;
+        foreach ( $options as $key => $label ) {
+            $out  .= '<label class="anchor-event-plan-option"><input type="radio" name="' . \esc_attr( $name ) . '" value="' . \esc_attr( (string) $key ) . '"'
+                . ( $first ? ' checked' : '' ) . '> <span class="anchor-event-plan-text" data-plan-key="' . \esc_attr( (string) $key ) . '">' . \esc_html( $label ) . '</span></label>';
+            $first = false;
+        }
+        return $out . '</fieldset>';
+    }
+
+    /**
+     * Option key ('' = pay in full) => label. With a variation each label
+     * states its amount ("Pay in full: $2,850.00", "3 monthly payments of
+     * $950.00"); without one they are generic, plus "save $750 on Dentist"
+     * when $only limits the saving.
+     *
+     * @param array            $info      for_product() result.
+     * @param \WC_Product|null $variation
+     * @param float            $discount
+     * @param string[]         $only
+     * @return array<string,string>
+     */
+    private static function option_labels( array $info, $variation, $discount, array $only = [] ) {
+        $options = [];
         if ( ! $info['forced'] ) {
             $full   = \__( 'Pay in full', 'anchor-schema' );
             $saving = (float) $discount;
@@ -278,6 +321,7 @@ class Payment_Plans {
                 $charge = self::one_time_price( $list, $discount );
                 $saving = $list - $charge; // What the buyer actually saves (the charge floors at 0).
                 $full  .= ': ' . self::money( $charge );
+                $only   = []; // One ticket: "save $X" is about this ticket.
             }
             if ( $saving > 0 && ! empty( $only ) ) {
                 /* translators: 1: amount saved, 2: ticket names, e.g. "Dentist". */
@@ -293,18 +337,9 @@ class Payment_Plans {
                 ? \WCS_ATT_Product_Prices::get_price( $variation, (string) $key )
                 : '';
             /* translators: 1: e.g. "3 monthly payments", 2: amount of each. */
-            $options[ $key ] = ( '' !== (string) $each ) ? \sprintf( \__( '%1$s of %2$s', 'anchor-schema' ), $label, self::money( (float) $each ) ) : $label;
+            $options[ (string) $key ] = ( '' !== (string) $each ) ? \sprintf( \__( '%1$s of %2$s', 'anchor-schema' ), $label, self::money( (float) $each ) ) : $label;
         }
-
-        $out   = '<fieldset class="anchor-event-plan" data-plan-choice>';
-        $out  .= '<legend>' . \esc_html__( 'Payment', 'anchor-schema' ) . '</legend>';
-        $first = true;
-        foreach ( $options as $key => $label ) {
-            $out  .= '<label class="anchor-event-plan-option"><input type="radio" name="' . \esc_attr( $name ) . '" value="' . \esc_attr( $key ) . '"'
-                . ( $first ? ' checked' : '' ) . '> ' . \esc_html( $label ) . '</label>';
-            $first = false;
-        }
-        return $out . '</fieldset>';
+        return $options;
     }
 
     /** Plain-text money for a radio label ("$2,431.67"). */

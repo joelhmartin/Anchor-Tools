@@ -953,17 +953,7 @@ class WooCommerce {
         if ( $any_sellable ) {
             // A plan on the managed product ("3 monthly payments") is chosen here:
             // APFS reads it only at add-to-cart, never in the cart.
-            // With ONE ticket type each option can state its own amount.
-            $only_variation = ( 1 === \count( $paid_active ) )
-                ? (int) $this->module->product_sync->variation_for_tier( $event_id, (string) $paid_active[0]['id'] )
-                : 0;
-            $scope = Payment_Plans::scope( $paid_active, $this->pay_in_full_discount( $event_id ) );
-            $out  .= Payment_Plans::render(
-                (int) $this->module->product_sync->managed_product_id( $event_id ),
-                $scope['discount'],
-                $only_variation,
-                $scope['only']
-            );
+            $out .= $this->plan_choice( $event_id, $paid_active );
             $out .= '<div class="anchor-event-tickets-actions">';
             $out .= '<button type="button" class="anchor-event-button anchor-event-register" data-add-to-cart>'
                 . \esc_html__( 'Register / Add to cart', 'anchor-schema' ) . '</button>';
@@ -994,6 +984,60 @@ class WooCommerce {
         $this->enqueue_storefront_assets();
 
         return $out;
+    }
+
+    /**
+     * The "Pay in full / N monthly payments" picker for an event's managed
+     * product, or '' when it sells no plan. The ONE place the picker's amounts
+     * are worked out: the registration form above and theme product forms
+     * (e.g. a course hero's variation form) both call this.
+     *
+     * With one ticket type every option states its amount. With several, the
+     * generic wording ("save $750 on Dentist") shows until the buyer picks a
+     * ticket, then event-storefront.js swaps in that ticket's own amounts,
+     * including no saving for a tier whose pay-in-full box is unticked.
+     *
+     * @param int        $event_id    The date/event that owns the product.
+     * @param array|null $paid_active Its active paid tiers (null = read them).
+     * @return string Escaped HTML.
+     */
+    public function plan_choice( $event_id, $paid_active = null ) {
+        $event_id = (int) $event_id;
+        if ( ! $this->module->product_sync || ! $this->module->ticket_types ) {
+            return '';
+        }
+        if ( null === $paid_active ) {
+            $paid_active = [];
+            foreach ( $this->module->ticket_types->get( $event_id ) as $tier ) {
+                if ( ! empty( $tier['active'] ) && (float) $tier['price'] > 0 ) {
+                    $paid_active[] = $tier;
+                }
+            }
+        }
+        if ( empty( $paid_active ) ) {
+            return '';
+        }
+        $discount     = $this->pay_in_full_discount( $event_id );
+        $scope        = Payment_Plans::scope( $paid_active, $discount );
+        $by_variation = [];
+        foreach ( $paid_active as $tier ) {
+            $vid = (int) $this->module->product_sync->variation_for_tier( $event_id, (string) $tier['id'] );
+            if ( $vid > 0 ) {
+                $by_variation[ $vid ] = Ticket_Types::gets_pay_in_full( $tier ) ? $discount : 0.0;
+            }
+        }
+        $only_variation = 1 === \count( $paid_active ) ? (int) \key( $by_variation ) : 0;
+        $html           = Payment_Plans::render(
+            (int) $this->module->product_sync->managed_product_id( $event_id ),
+            $only_variation ? (float) \current( $by_variation ) : $scope['discount'],
+            $only_variation,
+            $scope['only'],
+            $only_variation ? [] : $by_variation
+        );
+        if ( '' !== $html ) {
+            $this->enqueue_storefront_assets(); // Swaps the labels per ticket.
+        }
+        return $html;
     }
 
     /**
@@ -1149,6 +1193,7 @@ class WooCommerce {
         $row .= '<button type="button" class="anchor-event-qty-btn" data-qty-step="-1" tabindex="-1" aria-hidden="true">&minus;</button>';
         $row .= '<input type="number" class="anchor-event-ticket-qty" min="0" max="' . \esc_attr( $max ) . '"'
             . ' step="1" value="' . ( $only_tier ? '1' : '0' ) . '" data-tier="' . \esc_attr( $tier_id ) . '"'
+            . ' data-variation="' . \esc_attr( (string) (int) $this->module->product_sync->variation_for_tier( $event_id, $tier_id ) ) . '"'
             . ' aria-label="' . \esc_attr( \sprintf( /* translators: %s: ticket tier label. */ \__( 'Quantity for %s', 'anchor-schema' ), $label ) ) . '" />';
         $row .= '<button type="button" class="anchor-event-qty-btn" data-qty-step="1" tabindex="-1" aria-hidden="true">+</button>';
         $row .= '</div>';

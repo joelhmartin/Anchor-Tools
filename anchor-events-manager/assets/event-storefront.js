@@ -135,4 +135,49 @@
             $btn.prop('disabled', false).removeClass('is-loading');
         });
     });
+
+    // Payment-plan wording per ticket (Payment_Plans::render() data-plan-labels:
+    // variation id => { option key => label }). With several ticket types the
+    // picker starts generic ("save $750 on Dentist"); once ONE ticket is chosen
+    // its own amounts replace it, and an ambiguous choice goes back to generic.
+    function applyPlanLabels($fieldset, variationId) {
+        var map = $fieldset.data('planLabels');
+        var labels = (variationId && map && map[String(variationId)]) ? map[String(variationId)] : null;
+        $fieldset.find('.anchor-event-plan-text').each(function () {
+            var $text = $(this);
+            if ($text.data('planDefault') === undefined) {
+                $text.data('planDefault', $text.text());
+            }
+            var key = $text.attr('data-plan-key') || '';
+            $text.text(labels && Object.prototype.hasOwnProperty.call(labels, key) ? labels[key] : $text.data('planDefault'));
+        });
+    }
+
+    // WooCommerce variation forms (a theme's product form showing this picker).
+    $(document).on('found_variation', 'form.variations_form', function (e, variation) {
+        var id = variation && variation.variation_id;
+        $(this).find('[data-plan-labels]').each(function () { applyPlanLabels($(this), id); });
+    });
+    $(document).on('reset_data', 'form.variations_form', function () {
+        $(this).find('[data-plan-labels]').each(function () { applyPlanLabels($(this), null); });
+    });
+
+    // Ticket rows: exactly one ticket type with a quantity picks its wording.
+    function syncTicketPlanLabels($block) {
+        var ids = [];
+        $block.find('.anchor-event-ticket-qty').each(function () {
+            var id = $(this).attr('data-variation');
+            if ((parseInt($(this).val(), 10) || 0) > 0 && id && ids.indexOf(id) === -1) {
+                ids.push(id);
+            }
+        });
+        var id = ids.length === 1 ? ids[0] : null;
+        $block.find('[data-plan-labels]').each(function () { applyPlanLabels($(this), id); });
+    }
+    $(document).on('change input', '.anchor-event-tickets .anchor-event-ticket-qty', function () {
+        syncTicketPlanLabels($(this).closest('.anchor-event-tickets'));
+    });
+    $(function () {
+        $('.anchor-event-tickets').each(function () { syncTicketPlanLabels($(this)); });
+    });
 })(jQuery);

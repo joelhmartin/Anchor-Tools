@@ -993,7 +993,7 @@ class WooCommerce {
      * (e.g. a course hero's variation form) both call this.
      *
      * With one ticket type every option states its amount. With several, the
-     * generic wording ("save $750 on Dentist") shows until the buyer picks a
+     * generic wording (plain "Pay in full" when only some tickets save) shows until the buyer picks a
      * ticket, then event-storefront.js swaps in that ticket's own amounts,
      * including no saving for a tier whose pay-in-full box is unticked.
      *

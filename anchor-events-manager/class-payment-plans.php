@@ -302,8 +302,8 @@ class Payment_Plans {
     /**
      * Option key ('' = pay in full) => label. With a variation each label
      * states its amount ("Pay in full: $2,850.00", "3 monthly payments of
-     * $950.00"); without one they are generic, plus "save $750 on Dentist"
-     * when $only limits the saving.
+     * $950.00"); without one they are generic, and the saving is shown only
+     * when every ticket gets it ($only empty).
      *
      * @param array            $info      for_product() result.
      * @param \WC_Product|null $variation
@@ -323,10 +323,10 @@ class Payment_Plans {
                 $full  .= ': ' . self::money( $charge );
                 $only   = []; // One ticket: "save $X" is about this ticket.
             }
-            if ( $saving > 0 && ! empty( $only ) ) {
-                /* translators: 1: amount saved, 2: ticket names, e.g. "Dentist". */
-                $full .= ' (' . \sprintf( \__( 'save %1$s on %2$s', 'anchor-schema' ), self::money( $saving ), \implode( ', ', $only ) ) . ')';
-            } elseif ( $saving > 0 ) {
+            // A saving that only SOME tickets get is never advertised generically:
+            // the picker says plain "Pay in full" until the buyer picks a ticket,
+            // and that ticket's own wording (with or without the saving) takes over.
+            if ( $saving > 0 && empty( $only ) ) {
                 /* translators: %s: amount saved. */
                 $full .= ' (' . \sprintf( \__( 'save %s', 'anchor-schema' ), self::money( $saving ) ) . ')';
             }

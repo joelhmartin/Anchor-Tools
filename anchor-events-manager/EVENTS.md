@@ -192,8 +192,8 @@ unticked (tier key `pay_in_full`, default on; rows saved before the key existed
 read as on). The cart (`Woocommerce::pay_in_full_discount_for( $event_id,
 $variation_id )`) charges an unticked tier its full price. `Payment_Plans::scope(
 $tiers, $discount )` returns the amount to advertise and, when only some tiers
-qualify, their labels, which `Payment_Plans::render()` prints as "save $750 on
-Dentist".
+qualify, their labels; `Payment_Plans::render()` then prints a plain "Pay in full"
+(no saving) until the buyer picks a ticket.
 
 The picker itself comes from ONE method, `Woocommerce::plan_choice( $event_id )`
 (the registration form uses it; a theme product form should call it too, via

@@ -25,7 +25,7 @@ Usage:
 == Changelog ==
 
 = 3.44.13 =
-* Events: the "Pay in full / monthly payments" choice updates when the buyer picks a ticket. Each ticket shows its own amounts ("Pay in full: $2,850.00" for a ticket without the pay-in-full saving, "Pay in full: $6,545.00 (save $750.00)" for one with it, and each plan's monthly amount). Works in the event registration form and in WooCommerce product forms that use Woocommerce::plan_choice().
+* Events: the "Pay in full / monthly payments" choice updates when the buyer picks a ticket. Each ticket shows its own amounts, and the saving appears only on a ticket that gets it; before a ticket is picked the option reads plain "Pay in full" ("Pay in full: $2,850.00" for a ticket without the pay-in-full saving, "Pay in full: $6,545.00 (save $750.00)" for one with it, and each plan's monthly amount). Works in the event registration form and in WooCommerce product forms that use Woocommerce::plan_choice().
 
 = 3.44.12 =
 * Popups: "Fade and zoom" is now the default entrance effect for Modal and Theater popups. Any popup without a saved choice (every popup created before 3.44.10) gets it. To keep a popup appearing instantly, set its Entrance effect to None.

@@ -194,7 +194,9 @@ class Test_Payment_Plans extends Anchor_Events_TestCase {
 		$this->assertArrayHasKey( 'k3', $st );
 
 		$generic = $labels->invoke( null, $info, null, 750.0, [ 'Dentist' ] );
-		$this->assertStringContainsString( 'on Dentist', $generic[''] );
+		$this->assertSame( 'Pay in full', $generic[''], 'A saving only some tickets get is not advertised before one is picked.' );
+		$everyone = $labels->invoke( null, $info, null, 750.0 );
+		$this->assertStringContainsString( 'save', $everyone[''] );
 
 		$forced = $labels->invoke( null, [ 'plans' => [ 'k3' => '3 monthly payments' ], 'forced' => true ], $staff, 0.0 );
 		$this->assertArrayNotHasKey( '', $forced, 'A forced plan offers no pay-in-full option.' );

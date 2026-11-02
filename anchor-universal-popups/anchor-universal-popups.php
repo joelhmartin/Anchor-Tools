@@ -236,7 +236,7 @@ class Anchor_Universal_Popups_Module {
             'lock_scroll' => '1',           // 0 or 1 — freeze the page behind screen-covering popups
             'autoplay' => '0',              // 0 or 1 for video popups
             'video_end' => 'default',       // default (player's end screen), hold (stay on the last frame), close (fade out + close)
-            'entrance_effect' => 'none',    // none, fade, zoom (fade + zoom), slide-up — modal/theater only
+            'entrance_effect' => 'zoom',    // none, fade, zoom (fade + zoom), slide-up — modal/theater only. Popups with no saved choice get zoom.
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
             'close_color' => '#ffffff',     // close icon color
@@ -766,7 +766,7 @@ class Anchor_Universal_Popups_Module {
               <option value="zoom" <?php selected($m['entrance_effect'], 'zoom'); ?>>Fade and zoom</option>
               <option value="slide-up" <?php selected($m['entrance_effect'], 'slide-up'); ?>>Fade and slide up</option>
             </select>
-            <p class="description">How the popup animates in. It plays in reverse when the popup is closed. Drawers and fly-ins already slide in, so this applies to Modal and Theater only. Visitors who turn off motion in their device settings see it appear instantly.</p>
+            <p class="description">How the popup animates in (Fade and zoom unless you choose otherwise). It plays in reverse when the popup is closed. Drawers and fly-ins already slide in, so this applies to Modal and Theater only. Visitors who turn off motion in their device settings see it appear instantly.</p>
           </div>
 
           <div data-up-show-when-style="flyin-bottom,flyin-bottom-left,flyin-bottom-right">
@@ -1218,7 +1218,7 @@ class Anchor_Universal_Popups_Module {
                 'lock_scroll' => ($m['lock_scroll'] === '0' ? '0' : '1'),
                 'autoplay' => ($m['autoplay'] === '1'),
                 'video_end' => in_array($m['video_end'], ['hold', 'close'], true) ? $m['video_end'] : 'default',
-                'entrance_effect' => in_array($m['entrance_effect'], ['fade', 'zoom', 'slide-up'], true) ? $m['entrance_effect'] : 'none',
+                'entrance_effect' => in_array($m['entrance_effect'], ['none', 'fade', 'zoom', 'slide-up'], true) ? $m['entrance_effect'] : 'zoom',
                 'close_color' => $m['close_color'],
                 'html' => do_shortcode( $m['html'] ), // HTML supports embedded shortcodes
                 'shortcode_content' => $rendered_shortcode, // legacy pre-rendered shortcode content

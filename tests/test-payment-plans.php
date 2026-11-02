@@ -183,20 +183,16 @@ class Test_Payment_Plans extends Anchor_Events_TestCase {
 		$staff->save();
 
 		$d = $labels->invoke( null, $info, $dentist, 750.0, [ 'Dentist' ] );
-		$this->assertStringStartsWith( 'Pay in full: ', $d[''] );
-		$this->assertStringContainsString( '6,545', $d[''] );
-		$this->assertStringContainsString( 'save', $d[''] );
-		$this->assertStringNotContainsString( 'on Dentist', $d[''], 'One ticket: the saving is about this ticket.' );
+		$this->assertSame( 'Pay in full ($750 off)', $d[''], 'One ticket: the saving is about this ticket, no tier names.' );
 
 		$st = $labels->invoke( null, $info, $staff, 0.0 );
-		$this->assertStringContainsString( '2,850', $st[''] );
-		$this->assertStringNotContainsString( 'save', $st[''], 'An opted-out ticket promises no saving.' );
+		$this->assertSame( 'Pay in full', $st[''], 'An opted-out ticket promises no saving.' );
 		$this->assertArrayHasKey( 'k3', $st );
 
 		$generic = $labels->invoke( null, $info, null, 750.0, [ 'Dentist' ] );
 		$this->assertSame( 'Pay in full', $generic[''], 'A saving only some tickets get is not advertised before one is picked.' );
 		$everyone = $labels->invoke( null, $info, null, 750.0 );
-		$this->assertStringContainsString( 'save', $everyone[''] );
+		$this->assertSame( 'Pay in full ($750 off)', $everyone[''] );
 
 		$forced = $labels->invoke( null, [ 'plans' => [ 'k3' => '3 monthly payments' ], 'forced' => true ], $staff, 0.0 );
 		$this->assertArrayNotHasKey( '', $forced, 'A forced plan offers no pay-in-full option.' );

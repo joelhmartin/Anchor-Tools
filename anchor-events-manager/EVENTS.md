@@ -200,8 +200,8 @@ The picker itself comes from ONE method, `Woocommerce::plan_choice( $event_id )`
 `Module::instance()->woocommerce`). With several ticket types it carries each
 ticket's own wording in `data-plan-labels`, and `event-storefront.js` swaps it in
 when the buyer picks a ticket (WooCommerce `found_variation` / `reset_data`, or
-exactly one ticket row with a quantity): "Pay in full: $6,545.00 (save $750.00)"
-for Dentist, "Pay in full: $2,850.00" for an opted-out Staff ticket, and each
+exactly one ticket row with a quantity): "Pay in full ($750 off)" for Dentist,
+plain "Pay in full" for an opted-out Staff ticket, and each
 plan's amount.
 
 ### Attendee questions

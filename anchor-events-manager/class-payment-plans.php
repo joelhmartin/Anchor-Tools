@@ -314,21 +314,20 @@ class Payment_Plans {
     private static function option_labels( array $info, $variation, $discount, array $only = [] ) {
         $options = [];
         if ( ! $info['forced'] ) {
+            // "Pay in full ($750 off)" when this choice saves money, plain "Pay in
+            // full" otherwise. A saving only SOME tickets get is never advertised
+            // generically: the picker says plain "Pay in full" until the buyer
+            // picks a ticket, and that ticket's own wording takes over.
             $full   = \__( 'Pay in full', 'anchor-schema' );
             $saving = (float) $discount;
             if ( $variation ) {
                 $list   = (float) $variation->get_price( 'edit' );
-                $charge = self::one_time_price( $list, $discount );
-                $saving = $list - $charge; // What the buyer actually saves (the charge floors at 0).
-                $full  .= ': ' . self::money( $charge );
-                $only   = []; // One ticket: "save $X" is about this ticket.
+                $saving = $list - self::one_time_price( $list, $discount ); // The charge floors at 0.
+                $only   = []; // One ticket: the saving is about this ticket.
             }
-            // A saving that only SOME tickets get is never advertised generically:
-            // the picker says plain "Pay in full" until the buyer picks a ticket,
-            // and that ticket's own wording (with or without the saving) takes over.
             if ( $saving > 0 && empty( $only ) ) {
-                /* translators: %s: amount saved. */
-                $full .= ' (' . \sprintf( \__( 'save %s', 'anchor-schema' ), self::money( $saving ) ) . ')';
+                /* translators: %s: amount saved, e.g. "$750". */
+                $full .= ' (' . \sprintf( \__( '%s off', 'anchor-schema' ), self::money( $saving, true ) ) . ')';
             }
             $options[''] = $full;
         }
@@ -343,10 +342,11 @@ class Payment_Plans {
     }
 
     /** Plain-text money for a radio label ("$2,431.67"). */
-    private static function money( $amount ) {
+    private static function money( $amount, $trim_whole = false ) {
+        $args = ( $trim_whole && \abs( (float) $amount - \round( (float) $amount ) ) < 0.005 ) ? [ 'decimals' => 0 ] : [];
         return \function_exists( 'wc_price' )
-            ? \html_entity_decode( \wp_strip_all_tags( \wc_price( (float) $amount ) ), ENT_QUOTES, 'UTF-8' )
-            : \number_format_i18n( (float) $amount, 2 );
+            ? \html_entity_decode( \wp_strip_all_tags( \wc_price( (float) $amount, $args ) ), ENT_QUOTES, 'UTF-8' )
+            : \number_format_i18n( (float) $amount, $args ? 0 : 2 );
     }
 
     /**

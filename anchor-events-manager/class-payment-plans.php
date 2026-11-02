@@ -93,6 +93,37 @@ class Payment_Plans {
     }
 
     /**
+     * Which of an event's ticket tiers the pay-in-full discount reaches.
+     *
+     * Returns the discount to advertise and, when it reaches only SOME of the
+     * active tiers, their labels (so "Pay in full" can say "save $750 on
+     * Dentist" instead of promising every ticket the saving). No eligible
+     * tier at all → discount 0.
+     *
+     * @param array $tiers    Ticket_Types rows.
+     * @param float $discount The event's pay-in-full discount.
+     * @return array{discount:float,only:string[]}
+     */
+    public static function scope( array $tiers, $discount ) {
+        $discount = \max( 0.0, (float) $discount );
+        $active   = 0;
+        $only     = [];
+        foreach ( $tiers as $tier ) {
+            if ( ! \is_array( $tier ) || empty( $tier['active'] ) ) {
+                continue;
+            }
+            $active++;
+            if ( Ticket_Types::gets_pay_in_full( $tier ) ) {
+                $only[] = (string) ( $tier['label'] ?? '' );
+            }
+        }
+        if ( $discount <= 0 || ( $active > 0 && empty( $only ) ) ) {
+            return [ 'discount' => 0.0, 'only' => [] ];
+        }
+        return [ 'discount' => $discount, 'only' => \count( $only ) < $active ? $only : [] ];
+    }
+
+    /**
      * Price of a seat bought outright.
      *
      * @param float $price    Ticket (plan-total) price.
@@ -130,7 +161,8 @@ class Payment_Plans {
      * more than once per request), so the discount is never applied twice.
      *
      * @param \WC_Cart  $cart
-     * @param callable  $discount_for Event id → discount.
+     * @param callable  $discount_for ( event id, variation id ) → discount; the
+     *                                variation lets a tier opt out.
      */
     public static function apply_cart_discounts( $cart, callable $discount_for ) {
         if ( ! \is_object( $cart ) || ! \method_exists( $cart, 'get_cart' ) ) {
@@ -141,7 +173,7 @@ class Payment_Plans {
             if ( $event_id <= 0 || empty( $item['data'] ) || ! self::is_one_time_line( $item ) ) {
                 continue;
             }
-            $discount = (float) $discount_for( $event_id );
+            $discount = (float) $discount_for( $event_id, ! empty( $item['variation_id'] ) ? (int) $item['variation_id'] : 0 );
             if ( $discount <= 0 ) {
                 continue;
             }
@@ -226,9 +258,11 @@ class Payment_Plans {
      * @param float $discount     Pay-in-full discount per seat.
      * @param int   $variation_id When the event sells ONE ticket type: its
      *                            variation, so each option can state its amount.
+     * @param string[] $only      Tier labels the saving is limited to (from
+     *                            scope()); empty = every ticket.
      * @return string
      */
-    public static function render( $product_id, $discount = 0.0, $variation_id = 0 ) {
+    public static function render( $product_id, $discount = 0.0, $variation_id = 0, array $only = [] ) {
         $info = self::for_product( $product_id );
         if ( empty( $info['plans'] ) ) {
             return '';
@@ -245,7 +279,10 @@ class Payment_Plans {
                 $saving = $list - $charge; // What the buyer actually saves (the charge floors at 0).
                 $full  .= ': ' . self::money( $charge );
             }
-            if ( $saving > 0 ) {
+            if ( $saving > 0 && ! empty( $only ) ) {
+                /* translators: 1: amount saved, 2: ticket names, e.g. "Dentist". */
+                $full .= ' (' . \sprintf( \__( 'save %1$s on %2$s', 'anchor-schema' ), self::money( $saving ), \implode( ', ', $only ) ) . ')';
+            } elseif ( $saving > 0 ) {
                 /* translators: %s: amount saved. */
                 $full .= ' (' . \sprintf( \__( 'save %s', 'anchor-schema' ), self::money( $saving ) ) . ')';
             }

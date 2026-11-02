@@ -3165,6 +3165,7 @@ class Module {
                         <th><?php echo esc_html__( 'Sale start', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Sale end', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Attendance', 'anchor-schema' ); ?></th>
+                        <th title="<?php echo esc_attr__( 'Untick to charge this ticket its full price even when paid in full (the pay-in-full discount below skips it).', 'anchor-schema' ); ?>"><?php echo esc_html__( 'Pay-in-full discount', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Active', 'anchor-schema' ); ?></th>
                         <th aria-hidden="true"></th>
                     </tr>
@@ -3210,6 +3211,7 @@ class Module {
         $sale_end   = $tier['sale_end'] ?? '';
         $active     = $tier ? ! empty( $tier['active'] ) : true;
         $modality   = ( ( $tier['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person';
+        $pif        = Ticket_Types::gets_pay_in_full( $tier );
 
         \ob_start();
         ?>
@@ -3238,6 +3240,10 @@ class Module {
                     <option value="in_person" <?php selected( $modality, 'in_person' ); ?>><?php echo esc_html__( 'In person', 'anchor-schema' ); ?></option>
                     <option value="virtual" <?php selected( $modality, 'virtual' ); ?>><?php echo esc_html__( 'Livestream', 'anchor-schema' ); ?></option>
                 </select>
+            </td>
+            <td class="anchor-ticket-pif-cell">
+                <input type="hidden" name="<?php echo esc_attr( $base . '[pay_in_full]' ); ?>" value="0" />
+                <input type="checkbox" name="<?php echo esc_attr( $base . '[pay_in_full]' ); ?>" value="1" <?php checked( $pif ); ?> class="anchor-ticket-pif" aria-label="<?php echo esc_attr__( 'Pay-in-full discount', 'anchor-schema' ); ?>" />
             </td>
             <td class="anchor-ticket-active-cell">
                 <input type="checkbox" name="<?php echo esc_attr( $base . '[active]' ); ?>" value="1" <?php checked( $active ); ?> class="anchor-ticket-active" />

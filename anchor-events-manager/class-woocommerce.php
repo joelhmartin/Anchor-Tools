@@ -957,10 +957,12 @@ class WooCommerce {
             $only_variation = ( 1 === \count( $paid_active ) )
                 ? (int) $this->module->product_sync->variation_for_tier( $event_id, (string) $paid_active[0]['id'] )
                 : 0;
-            $out .= Payment_Plans::render(
+            $scope = Payment_Plans::scope( $paid_active, $this->pay_in_full_discount( $event_id ) );
+            $out  .= Payment_Plans::render(
                 (int) $this->module->product_sync->managed_product_id( $event_id ),
-                $this->pay_in_full_discount( $event_id ),
-                $only_variation
+                $scope['discount'],
+                $only_variation,
+                $scope['only']
             );
             $out .= '<div class="anchor-event-tickets-actions">';
             $out .= '<button type="button" class="anchor-event-button anchor-event-register" data-add-to-cart>'
@@ -1017,13 +1019,23 @@ class WooCommerce {
     }
 
     /**
-     * Public adapter for apply_pay_in_full_discounts().
+     * Public adapter for apply_pay_in_full_discounts(): the event's discount,
+     * or 0 when the line's ticket tier has its pay-in-full box unticked.
      *
      * @param int $event_id
+     * @param int $variation_id The cart line's variation (0 = unknown).
      * @return float
      */
-    public function pay_in_full_discount_for( $event_id ) {
-        return $this->pay_in_full_discount( (int) $event_id );
+    public function pay_in_full_discount_for( $event_id, $variation_id = 0 ) {
+        $discount = $this->pay_in_full_discount( (int) $event_id );
+        if ( $discount > 0 && (int) $variation_id > 0 && $this->module->product_sync ) {
+            $tier_id = (string) $this->module->product_sync->tier_for_variation( (int) $variation_id )['tier_id'];
+            $tier    = '' !== $tier_id ? $this->module->ticket_types->find( (int) $event_id, $tier_id ) : null;
+            if ( $tier && ! Ticket_Types::gets_pay_in_full( $tier ) ) {
+                return 0.0;
+            }
+        }
+        return $discount;
     }
 
     /**

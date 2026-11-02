@@ -172,6 +172,7 @@ class Ticket_Types {
                 'active'          => $active,
                 'wc_variation_id' => $wc_variation_id,
                 'modality'        => $this->clamp_modality( $row ),
+                'pay_in_full'     => self::gets_pay_in_full( $row ),
             ];
 
             $clean[] = $tier;
@@ -311,6 +312,7 @@ class Ticket_Types {
             'active'          => true,
             'wc_variation_id' => 0,
             'modality'        => 'in_person',
+            'pay_in_full'     => true,
         ];
     }
 
@@ -344,7 +346,24 @@ class Ticket_Types {
             'active'          => ! empty( $row['active'] ),
             'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
             'modality'        => $this->clamp_modality( $row ),
+            'pay_in_full'     => self::gets_pay_in_full( $row ),
         ];
+    }
+
+    /**
+     * Whether a tier takes the event's pay-in-full discount (Payment_Plans).
+     *
+     * On unless the row says otherwise: every tier stored before the flag
+     * existed, and every programmatic caller that omits it, keeps the meaning
+     * it always had (the discount applied to every ticket). The admin row
+     * posts a hidden "0" ahead of its checkbox, so an unticked box arrives
+     * as an explicit "0" rather than a missing key.
+     *
+     * @param array|null $row Tier row (raw or normalized).
+     * @return bool
+     */
+    public static function gets_pay_in_full( $row ) {
+        return ! \is_array( $row ) || ! \array_key_exists( 'pay_in_full', $row ) || ! empty( $row['pay_in_full'] );
     }
 
     /**

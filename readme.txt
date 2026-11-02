@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.44.12
+Stable tag: 3.44.13
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.44.13 =
+* Events: the "Pay in full / monthly payments" choice follows the ticket the buyer picks. A ticket that gets the pay-in-full saving shows "Pay in full ($750 off)"; any other ticket, or no single ticket picked yet, shows plain "Pay in full". Each plan option shows the picked ticket's monthly amount. Works in the event registration form and in WooCommerce product forms that use Woocommerce::plan_choice().
 
 = 3.44.12 =
 * Popups: "Fade and zoom" is now the default entrance effect for Modal and Theater popups. Any popup without a saved choice (every popup created before 3.44.10) gets it. To keep a popup appearing instantly, set its Entrance effect to None.

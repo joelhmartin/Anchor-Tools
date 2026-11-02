@@ -192,8 +192,17 @@ unticked (tier key `pay_in_full`, default on; rows saved before the key existed
 read as on). The cart (`Woocommerce::pay_in_full_discount_for( $event_id,
 $variation_id )`) charges an unticked tier its full price. `Payment_Plans::scope(
 $tiers, $discount )` returns the amount to advertise and, when only some tiers
-qualify, their labels, which `Payment_Plans::render()` prints as "save $750 on
-Dentist". Themes that draw their own plan picker should pass both through.
+qualify, their labels; `Payment_Plans::render()` then prints a plain "Pay in full"
+(no saving) until the buyer picks a ticket.
+
+The picker itself comes from ONE method, `Woocommerce::plan_choice( $event_id )`
+(the registration form uses it; a theme product form should call it too, via
+`Module::instance()->woocommerce`). With several ticket types it carries each
+ticket's own wording in `data-plan-labels`, and `event-storefront.js` swaps it in
+when the buyer picks a ticket (WooCommerce `found_variation` / `reset_data`, or
+exactly one ticket row with a quantity): "Pay in full ($750 off)" for Dentist,
+plain "Pay in full" for an opted-out Staff ticket, and each
+plan's amount.
 
 ### Attendee questions
 

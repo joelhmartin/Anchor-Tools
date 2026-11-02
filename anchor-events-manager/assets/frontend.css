@@ -2167,6 +2167,10 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
   gap:8px;
   cursor:pointer;
 }
+/* The option's wording; event-storefront.js swaps it per chosen ticket. */
+.anchor-event-plan-text{
+  min-width:0;
+}
 
 .anchor-event-cart-msg{
   margin-top:8px;

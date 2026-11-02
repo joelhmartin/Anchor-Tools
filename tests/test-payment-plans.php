@@ -168,4 +168,33 @@ class Test_Payment_Plans extends Anchor_Events_TestCase {
 		$this->assertSame( 750.0, $wc->pay_in_full_discount_for( $event ), 'No variation known: the event amount.' );
 	}
 
+	/** Per-ticket wording: a ticket's own price, the saving only where it applies. */
+	public function test_option_labels_per_ticket() {
+		$this->require_wc();
+		$labels = new ReflectionMethod( Payment_Plans::class, 'option_labels' );
+		$labels->setAccessible( true );
+		$info = [ 'plans' => [ 'k3' => '3 monthly payments' ], 'forced' => false ];
+
+		$dentist = new WC_Product_Simple();
+		$dentist->set_regular_price( '7295' );
+		$dentist->save();
+		$staff = new WC_Product_Simple();
+		$staff->set_regular_price( '2850' );
+		$staff->save();
+
+		$d = $labels->invoke( null, $info, $dentist, 750.0, [ 'Dentist' ] );
+		$this->assertSame( 'Pay in full ($750 off)', $d[''], 'One ticket: the saving is about this ticket, no tier names.' );
+
+		$st = $labels->invoke( null, $info, $staff, 0.0 );
+		$this->assertSame( 'Pay in full', $st[''], 'An opted-out ticket promises no saving.' );
+		$this->assertArrayHasKey( 'k3', $st );
+
+		$generic = $labels->invoke( null, $info, null, 750.0, [ 'Dentist' ] );
+		$this->assertSame( 'Pay in full', $generic[''], 'A saving only some tickets get is not advertised before one is picked.' );
+		$everyone = $labels->invoke( null, $info, null, 750.0 );
+		$this->assertSame( 'Pay in full ($750 off)', $everyone[''] );
+
+		$forced = $labels->invoke( null, [ 'plans' => [ 'k3' => '3 monthly payments' ], 'forced' => true ], $staff, 0.0 );
+		$this->assertArrayNotHasKey( '', $forced, 'A forced plan offers no pay-in-full option.' );
+	}
 }

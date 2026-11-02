@@ -600,3 +600,33 @@ html.up-scroll-lock body {
   opacity: 0;
   transition: opacity var(--up-end-fade, 600ms) ease;
 }
+
+/* Entrance effect (frontend.js revealModal / closeModal). The modal starts in
+   .up-modal--pre and transitions out of it; closing transitions back. Uses the
+   individual scale/translate properties so the dialog's centring transform
+   (translateY(-50%)) is left alone. */
+.up-modal[class*="up-enter-"] .up-modal__backdrop,
+.up-modal[class*="up-enter-"] .up-modal__dialog,
+.up-modal[class*="up-enter-"] .up-content-wrap {
+  transition: opacity .32s ease, scale .32s cubic-bezier(.22, .61, .36, 1), translate .32s cubic-bezier(.22, .61, .36, 1);
+}
+.up-modal[class*="up-enter-"].up-modal--pre .up-modal__backdrop,
+.up-modal[class*="up-enter-"].up-modal--pre .up-modal__dialog,
+.up-modal[class*="up-enter-"].up-modal--pre .up-content-wrap {
+  opacity: 0;
+}
+.up-modal.up-enter-zoom.up-modal--pre .up-modal__dialog,
+.up-modal.up-enter-zoom.up-modal--pre .up-content-wrap {
+  scale: .94;
+}
+.up-modal.up-enter-slide-up.up-modal--pre .up-modal__dialog,
+.up-modal.up-enter-slide-up.up-modal--pre .up-content-wrap {
+  translate: 0 28px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .up-modal[class*="up-enter-"] .up-modal__backdrop,
+  .up-modal[class*="up-enter-"] .up-modal__dialog,
+  .up-modal[class*="up-enter-"] .up-content-wrap {
+    transition: none;
+  }
+}

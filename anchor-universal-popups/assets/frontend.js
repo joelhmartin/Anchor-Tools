@@ -278,8 +278,7 @@
   }
 
   function fadeOutAndClose(modal){
-    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if(reduce){ closeModal(modal); return; }
+    if(prefersReducedMotion()){ closeModal(modal); return; }
     modal.classList.add('up-modal--ending');
     modal.style.setProperty('--up-end-fade', END_FADE_MS + 'ms');
     setTimeout(function(){
@@ -423,12 +422,36 @@
     window.addEventListener('scroll', onFirstScroll, { passive: true });
   }
 
-  // Reveal a standard (non-fullscreen) modal: just unhide and focus the close.
+  // ── Entrance effect (modal / theater) ──────────────────────────────────
+  // The modal carries .up-enter-<effect>; .up-modal--pre is the "not yet in"
+  // state the CSS transitions from (and back to, on close).
+  var EXIT_MS = 280;
+
+  function prefersReducedMotion(){
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  function hasEntrance(modal){
+    return !!modal._entrance && !prefersReducedMotion();
+  }
+
+  // Reveal a standard (non-fullscreen) modal: unhide (animating in when an
+  // entrance effect is set) and focus the close.
   function revealModal(modal){
     modal._openedAt = nowTs();
     modal._closing = false;
     if(modal._closeTimer){ clearTimeout(modal._closeTimer); modal._closeTimer = null; }
-    modal.hidden = false;
+    // Reopened mid-exit: cancel the pending hide and animate back in.
+    if(modal._exitTimer){ clearTimeout(modal._exitTimer); modal._exitTimer = null; }
+    modal._exiting = false;
+    if(hasEntrance(modal)){
+      modal.classList.add('up-modal--pre');
+      modal.hidden = false;
+      void modal.offsetWidth; // commit the start state so the transition runs
+      modal.classList.remove('up-modal--pre');
+    } else {
+      modal.hidden = false;
+    }
     if(modal._lockScroll){ lockScroll(modal); }
     var closeBtn = modal.querySelector('.up-modal__close');
     if(closeBtn){ closeBtn.focus(); }
@@ -569,8 +592,26 @@
       collapseTakeover(modal);
       return;
     }
-    if(modal._closing) return;
+    if(modal._closing || modal._exiting) return;
 
+    // Entrance effect: play it in reverse, then hide. Skipped when the
+    // video-end fade already took the popup out of view.
+    if(hasEntrance(modal) && !modal.classList.contains('up-modal--ending')){
+      modal._exiting = true;
+      modal.classList.add('up-modal--pre');
+      modal._exitTimer = setTimeout(function(){
+        modal._exitTimer = null;
+        modal._exiting = false;
+        modal.classList.remove('up-modal--pre');
+        finishClose(modal);
+      }, EXIT_MS);
+      return;
+    }
+    finishClose(modal);
+  }
+
+  // Stop playback, clear under-content and hide.
+  function finishClose(modal){
     // Stop playback / clear under-content, re-arming the preload if present.
     var f = modal.querySelector('[data-frame]');
     if(f){
@@ -657,6 +698,12 @@
     if (popupStyle === 'theater') {
       if (sn.theater_max_width) modal.style.setProperty('--up-theater-max-width', sn.theater_max_width);
       if (sn.theater_max_height) modal.style.setProperty('--up-theater-max-height', sn.theater_max_height);
+    }
+    var entrance = sn.entrance_effect;
+    if ((popupStyle === 'modal' || popupStyle === 'theater') &&
+        (entrance === 'fade' || entrance === 'zoom' || entrance === 'slide-up')) {
+      modal._entrance = entrance;
+      modal.classList.add('up-enter-' + entrance);
     }
     if (popupStyle.indexOf('flyin') === 0 && sn.flyin_max_width) {
       modal.style.setProperty('--up-flyin-max-width', sn.flyin_max_width);

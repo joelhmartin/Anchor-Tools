@@ -236,6 +236,7 @@ class Anchor_Universal_Popups_Module {
             'lock_scroll' => '1',           // 0 or 1 — freeze the page behind screen-covering popups
             'autoplay' => '0',              // 0 or 1 for video popups
             'video_end' => 'default',       // default (player's end screen), hold (stay on the last frame), close (fade out + close)
+            'entrance_effect' => 'none',    // none, fade, zoom (fade + zoom), slide-up — modal/theater only
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
             'close_color' => '#ffffff',     // close icon color
@@ -757,6 +758,17 @@ class Anchor_Universal_Popups_Module {
             <p class="description">Leave blank for default (90%).</p>
           </div>
 
+          <div data-up-show-when-style="modal,theater">
+            <label>Entrance effect</label>
+            <select name="up_entrance_effect">
+              <option value="none" <?php selected($m['entrance_effect'], 'none'); ?>>None &mdash; appear instantly</option>
+              <option value="fade" <?php selected($m['entrance_effect'], 'fade'); ?>>Fade in</option>
+              <option value="zoom" <?php selected($m['entrance_effect'], 'zoom'); ?>>Fade and zoom</option>
+              <option value="slide-up" <?php selected($m['entrance_effect'], 'slide-up'); ?>>Fade and slide up</option>
+            </select>
+            <p class="description">How the popup animates in. It plays in reverse when the popup is closed. Drawers and fly-ins already slide in, so this applies to Modal and Theater only. Visitors who turn off motion in their device settings see it appear instantly.</p>
+          </div>
+
           <div data-up-show-when-style="flyin-bottom,flyin-bottom-left,flyin-bottom-right">
             <label>Fly-in Max Width</label>
             <input type="text" name="up_flyin_max_width" value="<?php echo esc_attr($m['flyin_max_width']); ?>" placeholder="e.g. 420px or 30%" />
@@ -966,7 +978,7 @@ class Anchor_Universal_Popups_Module {
             'mode','video_url','video_id','aspect_ratio','thumb_size','custom_thumb',
             'tile_style','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
-            'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','lock_scroll','autoplay','video_end','close_color',
+            'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','lock_scroll','autoplay','video_end','entrance_effect','close_color',
             'html','css','js',
             'trigger_type','trigger_value','delay_ms',
             'scroll_mode','scroll_percent','scroll_target',
@@ -1206,6 +1218,7 @@ class Anchor_Universal_Popups_Module {
                 'lock_scroll' => ($m['lock_scroll'] === '0' ? '0' : '1'),
                 'autoplay' => ($m['autoplay'] === '1'),
                 'video_end' => in_array($m['video_end'], ['hold', 'close'], true) ? $m['video_end'] : 'default',
+                'entrance_effect' => in_array($m['entrance_effect'], ['fade', 'zoom', 'slide-up'], true) ? $m['entrance_effect'] : 'none',
                 'close_color' => $m['close_color'],
                 'html' => do_shortcode( $m['html'] ), // HTML supports embedded shortcodes
                 'shortcode_content' => $rendered_shortcode, // legacy pre-rendered shortcode content

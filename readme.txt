@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.44.9
+Stable tag: 3.44.10
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.44.10 =
+* Popups: an "Entrance effect" setting for the Modal and Theater styles: None (default, unchanged), Fade in, Fade and zoom, or Fade and slide up. The same animation plays in reverse when the popup is closed with the X, Esc or the backdrop. Visitors with reduced motion turned on see it appear instantly.
 
 = 3.44.9 =
 * Events: an optional "Display dates" field in Date & Time (both event forms). When set (e.g. "February – June 2027") it is shown instead of the computed dates on the event card, single page, registration date picker and choose-a-date rows; status, sorting, schema, emails and admin keep the real dates. Dates under a main event use the main event's value. Themes can read it with anchor_event_display_dates( $post_id ).

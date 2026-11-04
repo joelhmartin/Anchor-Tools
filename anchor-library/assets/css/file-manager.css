@@ -950,6 +950,7 @@
   z-index: 9998;
 }
 
+.afm__modalPanel:focus { outline: none; }
 .afm__modalPanel {
   position: fixed;
   inset: 50% auto auto 50%;

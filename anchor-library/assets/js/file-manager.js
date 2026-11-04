@@ -16,12 +16,6 @@ jQuery(function ($) {
     const $modalBody = $root.find('[data-afm-modal-body]');
     const $modalTitle = $root.find('.afm__modalTitle');
     const $modalPrimary = $root.find('[data-afm-action="modal-primary"]');
-    const $productDocs = $root.find('[data-afm-product-docs]');
-    const $productSelect = $root.find('[data-afm-product-select]');
-    const $productDocsManage = $root.find('[data-afm-product-docs-manage]');
-    const $productDocsNotice = $root.find('[data-afm-product-docs-notice]');
-    const $productDocUpload = $('<input type="file" accept="*/*" data-afm-doc-upload style="display:none;">');
-    $root.append($productDocUpload);
     const $search = $root.find('[data-afm-search]');
     const $dropzone = $root.find('[data-afm-dropzone]');
     const $content = $root.find('.afm__content');
@@ -33,10 +27,13 @@ jQuery(function ($) {
 
     const productDocsFolderId = Number(AnchorFM.productDocsFolderId || 0);
     let externalModalHandler = null;
+    let loadSeq = 0;
+    let lastFocus = null;
     const state = {
         tab: 'files',
         tree: [],
         currentFolderId: 0,
+        goodFolderId: 0,
         currentCapability: 'view',
         currentList: { folders: [], files: [] },
         selectedFileId: 0,
@@ -72,9 +69,22 @@ jQuery(function ($) {
     const SIDEBAR_MAX = 420;
     let isResizing = false;
 
-    function api(action, data) {
-        return $.post(AnchorFM.ajax, Object.assign({ action, nonce: AnchorFM.nonce }, data || {}));
+    // Every Http::error is HTTP >= 400, so a refusal only ever arrives through
+    // .fail(). Unless the caller passes opts.quiet (it renders its own message),
+    // a failure toasts the server's reason. A 403 with no JSON body is an
+    // expired nonce, not a permission problem.
+    function api(action, data, opts) {
+        opts = opts || {};
+        const req = $.post(AnchorFM.ajax, Object.assign({ action, nonce: AnchorFM.nonce }, data || {}));
+        if (!opts.quiet) {
+            req.fail(xhr => toast(isExpired(xhr)
+                ? 'Your session expired. Reload the page.'
+                : errMessage(xhr, null, opts.fallback || 'Something went wrong')));
+        }
+        return req;
     }
+    function apiErr(action, data, fallback) { return api(action, data, { fallback }); }
+    function isExpired(xhr) { return !!xhr && !xhr.responseJSON && (xhr.status === 403 || xhr.responseText === '-1'); }
 
     function esc(s) {
         return String(s)
@@ -147,7 +157,7 @@ jQuery(function ($) {
                         <span class="dashicons dashicons-category afm__treeIcon" aria-hidden="true"></span>
                         <span class="afm__treeLabel">${label}</span>
                     </button>
-                    ${(AnchorFM.isAdmin && !node.isProductDocs) ? `<button type="button" class="afm__kebab afm__kebab--tree" data-afm-folder-menu="${node.id}" aria-label="Folder actions">
+                    ${!node.isProductDocs ? `<button type="button" class="afm__kebab afm__kebab--tree" data-afm-folder-menu="${node.id}" aria-label="Folder actions">
                         <span class="dashicons dashicons-ellipsis" aria-hidden="true"></span>
                     </button>` : ''}
                 </div>
@@ -291,9 +301,13 @@ jQuery(function ($) {
     }
     function setClipboard(items) {
         state.clipboard = { items: items.slice() };
-        if (typeof toast === 'function') {
-            toast(items.length + ' item' + (items.length === 1 ? '' : 's') + ' copied');
-        }
+        toast(items.length + ' item' + (items.length === 1 ? '' : 's') + ' copied');
+    }
+    // C9: drop clipboard entries that a delete or move just took away.
+    function forgetClipboard(items) {
+        if (!state.clipboard) return;
+        const gone = new Set((items || []).map(i => rowKey(i.kind, i.id)));
+        state.clipboard.items = clipboardItems().filter(i => !gone.has(rowKey(i.kind, i.id)));
     }
     function selectionAsItems() {
         return Array.from(state.selectedRows).map(function (k) {
@@ -307,44 +321,17 @@ jQuery(function ($) {
         return api('anchor_fm_copy_items', {
             items: JSON.stringify(items),
             target_folder_id: targetFolderId
-        }).done(function (res) {
-            if (res && res.success) {
-                const d = res.data || {};
-                let msg = (d.copied || 0) + ' copied';
-                if (d.errors) { msg += ', ' + d.errors + ' failed'; }
-                if (typeof toast === 'function') toast(msg);
-                bootstrap();
-                loadFolder(state.currentFolderId);
-            } else {
-                const m = res && res.data && res.data.message;
-                if (typeof toast === 'function') toast(m || 'Copy failed');
+        }, { fallback: 'Copy failed' }).done(function (res) {
+            const d = (res && res.data) || {};
+            let msg = (d.copied || 0) + ' copied';
+            if (d.errors) {
+                const bad = (d.items || []).find(i => i.status === 'error' && i.message);
+                msg += ', ' + d.errors + ' failed' + (bad ? ': ' + bad.message : '');
             }
-        }).fail(function (xhr) {
-            if (typeof toast === 'function') toast(errMessage(xhr, null, 'Copy failed'));
+            toast(msg);
+            bootstrap({ stay: true });
         }).always(function () { $root.removeClass('afm--busy'); });
     }
-
-    $(document).on('keydown', function (e) {
-        if (!AnchorFM.isAdmin) return;
-        if (!(e.ctrlKey || e.metaKey)) return;
-        // Don't hijack typing or shortcuts while a field/modal is focused.
-        const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
-        if (tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable)) return;
-        if ($root.find('.afm__modal').is(':visible')) return;
-        if (!$root.is(':visible')) return;
-
-        const key = String(e.key || '').toLowerCase();
-        if (key === 'c') {
-            const items = selectionAsItems();
-            if (items.length) { e.preventDefault(); setClipboard(items); }
-        } else if (key === 'v') {
-            const items = clipboardItems();
-            if (items.length) { e.preventDefault(); copyItems(items, state.currentFolderId); }
-        } else if (key === 'd') {
-            const items = selectionAsItems();
-            if (items.length) { e.preventDefault(); copyItems(items, state.currentFolderId); }
-        }
-    });
 
     function rowIcon(item) {
         if (item.kind === 'folder') return 'category';
@@ -507,8 +494,15 @@ jQuery(function ($) {
     }
 
     function openModal() {
+        if ($modal.prop('hidden')) lastFocus = document.activeElement;
         $modal.prop('hidden', false);
         $root.addClass('afm--modalOpen');
+        // B8: keyboard focus belongs inside the dialog, not on the trigger behind it.
+        window.setTimeout(() => {
+            if ($modal.prop('hidden') || $modal.find(':focus').length) return;
+            const $panel = $modal.find('.afm__modalPanel').attr('tabindex', '-1');
+            if ($panel[0]) $panel[0].focus();
+        }, 0);
     }
 
     function closeModal() {
@@ -522,11 +516,14 @@ jQuery(function ($) {
         state.modalPayload = null;
         externalModalHandler = null;
         $modalBody.html('');
+        $modalPrimary.prop('disabled', false);
         $modal.find('.afm__modalPanel').removeClass('afm__modalPanel--viewer');
         $modal.find('.afm__modalFooter [data-afm-action="modal-primary"]').show();
         $modal.find('.afm__modalFooter [data-afm-action="close-modal"]').text('Cancel');
         $modal.find('.afm__viewerFooter').empty();
         if (typeof stopVideoTracking === 'function') stopVideoTracking();
+        if (lastFocus && document.body.contains(lastFocus) && lastFocus.focus) lastFocus.focus();
+        lastFocus = null;
     }
 
     function setModalPrimary(label, mode, payload) {
@@ -641,8 +638,11 @@ jQuery(function ($) {
         $grid.html('<div class="afm__skeleton afm__skeleton--share"></div>');
         $root.find('[data-afm-panel]').removeClass('is-active');
         $root.find('[data-afm-panel="files"]').addClass('is-active');
-        api('anchor_fm_list', { folder_id: state.currentFolderId }).done(res => {
-            if (!res || !res.success) return;
+        // C3: only the newest navigation may paint; an older response is dropped.
+        const seq = ++loadSeq;
+        api('anchor_fm_list', { folder_id: state.currentFolderId }, { quiet: true }).done(res => {
+            if (seq !== loadSeq || !res || !res.success) return;
+            state.goodFolderId = state.currentFolderId;
             renderBreadcrumbs(res.data.breadcrumbs);
             state.lastBreadcrumbs = res.data.breadcrumbs;
             seedChildCache(res.data.contents);
@@ -656,29 +656,54 @@ jQuery(function ($) {
                 state.deepLinkChecked = true;
                 handleDeepLink();
             }
+        }).fail(xhr => {
+            if (seq !== loadSeq) return;
+            // Keep the user somewhere real: the last folder that loaded stays "current".
+            state.currentFolderId = state.goodFolderId;
+            highlightTreeSelection();
+            renderBreadcrumbs([]);
+            $root.removeClass('afm--canCreateFolder afm--canUpload');
+            $uploadBtn.add($linkBtn).prop('disabled', true);
+            $grid.html(`<div class="afm__empty" data-afm-load-error>
+                <div>${esc(isExpired(xhr) ? 'Your session expired. Reload the page.' : errMessage(xhr, null, 'Could not open that folder.'))}</div>
+                <button type="button" class="afm__btn afm__btn--secondary" data-afm-action="go-home">Back to Home</button>
+            </div>`);
         }).always(() => {
-            $root.removeClass('afm--busy');
+            if (seq === loadSeq) $root.removeClass('afm--busy');
         });
     }
+    $root.on('click', '[data-afm-action="go-home"]', () => loadFolder(0));
 
     function reloadCurrentFolder() {
         loadFolder(state.currentFolderId);
     }
 
-    function bootstrap() {
+    // bootstrap({ stay: true }) rebuilds the tree and reloads the folder the
+    // user is in (Home if it is gone). Every mutation uses it; the bare call is
+    // the first load only (C2).
+    function bootstrap(opts) {
+        const stay = !!(opts && opts.stay);
         $root.addClass('afm--busy');
-        $tree.html('<div class="afm__skeleton afm__skeleton--share"></div>');
-        api('anchor_fm_bootstrap', {}).done(res => {
+        if (!stay) $tree.html('<div class="afm__skeleton afm__skeleton--share"></div>');
+        api('anchor_fm_bootstrap', {}, { quiet: stay }).done(res => {
             if (!res || !res.success) return;
             state.tree = res.data.tree || [];
             rebuildTreeIndex();
             renderTree(state.tree);
-            loadFolder(res.data.defaultFolderId);
+            let target = res.data.defaultFolderId;
+            if (stay) {
+                target = state.currentFolderId;
+                if (target && !Object.prototype.hasOwnProperty.call(state.parentById, target)) target = 0;
+            }
+            loadFolder(target);
             $root.trigger('anchorfm:bootstrapped', {
                 tree: state.tree,
-                defaultFolderId: res.data.defaultFolderId,
+                defaultFolderId: target,
                 productDocsFolderId: AnchorFM.productDocsFolderId || 0
             });
+        }).fail(xhr => {
+            if (stay) return toast(errMessage(xhr, null, 'Could not refresh the folder list.'));
+            $tree.html('<div class="afm__empty">Could not load folders.</div>');
         }).always(() => {
             $root.removeClass('afm--busy');
         });
@@ -730,7 +755,7 @@ jQuery(function ($) {
             .done((res) => {
                 const rejected = res && res.data && res.data.rejected;
                 if (rejected && rejected.length) {
-                    toast('Some files were blocked (type not allowed): ' + rejected.join(', '));
+                    toast('Some files were not uploaded: ' + rejected.map(r => (r && r.name) || r).join(', '));
                 }
                 loadFolder(state.currentFolderId);
                 $root.find('[data-afm-upload-progress]').remove();
@@ -830,12 +855,16 @@ jQuery(function ($) {
         return `<div class="afm__metaRow"><div class="afm__metaKey">${esc(k)}</div><div class="afm__metaVal">${esc(v)}</div></div>`;
     }
 
+    // A refused or vanished item (403/404 with a JSON body) offers the
+    // request-access flow; anything else (expired session, 500) just says so.
+    function denyOrToast(xhr, kind, id, fallback) {
+        if (xhr && xhr.responseJSON && (xhr.status === 403 || xhr.status === 404)) showAccessDenied(kind, id, '');
+        else toast(isExpired(xhr) ? 'Your session expired. Reload the page.' : errMessage(xhr, null, fallback));
+    }
+
     function openFileViewer(fileId) {
-        api('anchor_fm_preview', { file_id: fileId }).then(res => {
-            if (!res || !res.success) {
-                if (typeof showAccessDenied === 'function') showAccessDenied('file', fileId, '');
-                return;
-            }
+        api('anchor_fm_preview', { file_id: fileId }, { quiet: true }).fail(xhr => denyOrToast(xhr, 'file', fileId, 'Could not open that file.')).done(res => {
+            if (!res || !res.success) return;
             const d = res.data, file = d.file, prev = d.preview;
             let body = '<div class="afm__viewer">';
             if (prev.type === 'unavailable') {
@@ -894,8 +923,7 @@ jQuery(function ($) {
         let $vf = $footer.find('.afm__viewerFooter');
         if (!$vf.length) { $vf = $('<div class="afm__viewerFooter"></div>').prependTo($footer); }
         $vf.html(footerHtml || '');
-        $modal.prop('hidden', false);
-        $root.addClass('afm--modalOpen');
+        openModal();
         state.modalMode = 'viewer';
     }
 
@@ -908,8 +936,8 @@ jQuery(function ($) {
         // resolve it by id. The endpoint enforces view permission and answers a
         // forbidden/missing video with a 4xx, which rejects the deferred — so
         // access-denied has to be handled in .fail(), not .done().
-        const denied = () => { if (typeof showAccessDenied === 'function') showAccessDenied('video', videoId, ''); };
-        api('anchor_fm_vimeo_get', { video_id: videoId })
+        const denied = xhr => denyOrToast(xhr, 'video', videoId, 'Could not open that video.');
+        api('anchor_fm_vimeo_get', { video_id: videoId }, { quiet: true })
             .done(res => {
                 if (res && res.success && res.data.video && res.data.video.vimeoId) {
                     const vid = res.data.video;
@@ -1209,7 +1237,7 @@ jQuery(function ($) {
         trackState.segStart = trackState.lastTime;
         trackState.segEnd = trackState.lastTime;
 
-        api('anchor_fm_media_progress', payload);
+        api('anchor_fm_media_progress', payload, { quiet: true });
     }
 
     // Seek to the user's saved position and tell them we did. A silent jump
@@ -1219,7 +1247,7 @@ jQuery(function ($) {
         // startMediaTracking, so trackState is this mount's state) so the
         // async response below can tell whether its mount is still live.
         const token = trackState ? trackState.token : null;
-        api('anchor_fm_media_resume', { source: source, item_id: itemId })
+        api('anchor_fm_media_resume', { source: source, item_id: itemId }, { quiet: true })
             .done(res => {
                 // The modal may have closed (or a different video opened)
                 // while this request was in flight — don't let a stale
@@ -1284,7 +1312,9 @@ jQuery(function ($) {
     }
 
     function loadVideoHistory(source, itemId) {
-        api('anchor_fm_vimeo_history', { source: source, item_id: itemId }).then(res => {
+        api('anchor_fm_vimeo_history', { source: source, item_id: itemId }, { quiet: true }).fail(() => {
+            $modalBody.find('.afm__vhistoryBody').text('Unable to load history.');
+        }).done(res => {
             const $body = $modalBody.find('.afm__vhistoryBody');
             if (!res || !res.success) { $body.text('Unable to load history.'); return; }
             const rows = res.data.history || [];
@@ -1307,16 +1337,17 @@ jQuery(function ($) {
         state.selectedEntity = { entityType, entityId: Number(entityId) };
         $modalBody.html('<div class="afm__skeleton afm__skeleton--share"></div>');
         $modalTitle.text(AnchorFM.i18n.permissions || 'Permissions');
+        // D1: Save stays disabled until the grants have actually loaded, so a
+        // failed load can never be saved back as "no grants at all".
         setModalPrimary('Save', 'save-permissions', null);
+        setModalBusy(true);
         openModal();
 
-        api('anchor_fm_get_permissions', { entity_type: entityType, entity_id: Number(entityId) }).done(res => {
-            if (!res || !res.success) {
-                const msg = res && res.data && res.data.message ? String(res.data.message) : 'Unable to load permissions.';
-                $modalBody.html(`<div class="afm__empty">${esc(msg)}</div>`);
-                setModalPrimary('Close', 'noop-close', null);
-                return;
-            }
+        api('anchor_fm_get_permissions', { entity_type: entityType, entity_id: Number(entityId) }, { quiet: true }).fail(xhr => {
+            $modalBody.html(`<div class="afm__empty">${esc(errMessage(xhr, null, 'Unable to load permissions.'))}</div>`);
+        }).done(res => {
+            if (!res || !res.success) return;
+            setModalBusy(false);
             state.rolesDraft = Array.isArray(res.data.roles) ? res.data.roles.slice() : [];
             state.usersDraft = Array.isArray(res.data.users) ? res.data.users.slice() : [];
             state.policyDraft = normalizePolicyDraft(res.data.policy || { operator: 'any', rules: [] });
@@ -1539,24 +1570,74 @@ jQuery(function ($) {
     }
 
     function savePermissions() {
-        if (!state.selectedEntity) return;
+        if (!state.selectedEntity || !$modalBody.find('[data-afm-perm-policy-op]').length) return;
         const roles = [];
         $modalBody.find('[data-afm-role]').each(function () {
             const $cb = $(this);
             if ($cb.is(':checked')) roles.push(String($cb.data('afm-role')));
         });
         state.policyDraft = readPolicyFromEditor();
-        api('anchor_fm_set_permissions', {
+        setModalBusy(true);
+        apiErr('anchor_fm_set_permissions', {
             entity_type: state.selectedEntity.entityType,
             entity_id: state.selectedEntity.entityId,
             roles,
             users: state.usersDraft,
             policy: JSON.stringify(state.policyDraft),
-        }).done(res => {
-            if (!res || !res.success) { toast(errMessage(null, res, 'Could not save permissions.')); return; }
+        }, 'Could not save permissions.').done(res => {
+            if (!res || !res.success) return;
+            setModalBusy(false);
             closeModal();
-            bootstrap();
-        }).fail(xhr => toast(errMessage(xhr, null, 'Could not save permissions.')));
+            bootstrap({ stay: true });
+        }).fail(() => setModalBusy(false));
+    }
+
+    // One table drives single and bulk deletes: modal payload key, ajax action, POST param.
+    const DELETE_KINDS = {
+        folder: { kind: 'folder', action: 'anchor_fm_delete_folder', key: 'folderId', param: 'folder_id' },
+        file: { kind: 'file', action: 'anchor_fm_delete_file', key: 'fileId', param: 'file_id' },
+        link: { kind: 'link', action: 'anchor_fm_delete_link', key: 'linkId', param: 'link_id' },
+        video: { kind: 'video', action: 'anchor_fm_vimeo_delete', key: 'videoId', param: 'video_id' },
+    };
+
+    // Rows nested under a selected folder (expanded in the list) go with that
+    // folder, so a bulk action must not also address them (E1).
+    function withoutDescendants(items) {
+        const nested = new Set();
+        const walk = (fid, seen) => {
+            if (seen.has(fid)) return;
+            seen.add(fid);
+            (state.expandedRows[fid] || []).forEach(r => {
+                nested.add(rowKey(r.kind, r.id));
+                if (r.kind === 'folder') walk(r.id, seen);
+            });
+        };
+        items.filter(i => i.kind === 'folder').forEach(i => walk(i.id, new Set()));
+        return items.filter(i => !nested.has(rowKey(i.kind, i.id)));
+    }
+
+    async function runBulkDelete(items) {
+        const todo = withoutDescendants(items || []);
+        if (!todo.length) return;
+        setModalBusy(true, 'Deleting…');
+        let done = 0, failed = 0, reason = '';
+        for (const it of todo) {
+            const del = DELETE_KINDS[it.kind];
+            if (!del) continue;
+            try {
+                await api(del.action, { [del.param]: it.id }, { quiet: true });
+                done++;
+            } catch (xhr) {
+                failed++;
+                if (!reason) reason = isExpired(xhr) ? 'Your session expired' : errMessage(xhr, null, 'Could not delete');
+            }
+        }
+        forgetClipboard(items);
+        state.selectedRows.clear();
+        setModalBusy(false, 'Delete');
+        closeModal();
+        toast(done + ' deleted' + (failed ? ', ' + failed + ' failed: ' + reason : ''));
+        bootstrap({ stay: true });
     }
 
     function handleModalPrimary() {
@@ -1574,8 +1655,7 @@ jQuery(function ($) {
             api('anchor_fm_create_folder', { parent_id: state.currentFolderId, name }).done(res => {
                 if (!res || !res.success) return;
                 closeModal();
-                bootstrap();
-                loadFolder(state.currentFolderId);
+                bootstrap({ stay: true });
             });
             return;
         }
@@ -1597,7 +1677,7 @@ jQuery(function ($) {
             api('anchor_fm_rename_folder', { folder_id: folderId, name }).done(res => {
                 if (!res || !res.success) return;
                 closeModal();
-                bootstrap();
+                bootstrap({ stay: true });
             });
             return;
         }
@@ -1613,45 +1693,17 @@ jQuery(function ($) {
             });
             return;
         }
-        if (state.modalMode === 'delete-folder') {
-            const folderId = state.modalPayload && state.modalPayload.folderId ? Number(state.modalPayload.folderId) : 0;
-            if (!folderId) return;
-            api('anchor_fm_delete_folder', { folder_id: folderId }).done(res => {
+        if (state.modalMode === 'bulk-delete') { runBulkDelete(state.modalPayload && state.modalPayload.items); return; }
+        const del = DELETE_KINDS[String(state.modalMode).replace(/^delete-/, '')];
+        if (del && /^delete-/.test(state.modalMode)) {
+            const id = state.modalPayload && state.modalPayload[del.key] ? Number(state.modalPayload[del.key]) : 0;
+            if (!id) return;
+            api(del.action, { [del.param]: id }).done(res => {
                 if (!res || !res.success) return;
-                closeModal();
-                bootstrap();
-                loadFolder(state.currentFolderId);
-            });
-            return;
-        }
-        if (state.modalMode === 'delete-link') {
-            const linkId = state.modalPayload && state.modalPayload.linkId ? Number(state.modalPayload.linkId) : 0;
-            if (!linkId) return;
-            api('anchor_fm_delete_link', { link_id: linkId }).done(res => {
-                if (!res || !res.success) return;
-                closeModal();
-                loadFolder(state.currentFolderId);
-            });
-            return;
-        }
-        if (state.modalMode === 'delete-file') {
-            const fileId = state.modalPayload && state.modalPayload.fileId ? Number(state.modalPayload.fileId) : 0;
-            if (!fileId) return;
-            api('anchor_fm_delete_file', { file_id: fileId }).done(res => {
-                if (!res || !res.success) return;
+                forgetClipboard([{ kind: del.kind, id }]);
                 closeModal();
                 closeDrawer();
-                loadFolder(state.currentFolderId);
-            });
-            return;
-        }
-        if (state.modalMode === 'delete-video') {
-            const videoId = state.modalPayload && state.modalPayload.videoId ? Number(state.modalPayload.videoId) : 0;
-            if (!videoId) return;
-            api('anchor_fm_vimeo_delete', { video_id: videoId }).done(res => {
-                if (!res || !res.success) return;
-                closeModal();
-                loadFolder(state.currentFolderId);
+                if (del.kind === 'folder') bootstrap({ stay: true }); else loadFolder(state.currentFolderId);
             });
             return;
         }
@@ -1826,6 +1878,7 @@ jQuery(function ($) {
                 flashRow(k, vid);
                 return;
             }
+            if (action === 'download') { if (k === 'folder') downloadFolder(vid); else openFileDownload(vid); return; }
             if (action === 'copy-share-link') { if (typeof copyShareLink === 'function') copyShareLink(k, vid); return; }
             if (action === 'copy') { setClipboard([{ kind: k, id: vid }]); return; }
             if (action === 'duplicate') {
@@ -1850,15 +1903,9 @@ jQuery(function ($) {
                 return;
             }
             if (action === 'delete') {
-                if (k === 'folder') {
-                    openConfirmModal({ title: 'Delete folder', primaryLabel: 'Delete', mode: 'delete-folder', payload: { folderId: vid }, message: 'This will permanently delete the folder and all its contents.' });
-                } else if (k === 'file') {
-                    openConfirmModal({ title: 'Delete file', primaryLabel: 'Delete', mode: 'delete-file', payload: { fileId: vid }, message: 'This will permanently delete the file.' });
-                } else if (k === 'link') {
-                    openConfirmModal({ title: 'Delete link', primaryLabel: 'Delete', mode: 'delete-link', payload: { linkId: vid }, message: 'This will remove the link from this folder.' });
-                } else if (k === 'video') {
-                    openConfirmModal({ title: 'Delete video', primaryLabel: 'Delete', mode: 'delete-video', payload: { videoId: vid }, message: 'This will permanently delete the video.' });
-                }
+                const msgs = { folder: 'This will permanently delete the folder and all its contents.', file: 'This will permanently delete the file.', link: 'This will remove the link from this folder.', video: 'This will permanently delete the video.' };
+                const d = DELETE_KINDS[k];
+                if (d) openConfirmModal({ title: 'Delete ' + k, primaryLabel: 'Delete', mode: 'delete-' + k, payload: { [d.key]: vid }, message: msgs[k] });
                 return;
             }
             return;
@@ -1887,8 +1934,7 @@ jQuery(function ($) {
 
         if (action === 'download-folder') {
             const folderId = Number(ctx.folderId || 0);
-            if (!folderId) return;
-            window.location = `${AnchorFM.ajax}?action=anchor_fm_download_folder&folder_id=${folderId}&nonce=${AnchorFM.nonce}`;
+            if (folderId) downloadFolder(folderId);
             return;
         }
 
@@ -1909,10 +1955,7 @@ jQuery(function ($) {
             const folderId = Number(ctx.folderId || 0);
             if (!folderId) return;
             api('anchor_fm_move_folder', { folder_id: folderId, target_folder_id: 0 }).done(res => {
-                if (res && res.success) {
-                    bootstrap();
-                    loadFolder(folderId);
-                }
+                if (res && res.success) bootstrap({ stay: true });
             });
             return;
         }
@@ -1981,7 +2024,9 @@ jQuery(function ($) {
         if (kind === 'video') items.push({ action: 'open-video', icon: 'video-alt3', label: 'Play' });
         if (kind === 'link') items.push({ action: 'open-link', icon: 'admin-links', label: 'Open' });
         items.push({ action: 'show-in-folder', icon: 'category', label: 'Show in enclosing folder' });
-        if (kind === 'file' || kind === 'video') items.push({ action: 'copy-share-link', icon: 'admin-links', label: 'Copy share link' });
+        if (kind === 'file') items.push({ action: 'download', icon: 'download', label: 'Download' });
+        if (kind === 'folder') items.push({ action: 'download', icon: 'download', label: 'Download folder' });
+        if (kind === 'file' || kind === 'video') items.push({ action: 'copy-share-link', icon: 'admin-links', label: 'Copy link' });
         if (AnchorFM.isAdmin) {
             if (kind === 'folder' && clipboardItems().length) {
                 items.push({ action: 'paste-into', icon: 'clipboard', label: 'Paste here' });
@@ -2010,10 +2055,11 @@ jQuery(function ($) {
         openRowMenu(this, $(this).data('afm-row-kind'), $(this).data('afm-row-id'));
     });
 
-    function flashRow(kind, id) {
+    // The target folder may still be loading, so look for the row for a few seconds.
+    function flashRow(kind, id, tries) {
         setTimeout(() => {
             const $r = $grid.find(`[data-afm-row="${kind}:${id}"]`);
-            if (!$r.length) return;
+            if (!$r.length) { if ((tries || 0) < 8) flashRow(kind, id, (tries || 0) + 1); return; }
             $r[0].scrollIntoView({ block: 'center' });
             $r.addClass('is-flash');
             setTimeout(() => $r.removeClass('is-flash'), 1400);
@@ -2192,10 +2238,12 @@ jQuery(function ($) {
 
     function runGlobalSearch(term) {
         const seq = (state.searchSeq = (state.searchSeq || 0) + 1);
-        api('anchor_fm_search', { term: term }).then(res => {
+        api('anchor_fm_search', { term: term }, { quiet: true }).done(res => {
             if (seq !== state.searchSeq) return; // a newer query (or a clear) superseded this response
             if (!res || !res.success) return;
             renderSearchResults(res.data.results || [], res.data.truncated, term);
+        }).fail(xhr => {
+            if (seq === state.searchSeq) $grid.html(`<div class="afm__empty">${esc(errMessage(xhr, null, 'Search failed. Try again.'))}</div>`);
         });
     }
 
@@ -2325,18 +2373,17 @@ jQuery(function ($) {
     }
 
     $root.on('click', '[data-afm-folder-menu]', function () {
-        if (!AnchorFM.isAdmin) return;
         const folderId = Number($(this).data('afm-folder-menu'));
         if (productDocsFolderId && folderId === productDocsFolderId) return;
         closeMenu();
         const parentId = state.parentById ? (state.parentById[folderId] || 0) : 0;
-        const items = [
-            { action: 'rename-folder', label: 'Rename', icon: 'edit' },
-            { action: 'permissions-folder', label: 'Permissions', icon: 'lock' },
-            { action: 'download-folder', label: 'Download', icon: 'download' },
-        ];
-        items.push({ action: 'ungroup-folder', label: 'Move to top', icon: 'admin-site', disabled: parentId === 0 });
-        items.push({ action: 'delete-folder', label: 'Delete', icon: 'trash', danger: true });
+        // Anyone who can see the folder can download it; the rest is admin-only.
+        const items = [{ action: 'download-folder', label: 'Download', icon: 'download' }];
+        if (AnchorFM.isAdmin) {
+            items.unshift({ action: 'rename-folder', label: 'Rename', icon: 'edit' }, { action: 'permissions-folder', label: 'Permissions', icon: 'lock' });
+            items.push({ action: 'ungroup-folder', label: 'Move to top', icon: 'admin-site', disabled: parentId === 0 });
+            items.push({ action: 'delete-folder', label: 'Delete', icon: 'trash', danger: true });
+        }
         openMenu(this, items, { folderId, parentId });
     });
 
@@ -2409,7 +2456,7 @@ jQuery(function ($) {
         });
     }
 
-    function fetchChildren(fid) {
+    function fetchChildren(fid, quiet) {
         if (state.childCache[fid]) return $.Deferred().resolve(state.childCache[fid]).promise();
         if (state.childPending[fid]) return state.childPending[fid];
 
@@ -2420,7 +2467,7 @@ jQuery(function ($) {
         const gen = state.childGeneration;
         const settle = () => { if (gen === state.childGeneration) delete state.childPending[fid]; };
 
-        const req = api('anchor_fm_list', { folder_id: fid }).then(res => {
+        const req = api('anchor_fm_list', { folder_id: fid }, { quiet: !!quiet }).then(res => {
             settle();
             if (!res || !res.success) return null;
             const rows = currentRows(res.data);
@@ -2438,7 +2485,7 @@ jQuery(function ($) {
     function prefetchChildren(fid) {
         if (state.search && state.search.length >= 2) return;
         if (state.childCache[fid] || state.childPending[fid]) return;
-        fetchChildren(fid);
+        fetchChildren(fid, true);
     }
 
     $root.on('mouseenter focus', '[data-afm-row-expand]', function () {
@@ -2469,7 +2516,8 @@ jQuery(function ($) {
         const gen = state.childGeneration;
         fetchChildren(fid).then(rows => {
             $btn.removeClass('is-loading');
-            if (!rows || gen !== state.childGeneration) return;
+            if (gen !== state.childGeneration) return;
+            if (!rows) { toast('Could not open that folder.'); return; }
             state.expandedRows[fid] = rows;
             renderList(state.currentList, state.currentCapability);
         });
@@ -2545,42 +2593,43 @@ jQuery(function ($) {
 
     $root.on('click', '[data-afm-bulk]', function () {
         const op = $(this).data('afm-bulk');
-        const keys = Array.from(state.selectedRows);
         if (op === 'clear') { state.selectedRows.clear(); refreshSelectionUI(); return; }
         if (op === 'copy') { setClipboard(selectionAsItems()); state.selectedRows.clear(); refreshSelectionUI(); return; }
         if (op === 'duplicate') { copyItems(selectionAsItems(), state.currentFolderId); state.selectedRows.clear(); refreshSelectionUI(); return; }
-        if (op === 'download') {
-            // Each download must be its own request; assigning window.location in
-            // a loop only keeps the last. Trigger a separate anchor click per item
-            // (the stream endpoints send Content-Disposition: attachment), and
-            // stagger them so the browser treats them as distinct downloads.
-            keys.forEach((k, i) => {
-                const parts = k.split(':'), kind = parts[0], id = Number(parts[1]);
-                if (kind === 'folder') {
-                    setTimeout(() => triggerDownload(folderDownloadUrl(id)), i * 400);
-                } else if (kind === 'file') {
-                    api('anchor_fm_preview', { file_id: id }).then(res => {
-                        if (res && res.success && res.data.preview && res.data.preview.downloadUrl
-                            && res.data.preview.available !== false) {
-                            triggerDownload(res.data.preview.downloadUrl);
-                        }
-                    });
-                }
-            });
-            return;
-        }
+        if (op === 'download') { bulkDownload(selectionAsItems()); return; }
         if (op === 'delete' && AnchorFM.isAdmin) {
-            if (!window.confirm(`Delete ${keys.length} item(s)? This cannot be undone.`)) return;
-            Promise.all(keys.map(k => {
-                const parts = k.split(':'), kind = parts[0], id = Number(parts[1]);
-                if (kind === 'file') return api('anchor_fm_delete_file', { file_id: id });
-                if (kind === 'folder') return api('anchor_fm_delete_folder', { folder_id: id });
-                if (kind === 'video') return api('anchor_fm_vimeo_delete', { video_id: id });
-                if (kind === 'link') return api('anchor_fm_delete_link', { link_id: id });
-                return Promise.resolve();
-            })).then(() => { state.selectedRows.clear(); reloadCurrentFolder(); });
+            const n = withoutDescendants(selectionAsItems()).length;
+            openConfirmModal({
+                title: 'Delete items',
+                primaryLabel: 'Delete',
+                mode: 'bulk-delete',
+                payload: { items: selectionAsItems() },
+                message: `Delete ${n} item${n === 1 ? '' : 's'}? Folders are deleted with everything inside. This cannot be undone.`,
+            });
         }
     });
+
+    // Each download is its own request (assigning window.location in a loop
+    // keeps only the last), staggered so the browser treats them as distinct.
+    // Anything that cannot be fetched is named in one toast, never skipped silently.
+    async function bulkDownload(items) {
+        const urls = [], skipped = [];
+        for (const it of withoutDescendants(items)) {
+            const name = (findRow(it.kind, it.id) || {}).name || (it.kind + ' ' + it.id);
+            try {
+                if (it.kind === 'folder') {
+                    await api('anchor_fm_download_folder', { folder_id: it.id, check: 1 }, { quiet: true });
+                    urls.push(folderDownloadUrl(it.id));
+                } else if (it.kind === 'file') {
+                    const res = await api('anchor_fm_preview', { file_id: it.id }, { quiet: true });
+                    const prev = res && res.data && res.data.preview;
+                    if (prev && prev.downloadUrl && prev.available !== false) urls.push(prev.downloadUrl); else skipped.push(name);
+                } else skipped.push(name);
+            } catch (e) { skipped.push(name); }
+        }
+        urls.forEach((u, i) => setTimeout(() => triggerDownload(u), i * 400));
+        if (skipped.length) toast('Not downloaded (' + skipped.length + '): ' + skipped.join(', '));
+    }
 
     function triggerDownload(url) {
         const a = document.createElement('a');
@@ -2593,7 +2642,7 @@ jQuery(function ($) {
     }
 
     function openFileDownload(fileId) {
-        api('anchor_fm_preview', { file_id: fileId }).then(res => {
+        api('anchor_fm_preview', { file_id: fileId }, { fallback: 'Could not download that file.' }).then(res => {
             if (!res || !res.success || !res.data.preview || !res.data.preview.downloadUrl) return;
             // Navigating to a stream URL the server cannot satisfy drops the
             // user on a bare browser 404 page with no way back to the file
@@ -2610,8 +2659,11 @@ jQuery(function ($) {
         return `${AnchorFM.ajax}?action=anchor_fm_download_folder&folder_id=${folderId}&nonce=${AnchorFM.nonce}`;
     }
 
+    // Ruling 9: ask first (check=1) so a refusal arrives as a toast instead of
+    // navigating the tab to a raw JSON error page.
     function downloadFolder(folderId) {
-        window.location = folderDownloadUrl(folderId);
+        return api('anchor_fm_download_folder', { folder_id: folderId, check: 1 }, { fallback: 'Could not download that folder.' })
+            .done(res => { if (res && res.success) triggerDownload(folderDownloadUrl(folderId)); });
     }
 
     function findRow(kind, id) {
@@ -2621,42 +2673,6 @@ jQuery(function ($) {
         if (local) return local;
         // Fall back to a row surfaced via global search.
         return (state.searchRowsByKey && state.searchRowsByKey[kind + ':' + id]) || null;
-    }
-
-    $root.on('keydown', function (e) {
-        if ($(e.target).is('input, textarea, [contenteditable]')) return;
-        // state.tab is initialized to 'files' but never updated when another
-        // panel (Users, Account, etc.) or the modal takes focus, so it can't
-        // gate this handler. Guard on the actual DOM location instead: Enter
-        // on a button inside the modal or the Users panel must not fall
-        // through to "open the active/first files-grid row".
-        if ($(e.target).closest('[data-afm-modal], [data-apfm-panel="users"]').length) return;
-        const $rows = $grid.find('.afm__row');
-        if (!$rows.length) return;
-        let idx = $rows.index($grid.find('.afm__row.is-active'));
-        if (e.key === 'ArrowDown') { e.preventDefault(); idx = Math.min($rows.length - 1, idx + 1); focusRowAt($rows, idx); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); idx = Math.max(0, idx - 1); focusRowAt($rows, idx); }
-        else if (e.key === 'ArrowRight') { const $r = $rows.eq(Math.max(0, idx)); if ($r.data('afm-row-kind') === 'folder') $r.find('[data-afm-row-expand]').trigger('click'); }
-        else if (e.key === 'ArrowLeft') { const $r = $rows.eq(Math.max(0, idx)); const fid = Number($r.data('afm-row-id')); if (state.expandedRows[fid]) { delete state.expandedRows[fid]; renderList(state.currentList, state.currentCapability); } }
-        else if (e.key === 'Enter') { const $r = $rows.eq(Math.max(0, idx)); openRowDefault($r); }
-        else if (e.key === ' ') { e.preventDefault(); const $r = $rows.eq(Math.max(0, idx)); previewRow($r); }
-        else if (e.key === 'Escape') { if (typeof closeMenu === 'function') closeMenu(); if (!$modal.prop('hidden')) closeModal(); }
-    });
-
-    function focusRowAt($rows, idx) {
-        $rows.removeClass('is-active');
-        const $r = $rows.eq(idx).addClass('is-active');
-        if ($r[0]) $r[0].scrollIntoView({ block: 'nearest' });
-    }
-    function openRowDefault($r) {
-        const kind = $r.data('afm-row-kind'), id = Number($r.data('afm-row-id'));
-        if (kind === 'folder') loadFolder(id);
-        else if (kind === 'file' || kind === 'video') openViewer(kind, id);
-        else if (kind === 'link') { const l = findRow('link', id); if (l && l.url) window.open(l.url, '_blank', 'noopener'); }
-    }
-    function previewRow($r) {
-        const kind = $r.data('afm-row-kind'), id = Number($r.data('afm-row-id'));
-        if (kind === 'file' || kind === 'video') openViewer(kind, id);
     }
 
     function startInlineRename(kind, id) {
@@ -2669,9 +2685,10 @@ jQuery(function ($) {
         $label.hide().after($input);
         $input.trigger('focus').trigger('select');
 
+        let busy = false;
         function commit() {
+            if (busy) return;
             const name = String($input.val() || '').trim();
-            $input.prop('disabled', true);
             if (!name || name === current) { cancel(); return; }
             const action = kind === 'folder' ? 'anchor_fm_rename_folder'
                 : kind === 'video' ? 'anchor_fm_vimeo_update'
@@ -2681,8 +2698,15 @@ jQuery(function ($) {
             if (kind === 'folder') { data.folder_id = id; data.name = name; }
             if (kind === 'video') { data.video_id = id; data.title = name; }
             if (kind === 'file') { data.file_id = id; data.name = name; }
-            api(action, data).then(res => {
-                if (res && res.success) reloadCurrentFolder(); else cancel();
+            busy = true;
+            $input.prop('disabled', true);
+            api(action, data).done(res => {
+                if (!res || !res.success) { cancel(); return; }
+                if (kind === 'folder') bootstrap({ stay: true }); else reloadCurrentFolder();
+            }).fail(() => {
+                // The server said why (toast); let the user fix the name or Escape out.
+                busy = false;
+                $input.prop('disabled', false).trigger('focus').trigger('select');
             });
         }
         function cancel() { $input.remove(); $label.show(); }
@@ -2692,19 +2716,6 @@ jQuery(function ($) {
         });
         $input.on('blur', commit);
     }
-
-    $root.on('keydown', function (e) {
-        if (e.key === 'F2' && AnchorFM.isAdmin) {
-            const $r = $grid.find('.afm__row.is-active');
-            if ($r.length) startInlineRename($r.data('afm-row-kind'), Number($r.data('afm-row-id')));
-        }
-    });
-    $root.on('dblclick', '[data-afm-row-label]', function (e) {
-        if (!AnchorFM.isAdmin) return;
-        e.stopPropagation();
-        const $r = $(this).closest('[data-afm-row]');
-        startInlineRename($r.data('afm-row-kind'), Number($r.data('afm-row-id')));
-    });
 
     function shareUrlFor(kind, id) {
         const base = window.location.origin + window.location.pathname;
@@ -2732,7 +2743,21 @@ jQuery(function ($) {
         if (!m) return;
         const kind = m[1], id = Number(m[2]);
         if (kind === 'folder') { loadFolder(id); return; }
-        if (kind === 'file' || kind === 'video') openViewer(kind, id);
+        if (kind === 'file' || kind === 'video') { openViewer(kind, id); return; }
+        // C10: a link has no viewer, so take the user to its folder and flash it.
+        const fid = folderOfRow('link', id);
+        if (fid === null) { toast('That link could not be found.'); return; }
+        if (fid !== state.currentFolderId) loadFolder(fid);
+        flashRow('link', id);
+    }
+    $(window).on('hashchange', handleDeepLink);
+
+    // Every folder the user may open is preloaded into childCache, so a row's
+    // folder can be found without another request.
+    function folderOfRow(kind, id) {
+        if (findRow(kind, id)) return state.currentFolderId;
+        const hit = Object.keys(state.childCache).find(fid => state.childCache[fid].some(r => r.kind === kind && r.id === Number(id)));
+        return hit === undefined ? null : Number(hit);
     }
 
     function showAccessDenied(entityType, entityId, label) {
@@ -2755,14 +2780,15 @@ jQuery(function ($) {
             entity_type: $b.data('entity-type'),
             entity_id: $b.data('entity-id'),
             label: $b.data('label') || ''
-        }).then(res => {
+        }, { quiet: true }).fail(xhr => {
+            // The server answers a failed mail send with an error so the user can retry.
+            $modalBody.find('[data-afm-request-notice]').prop('hidden', false).text(errMessage(xhr, null, 'Could not send request. Please try again later.'));
+            $b.prop('disabled', false);
+        }).done(res => {
             const $n = $modalBody.find('[data-afm-request-notice]').prop('hidden', false);
             const d = (res && res.data) || {};
             let msg;
-            if (!res || !res.success) {
-                msg = (d.message) || 'Could not send request. Please try again later.';
-                $b.prop('disabled', false); // allow a retry on failure
-            } else if (d.alreadyHasAccess) {
+            if (d.alreadyHasAccess) {
                 msg = 'You already have access to this item.';
             } else if (d.throttled) {
                 msg = 'You already requested access for this item recently — no new message was sent.';
@@ -2883,7 +2909,7 @@ jQuery(function ($) {
             api('anchor_fm_move_file', { file_id: dragFileId, folder_id: folderId }).done(res => {
                 if (res && res.success) {
                     flashDrop($el);
-                    loadFolder(state.currentFolderId);
+                    bootstrap({ stay: true });
                 }
             });
         } else if (dragFolderId) {
@@ -2891,8 +2917,7 @@ jQuery(function ($) {
             api('anchor_fm_move_folder', { folder_id: dragFolderId, target_folder_id: folderId }).done(res => {
                 if (res && res.success) {
                     flashDrop($el);
-                    bootstrap();
-                    loadFolder(folderId);
+                    bootstrap({ stay: true });
                 }
             });
         }
@@ -2915,7 +2940,7 @@ jQuery(function ($) {
             lastUserResults = [];
             return;
         }
-        api('anchor_fm_user_search', { term }).done(res => {
+        api('anchor_fm_user_search', { term }, { quiet: true }).done(res => {
             if (!res || !res.success) return;
             lastUserResults = res.data.users || [];
             if (!lastUserResults.length) {
@@ -3010,230 +3035,35 @@ jQuery(function ($) {
         }
     });
 
-    // Product docs helpers
-    function loadMyProductDocs() {
-        if (!$productDocs.length) return;
-        $productDocs.html('<div class="afm__skeleton afm__skeleton--share"></div>');
-        api('anchor_pd_my_docs', {}).done(res => {
-            if (!res || !res.success) {
-                $productDocs.html(`<div class="afm__empty">${esc(res && res.data && res.data.message ? res.data.message : 'Unable to load documents.')}</div>`);
-                return;
-            }
-            const docs = res.data.docs || [];
-            if (!docs.length) {
-                $productDocs.html('<div class="afm__empty">No documents available.</div>');
-                return;
-            }
-            // Group by product
-            const byProduct = {};
-            docs.forEach(d => {
-                const key = `${d.productId || d.product || 'Product'}`;
-                if (!byProduct[key]) byProduct[key] = { name: d.product || key, id: d.productId || 0, docs: [] };
-                byProduct[key].docs.push(d);
-            });
-            const cards = Object.values(byProduct).map(group => {
-                const items = group.docs.map(d => `
-                    <span class="afm__pill">
-                        ${esc(d.title)}
-                        ${AnchorFM.isAdmin ? `<button type="button" class="afm__pillClose" data-afm-doc-remove="${d.fileId}" data-afm-doc-product="${group.id}" aria-label="Remove">×</button>` : ''}
-                    </span>
-                `).join('');
-                return `
-                    <div class="afm__card afm__card--stack">
-                        <div class="afm__cardMain">
-                            <div class="afm__cardTitle">${esc(group.name)}</div>
-                            <div class="afm__cardSub">${group.docs.length} document(s)</div>
-                            <div class="afm__pillRow">${items}</div>
-                        </div>
-                    </div>
-                `;
-            });
-            $productDocs.html(cards.join(''));
-        });
+    // B8: Escape closes the topmost layer: an open menu first, then the modal/viewer.
+    function closeTopmost() {
+        if (!$menu.prop('hidden')) { closeMenu(); return true; }
+        if (!$modal.prop('hidden')) { closeModal(); return true; }
+        return false;
     }
-
-    function loadProducts() {
-        if (!AnchorFM.isAdmin || !$productSelect.length) return;
-        $productDocsManage.html('<div class="afm__skeleton afm__skeleton--share"></div>');
-        api('anchor_pd_products', {}).done(res => {
-            if (!res || !res.success) {
-                $productDocsManage.html(`<div class="afm__empty">${esc(res && res.data && res.data.message ? res.data.message : 'Unable to load products.')}</div>`);
-                return;
-            }
-            state.products = res.data.products || [];
-            const options = state.products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-            $productSelect.html(options);
-            if (state.products.length) {
-                const firstId = state.products[0].id;
-                $productSelect.val(firstId);
-                setProductDocsDraft(firstId);
-            } else {
-                $productDocsManage.html('<div class="afm__empty">No products.</div>');
-            }
-        });
-    }
-
-    function setProductDocsDraft(productId) {
-        const product = (state.products || []).find(p => Number(p.id) === Number(productId));
-        state.productDocsDraft = product && product.docs ? product.docs.slice() : [];
-        renderProductDocsManage();
-    }
-
-    function renderProductDocsManage() {
-        if (!AnchorFM.isAdmin || !$productDocsManage.length) return;
-        if (!state.productDocsDraft || !state.productDocsDraft.length) {
-            state.productDocsDraft = [{ title: '', fileId: '', fileName: '', expires: '' }];
-        }
-        const d = state.productDocsDraft[0];
-        const html = `
-            <div class="afm__help">Upload or replace the document for this product. Set an optional expiry date (YYYY-MM-DD).</div>
-            <div class="aap__item afm__formCard">
-                <div class="aap__itemName">
-                    <label>Title</label>
-                    <input type="text" class="afm__input" data-afm-doc-title="0" value="${esc(d.title || '')}">
-                </div>
-                <div class="aap__itemSub">
-                    <label>File</label>
-                    <div class="afm__fieldInline">
-                        <input type="text" class="afm__input" data-afm-doc-file-display="0" value="${esc(d.fileName || (d.fileId ? 'File #' + d.fileId : ''))}" readonly placeholder="Choose a file">
-                        <button type="button" class="afm__btn afm__btn--secondary" data-afm-action="replace-doc" data-afm-doc-idx="0">
-                            <span class="dashicons dashicons-upload" aria-hidden="true"></span>
-                            Upload
-                        </button>
-                    </div>
-                </div>
-                <div class="aap__itemSub">
-                    <label>Expires</label>
-                    <input type="text" class="afm__input" placeholder="YYYY-MM-DD" data-afm-doc-expires="0" value="${esc(d.expires || '')}">
-                </div>
-            </div>
-        `;
-        $productDocsManage.html(html);
-    }
-
-    $productSelect.on('change', function () {
-        const pid = Number($(this).val());
-        setProductDocsDraft(pid);
-    });
-
-    $root.on('click', '[data-afm-action="add-doc"]', function () {
-        state.productDocsDraft.push({ title: '', fileId: '', fileName: '', expires: '' });
-        renderProductDocsManage();
-    });
-    $root.on('click', '[data-afm-action="remove-doc"]', function () {
-        const idx = Number($(this).data('afm-doc-idx'));
-        if (idx >= 0) {
-            state.productDocsDraft.splice(idx, 1);
-            renderProductDocsManage();
-        }
-    });
-    $root.on('input', '[data-afm-doc-title]', function () {
-        const idx = Number($(this).data('afm-doc-title'));
-        if (state.productDocsDraft[idx]) state.productDocsDraft[idx].title = String($(this).val());
-    });
-    $root.on('input', '[data-afm-doc-expires]', function () {
-        const idx = Number($(this).data('afm-doc-expires'));
-        if (state.productDocsDraft[idx]) state.productDocsDraft[idx].expires = String($(this).val());
-    });
-
-    // Upload/replace doc file
-    let replaceIdx = null;
-    $root.on('click', '[data-afm-action="replace-doc"]', function () {
-        replaceIdx = Number($(this).data('afm-doc-idx'));
-        $productDocUpload.val('');
-        $productDocUpload.trigger('click');
-    });
-    $productDocUpload.on('change', function () {
-        const file = this.files && this.files[0];
-        if (!file || replaceIdx === null) return;
-        const pid = Number($productSelect.val());
-        const fd = new FormData();
-        fd.append('action', 'anchor_pd_upload');
-        fd.append('nonce', AnchorFM.nonce);
-        fd.append('product_id', pid);
-        fd.append('file', file, file.name);
-        $productDocsNotice.prop('hidden', true);
-        $.ajax({
-            url: AnchorFM.ajax,
-            method: 'POST',
-            data: fd,
-            processData: false,
-            contentType: false,
-        }).done(res => {
-            if (!res || !res.success) {
-                $productDocsNotice.text(res && res.data && res.data.message ? res.data.message : 'Upload failed.').prop('hidden', false);
-                return;
-            }
-            const info = res.data.file || {};
-            if (!state.productDocsDraft[replaceIdx]) state.productDocsDraft[replaceIdx] = {};
-            state.productDocsDraft[replaceIdx].fileId = info.id;
-            state.productDocsDraft[replaceIdx].fileName = info.name;
-            if (!state.productDocsDraft[replaceIdx].title) {
-                state.productDocsDraft[replaceIdx].title = info.name;
-            }
-            renderProductDocsManage();
-            replaceIdx = null;
-            $productDocUpload.val('');
-        }).fail(() => {
-            $productDocsNotice.text('Upload failed.').prop('hidden', false);
-        });
-    });
-
-    $root.on('click', '[data-afm-action="save-product-docs"]', function () {
-        if (!AnchorFM.isAdmin) return;
-        if (!$productDocsNotice.length) return;
-        $productDocsNotice.prop('hidden', true);
-        const pid = Number($productSelect.val());
-        const docs = state.productDocsDraft.map(d => ({
-            title: d.title || '',
-            fileId: d.fileId || '',
-            fileName: d.fileName || '',
-            expires: d.expires || '',
-        }));
-        api('anchor_pd_save_docs', { product_id: pid, docs }).done(res => {
-            if (!res || !res.success) {
-                $productDocsNotice.text(res && res.data && res.data.message ? res.data.message : 'Unable to save.').prop('hidden', false);
-                return;
-            }
-            $productDocsNotice.text('Saved.').prop('hidden', false);
-            state.productDocsDraft = [{ title: '', fileId: '', fileName: '', expires: '' }];
-            renderProductDocsManage();
-            loadProducts();
-            loadMyProductDocs();
-        }).fail(xhr => {
-            $productDocsNotice.text(errMessage(xhr, null, 'Unable to save.')).prop('hidden', false);
-        });
-    });
-
-    // Remove doc via badge (admin)
-    $root.on('click', '[data-afm-doc-remove]', function () {
-        if (!AnchorFM.isAdmin) return;
-        const fid = Number($(this).data('afm-doc-remove'));
-        const pid = Number($(this).data('afm-doc-product') || 0);
-        if (!pid || !fid) return;
-        const product = (state.products || []).find(p => Number(p.id) === pid);
-        if (!product) return;
-        const newDocs = (product.docs || []).filter(d => Number(d.fileId) !== fid);
-        api('anchor_pd_save_docs', { product_id: pid, docs: newDocs }).done(() => {
-            loadProducts();
-            loadMyProductDocs();
-        }).fail(xhr => toast(errMessage(xhr, null, 'Unable to remove the document.')));
-    });
-
-    $root.on('anchorfm:showProductDocs', function () {
-        if (!AnchorFM.isAdmin || !$productDocs.length) return;
-        $root.find('[data-afm-panel]').removeClass('is-active');
-        $root.find('[data-afm-panel="product-docs"]').addClass('is-active');
-        loadMyProductDocs();
-        loadProducts();
-    });
 
     bootstrap();
+
+    // The one shared context. Sibling scripts (file-manager-keys / -dnd / -move
+    // / -upload / -productdocs) are enqueued after this file and read it; a
+    // helper they need is added here by name, never re-implemented.
+    window.AnchorFMCore = {
+        $root, $content, state, api, apiErr, toast, errMessage, isExpired,
+        loadFolder, reloadCurrentFolder, bootstrap, findRow, selectionAsItems,
+        refreshSelectionUI, openConfirmModal, openModal, closeModal,
+        renderTreeNodeHtml: renderTreeNode, folderName: findFolderName,
+        uploadFiles, flashRow, isAdmin: !!AnchorFM.isAdmin,
+        // used by the keyboard module
+        copyItems, setClipboard, forgetClipboard, clipboardItems, openViewer,
+        startInlineRename, closeTopmost, filesTabActive,
+    };
 
     // Shared UI for sibling scripts (user-manager.js) so they reuse this
     // modal, request helper and toast instead of carrying their own.
     window.AnchorFMUI = {
-        api, esc, toast, errMessage,
+        // Sibling panels render their own failures, so their calls stay quiet by default.
+        api: (action, data, opts) => api(action, data, Object.assign({ quiet: true }, opts)),
+        esc, toast, errMessage,
         modal: {
             open(title, bodyHtml, primaryLabel, onPrimary) {
                 closeModal();

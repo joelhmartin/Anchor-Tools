@@ -87,6 +87,18 @@ class Portal {
 			true
 		);
 
+		// Siblings of file-manager.js: they run on window.AnchorFMCore, so they load after it.
+		foreach (['keys', 'dnd', 'move', 'upload', 'productdocs'] as $part) {
+			$rel = 'anchor-library/assets/js/file-manager-' . $part . '.js';
+			\wp_enqueue_script(
+				'anchor-fm-' . $part,
+				\Anchor_Asset_Loader::url($rel),
+				['jquery', 'anchor-file-manager'],
+				self::asset_ver($rel),
+				true
+			);
+		}
+
 		if (\current_user_can('administrator')) {
 			\wp_enqueue_script(
 				'anchor-fm-user-manager',

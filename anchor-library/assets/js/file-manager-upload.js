@@ -273,7 +273,7 @@
                 let jobs, pre = preRejected || [], unbuilt = 0;
                 if (entries) {
                     const built = await buildFolderJobs(entries, target, job, $p);
-                    jobs = built.jobs; pre = built.rejected; created = built.created; folderMessage = built.message; unbuilt = built.unbuilt;
+                    jobs = built.jobs; pre = pre.concat(built.rejected); created = built.created; folderMessage = built.message; unbuilt = built.unbuilt;
                 } else {
                     jobs = files.map(function (f) { return { file: f, folderId: target }; });
                 }

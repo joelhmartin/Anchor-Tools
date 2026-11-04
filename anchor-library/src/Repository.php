@@ -18,6 +18,8 @@ class Repository {
 
 	/** Search hit ceiling per kind. */
 	private const SEARCH_LIMIT = 200;
+	/** Most candidate rows a search reads per kind before giving up (marks the result truncated). */
+	private const SEARCH_SCAN_CEILING = 5000;
 
 	/** Refusal text for any write aimed at the Product Docs container (it is managed automatically). */
 	public const PD_MANAGED_MESSAGE = 'The Product Docs folder is managed automatically';
@@ -208,9 +210,9 @@ class Repository {
 
 	/**
 	 * Name search across folders, files, links and videos, permission-filtered, up to 200 hits per kind. A term
-	 * shorter than two characters finds nothing. Non-admins read up to five times the cap per kind before the
-	 * permission filter, so unviewable matches cannot crowd out viewable ones; `truncated` means some kind hit its
-	 * cap (or its read window), i.e. more may exist.
+	 * shorter than two characters finds nothing. Candidates are read in batches until the cap of permitted hits is
+	 * met or the rows run out (hard ceiling: SEARCH_SCAN_CEILING rows per kind), so unviewable matches cannot crowd
+	 * out viewable ones; `truncated` means some kind hit its cap or the ceiling, i.e. more may exist.
 	 *
 	 * @return array{results:array,truncated:bool}
 	 */
@@ -224,7 +226,7 @@ class Repository {
 			$like  = '%' . $wpdb->esc_like( $term ) . '%';
 			$pd    = self::product_docs_folder_id();
 			$cap   = self::SEARCH_LIMIT;
-			$fetch = \user_can( $user_id, 'administrator' ) ? $cap + 1 : $cap * 5;
+			$batch = \user_can( $user_id, 'administrator' ) ? $cap + 1 : $cap * 5;
 			$res   = [];
 			$trunc = false;
 
@@ -236,18 +238,31 @@ class Repository {
 				'video'  => [ 'videos', 'id, folder_id, title, vimeo_id, vimeo_hash, thumbnail_url', 'title', '' ],
 			];
 			foreach ( $kinds as $kind => [ $table, $cols, $name_col, $extra ] ) {
-				$rows = (array) $wpdb->get_results( $wpdb->prepare(
-					"SELECT {$cols} FROM " . Schema::table( $table ) . " WHERE {$extra}{$name_col} LIKE %s ORDER BY {$name_col} ASC LIMIT %d",
-					$like, $fetch
-				) );
-				$hits = [];
-				foreach ( $rows as $r ) {
-					$hit = self::search_hit( $kind, $r, $pd, $user_id );
-					if ( $hit ) {
-						$hits[] = $hit;
+				// Page through candidates until the cap is met (plus one, to know more exist), they run out,
+				// or the scan ceiling stops it.
+				$hits    = [];
+				$scanned = 0;
+				while ( \count( $hits ) <= $cap ) {
+					if ( $scanned >= self::SEARCH_SCAN_CEILING ) {
+						$trunc = true;
+						break;
+					}
+					$rows = (array) $wpdb->get_results( $wpdb->prepare(
+						"SELECT {$cols} FROM " . Schema::table( $table ) . " WHERE {$extra}{$name_col} LIKE %s ORDER BY {$name_col} ASC, id ASC LIMIT %d OFFSET %d",
+						$like, $batch, $scanned
+					) );
+					foreach ( $rows as $r ) {
+						$hit = self::search_hit( $kind, $r, $pd, $user_id );
+						if ( $hit ) {
+							$hits[] = $hit;
+						}
+					}
+					$scanned += \count( $rows );
+					if ( \count( $rows ) < $batch ) {
+						break;
 					}
 				}
-				if ( \count( $hits ) > $cap || \count( $rows ) >= $fetch ) {
+				if ( \count( $hits ) > $cap ) {
 					$trunc = true;
 				}
 				$res = \array_merge( $res, \array_slice( $hits, 0, $cap ) );

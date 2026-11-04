@@ -362,7 +362,7 @@ class Folders {
 				if (!\current_user_can('administrator')) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$row = Repository::folder_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
-				if (Repository::is_product_docs((int) $row->parent_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs($id) || Repository::is_product_docs((int) $row->parent_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if ($id === $target || Repository::is_descendant($target, $id)) {
 					$res['message'] = 'Cannot copy a folder into itself or its own subfolder';
 					$errors++; $results[] = $res; continue;
@@ -417,12 +417,12 @@ class Folders {
 		if ( ! $entries ) {
 			Http::error( 'No files to download', 400 );
 		}
+		if ( ! \class_exists( '\\ZipArchive' ) ) {
+			Http::error( 'Zip downloads are not available on this server', 500 );
+		}
 		// check=1 lets the client learn about a refusal as JSON before it navigates the browser to the zip.
 		if ( ! empty( $_REQUEST['check'] ) ) {
 			Http::success( [ 'files' => \count( $entries['files'] ) ] );
-		}
-		if ( ! \class_exists( '\\ZipArchive' ) ) {
-			Http::error( 'Zip downloads are not available on this server', 500 );
 		}
 
 		$tmp = \wp_tempnam( 'anchor-folder-zip' );

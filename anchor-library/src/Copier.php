@@ -39,7 +39,7 @@ class Copier {
 		global $wpdb;
 		$title = \Anchor_FM_Copy_Namer::resolve_unique($link->title, $existing, false, $force_copy);
 		$now = \current_time('mysql');
-		$wpdb->insert(Schema::table('links'), [
+		$ok = $wpdb->insert(Schema::table('links'), [
 			'folder_id'  => (int) $target_folder_id,
 			'title'      => $title,
 			'url'        => $link->url,
@@ -47,6 +47,7 @@ class Copier {
 			'created_at' => $now,
 			'updated_at' => $now,
 		], ['%d','%s','%s','%d','%s','%s']);
+		if (false === $ok) { return 0; }
 		$existing[] = $title;
 		return (int) $wpdb->insert_id;
 	}
@@ -56,7 +57,7 @@ class Copier {
 		global $wpdb;
 		$title = \Anchor_FM_Copy_Namer::resolve_unique($video->title, $existing, false, $force_copy);
 		$now = \current_time('mysql');
-		$wpdb->insert(Schema::table('videos'), [
+		$ok = $wpdb->insert(Schema::table('videos'), [
 			'folder_id'     => (int) $target_folder_id,
 			'vimeo_id'      => $video->vimeo_id,
 			// Carry the privacy hash and thumbnail: a copy without the hash
@@ -68,6 +69,7 @@ class Copier {
 			'created_at'    => $now,
 			'updated_at'    => $now,
 		], ['%d','%s','%s','%s','%s','%d','%s','%s']);
+		if (false === $ok) { return 0; }
 		$existing[] = $title;
 		return (int) $wpdb->insert_id;
 	}

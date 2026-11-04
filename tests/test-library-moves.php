@@ -503,6 +503,45 @@ class Anchor_Library_Moves_Test extends WP_Ajax_UnitTestCase {
 		$this->assertFalse( $res['truncated'] );
 	}
 
+	public function test_search_pages_past_unviewable_candidates_and_flags_ceiling() {
+		global $wpdb;
+		$hidden = $this->folder( 'Hidden' );
+		$shown = $this->folder( 'Shown' );
+		$member = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		$this->grant_user( 'folder', $shown, $member );
+		// 1,100 unviewable matches sort first (more than 5 x the 200 cap), the viewable one last.
+		for ( $c = 0; $c < 11; $c++ ) {
+			$rows = [];
+			for ( $i = 0; $i < 100; $i++ ) {
+				$rows[] = $wpdb->prepare( '(%d, %s, %s, %s, 1, 1, %s)', $hidden, sprintf( 'aaa-page-%04d.txt', $c * 100 + $i ), sprintf( 'p%04d.txt', $c * 100 + $i ), 'text/plain', current_time( 'mysql' ) );
+			}
+			$wpdb->query( 'INSERT INTO ' . Schema::table( 'files' ) . ' (folder_id, original_name, stored_name, mime_type, size, uploader_user_id, created_at) VALUES ' . implode( ',', $rows ) ); // phpcs:ignore
+		}
+		$wpdb->insert( Schema::table( 'files' ), [
+			'folder_id' => $shown, 'original_name' => 'zzz-page.txt', 'stored_name' => 'zp.txt', 'mime_type' => 'text/plain',
+			'size' => 1, 'uploader_user_id' => 1, 'created_at' => current_time( 'mysql' ),
+		] );
+		$res = \Anchor\Library\Repository::search( 'page', $member );
+		$this->assertSame( [ 'zzz-page.txt' ], array_column( $res['results'], 'name' ) );
+		$this->assertFalse( $res['truncated'] );
+	}
+
+	public function test_search_flags_truncated_when_scan_ceiling_stops_it() {
+		global $wpdb;
+		$hidden = $this->folder( 'Hidden' );
+		$member = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		for ( $c = 0; $c < 51; $c++ ) {
+			$rows = [];
+			for ( $i = 0; $i < 100; $i++ ) {
+				$rows[] = $wpdb->prepare( '(%d, %s, %s, %s, 1, 1, %s)', $hidden, sprintf( 'ceil-%04d.txt', $c * 100 + $i ), sprintf( 'c%04d.txt', $c * 100 + $i ), 'text/plain', current_time( 'mysql' ) );
+			}
+			$wpdb->query( 'INSERT INTO ' . Schema::table( 'files' ) . ' (folder_id, original_name, stored_name, mime_type, size, uploader_user_id, created_at) VALUES ' . implode( ',', $rows ) ); // phpcs:ignore
+		}
+		$res = \Anchor\Library\Repository::search( 'ceil', $member );
+		$this->assertSame( [], $res['results'] );
+		$this->assertTrue( $res['truncated'] );
+	}
+
 	// ---- copy / rename --------------------------------------------------------------------------------------
 
 	public function test_copy_folder_tree_counts_child_failures() {
@@ -611,5 +650,14 @@ class Anchor_Library_Moves_Test extends WP_Ajax_UnitTestCase {
 		$this->assertFalse( $into['success'] );
 		$this->assertSame( $msg, $into['data']['message'] );
 		$this->assertSame( 1, (int) $wpdb->get_var( 'SELECT COUNT(1) FROM ' . Schema::table( 'files' ) . " WHERE folder_id = $pd" ) );
+	}
+
+	public function test_product_docs_folder_itself_cannot_be_copied() {
+		$this->_setRole( 'administrator' );
+		$pd = Schema::ensure_product_docs_folder();
+		$other = $this->folder( 'Other' );
+		$cp = $this->call( 'anchor_fm_copy_items', [ 'target_folder_id' => $other, 'items' => wp_json_encode( [ [ 'kind' => 'folder', 'id' => $pd ] ] ) ] );
+		$this->assertSame( 'The Product Docs folder is managed automatically', $cp['data']['items'][0]['message'] );
+		$this->assertSame( 'error', $cp['data']['items'][0]['status'] );
 	}
 }

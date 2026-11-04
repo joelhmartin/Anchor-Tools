@@ -2638,11 +2638,11 @@ jQuery(function ($) {
     }
     $(window).on('hashchange', handleDeepLink);
 
-    // Every folder the user may open is preloaded into childCache, so a row's
-    // folder can be found without another request.
+    // Real parent of a row: top-level list, then expanded folders, then the preloaded childCache.
     function folderOfRow(kind, id) {
-        if (findRow(kind, id)) return state.currentFolderId;
-        const hit = Object.keys(state.childCache).find(fid => state.childCache[fid].some(r => r.kind === kind && r.id === Number(id)));
+        const is = r => r.kind === kind && r.id === Number(id);
+        const ex = currentRows(state.currentList).some(is) ? state.currentFolderId : Object.keys(state.expandedRows).find(fid => state.expandedRows[fid].some(is));
+        const hit = ex !== undefined ? ex : Object.keys(state.childCache).find(fid => state.childCache[fid].some(is));
         return hit === undefined ? null : Number(hit);
     }
 

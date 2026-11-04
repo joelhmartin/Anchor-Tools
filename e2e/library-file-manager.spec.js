@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('@playwright/test');
+const { acceptConsentBanner } = require('./helpers/consent');
 
 /**
  * Anchor Library file manager (admin): drag and drop onto folders / crumbs,
@@ -63,6 +64,7 @@ const toast = (page) => page.locator('.afm__toast');
 /** Open the portal page and wait for the root listing. */
 async function openLibrary(page) {
   await page.goto(SEED.library_page_url);
+  await acceptConsentBanner(page);
   await expect(row(page, 'folder', SEED.library_folder_a)).toBeVisible();
 }
 

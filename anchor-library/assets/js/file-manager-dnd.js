@@ -86,7 +86,7 @@
 
         function itemFrom(kind, id, $row) {
             if (kind === 'folder') return { kind, id, from: state.parentById[id] || 0 };
-            const top = $row && !searching() && Number($row[0].style.getPropertyValue('--afm-depth') || 0) === 0;
+            const top = $row && $row[0] && !searching() && Number($row[0].style.getPropertyValue('--afm-depth') || 0) === 0;
             return { kind, id, from: top ? state.currentFolderId : null };
         }
 

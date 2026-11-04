@@ -17,6 +17,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 class Mover {
 
 	public const KINDS       = [ 'file', 'link', 'video', 'folder' ];
+	public const MAX_ITEMS   = 500;
 	public const TOP_LEVEL   = 'Only folders can go at the top level';
 
 	/**
@@ -67,26 +68,34 @@ class Mover {
 	 * Move a list of {kind, id} items to $target and describe each outcome. Target-level refusals are the caller's
 	 * (see target_error()); everything here is per item, and one failure never stops the rest.
 	 *
-	 * @return array{moved:int,errors:int,items:array,targetFolderId:int}
+	 * @return array{moved:int,errors:int,items:array,targetFolderId:int} Item status is moved, unchanged or error.
 	 */
 	public static function move_items( array $items, int $target, int $user_id ): array {
 		$existing = Copier::gather_existing_names( $target );
 		$results  = [];
 		$moved    = 0;
 		$errors   = 0;
+		$seen     = [];
 		foreach ( $items as $it ) {
 			$kind = \is_array( $it ) && isset( $it['kind'] ) ? \sanitize_key( (string) $it['kind'] ) : '';
 			$id   = \is_array( $it ) && isset( $it['id'] ) ? (int) $it['id'] : 0;
+			if ( $id > 0 && isset( $seen[ $kind . ':' . $id ] ) ) {
+				continue; // The same item twice in one batch is one move.
+			}
+			$seen[ $kind . ':' . $id ] = true;
 			$res  = [ 'kind' => $kind, 'sourceId' => $id, 'fromFolderId' => 0, 'status' => 'error', 'message' => '', 'name' => '' ];
 			$out  = self::move( $kind, $id, $target, $existing, $user_id );
 			if ( \is_wp_error( $out ) ) {
 				$res['message'] = $out->get_error_message();
 				++$errors;
 			} else {
-				$res['status']       = 'moved';
 				$res['fromFolderId'] = $out['fromFolderId'];
 				$res['name']         = $out['name'];
-				++$moved;
+				// Already in the destination: nothing changed, so it is neither counted nor undoable.
+				$res['status'] = ! empty( $out['unchanged'] ) ? 'unchanged' : 'moved';
+				if ( 'moved' === $res['status'] ) {
+					++$moved;
+				}
 			}
 			$results[] = $res;
 		}
@@ -106,7 +115,7 @@ class Mover {
 		}
 		$from = (int) $file->folder_id;
 		if ( $from === $target ) {
-			return [ 'fromFolderId' => $from, 'name' => (string) $file->original_name ];
+			return [ 'fromFolderId' => $from, 'name' => (string) $file->original_name, 'unchanged' => true ];
 		}
 		$current_path = Storage::path_for( $file );
 		if ( ! \file_exists( $current_path ) ) {
@@ -155,7 +164,7 @@ class Mover {
 		}
 		$from = (int) $row->folder_id;
 		if ( $from === $target ) {
-			return [ 'fromFolderId' => $from, 'name' => (string) $row->title ];
+			return [ 'fromFolderId' => $from, 'name' => (string) $row->title, 'unchanged' => true ];
 		}
 		$name = \Anchor_FM_Copy_Namer::resolve_unique( $row->title, $existing, false, false );
 		global $wpdb;
@@ -191,7 +200,7 @@ class Mover {
 		}
 		$from = (int) $folder->parent_id;
 		if ( $from === $target ) {
-			return [ 'fromFolderId' => $from, 'name' => (string) $folder->name ];
+			return [ 'fromFolderId' => $from, 'name' => (string) $folder->name, 'unchanged' => true ];
 		}
 		$name = \Anchor_FM_Copy_Namer::resolve_unique( $folder->name, $existing, false, false );
 		global $wpdb;

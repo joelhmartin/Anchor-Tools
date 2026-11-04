@@ -136,15 +136,12 @@ class Files {
 		$file = Repository::file_row($file_id);
 		if (!$file) Http::error('Not found', 404);
 
-		$path = Storage::path_for($file);
-		if (\file_exists($path)) {
-			@\unlink($path);
-		}
-
 		global $wpdb;
 		$files_table = Schema::table('files');
 		$perms_table = Schema::table('permissions');
-		$wpdb->delete($files_table, ['id' => $file_id], ['%d']);
+		if (false === $wpdb->delete($files_table, ['id' => $file_id], ['%d'])) {
+			Http::error('Could not delete file', 500);
+		}
 		$wpdb->delete($perms_table, ['entity_type' => 'file', 'entity_id' => $file_id], ['%s','%d']);
 		// Uploaded videos accumulate watch history under source='file'.
 		// Without this the rows outlive the file forever, keyed to an id
@@ -157,6 +154,11 @@ class Files {
 
 		Purger::delete_policies('file', [$file_id]);
 		Purger::strip_product_docs([$file_id]);
+		// Rows first: a failed delete above leaves the bytes in place, never a row pointing at nothing.
+		$path = Storage::path_for($file);
+		if (\file_exists($path)) {
+			@\unlink($path);
+		}
 
 		Activity::log('delete_file', 'file', $file_id, ['name' => $file->original_name], $user_id);
 		Http::success(['fileId' => $file_id]);

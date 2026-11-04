@@ -162,10 +162,10 @@ class Copier {
 			if (\is_wp_error(Copier::copy_file_row($f, $new_id, $child_existing, false))) { $failed++; }
 		}
 		foreach ((array) $wpdb->get_results($wpdb->prepare("SELECT * FROM " . Schema::table('links') . " WHERE folder_id = %d", $src_id)) as $l) {
-			Copier::copy_link_row($l, $new_id, $child_existing, false);
+			if (!Copier::copy_link_row($l, $new_id, $child_existing, false)) { $failed++; }
 		}
 		foreach ((array) $wpdb->get_results($wpdb->prepare("SELECT * FROM " . Schema::table('videos') . " WHERE folder_id = %d", $src_id)) as $v) {
-			Copier::copy_video_row($v, $new_id, $child_existing, false);
+			if (!Copier::copy_video_row($v, $new_id, $child_existing, false)) { $failed++; }
 		}
 		return $new_id;
 	}

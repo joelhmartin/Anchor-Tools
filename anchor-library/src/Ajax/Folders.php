@@ -81,7 +81,7 @@ class Folders {
 				: Permissions::folder_capability( $folder_id, $user_id );
 			$payload = [
 				'folderId' => $folder_id,
-				'breadcrumbs' => $folder_id === 0 ? [] : Repository::breadcrumbs( $folder_id ),
+				'breadcrumbs' => $folder_id === 0 ? [] : Repository::visible_breadcrumbs( $folder_id, $user_id ),
 				'folders' => $lists['folders'],
 				'links' => $lists['links'],
 				'files' => $lists['files'],
@@ -299,6 +299,7 @@ class Folders {
 		$target = isset($_POST['target_folder_id']) ? (int) $_POST['target_folder_id'] : 0;
 		$items = \json_decode((string) (isset($_POST['items']) ? \wp_unslash($_POST['items']) : ''), true);
 		if (!\is_array($items) || !$items) Http::error('No items to move');
+		if (\count($items) > Mover::MAX_ITEMS) Http::error('Too many items', 400);
 		if ($err = Mover::target_error($target, $user_id)) Http::error($err[0], $err[1]);
 
 		Http::success(Mover::move_items($items, $target, $user_id));

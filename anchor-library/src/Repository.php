@@ -263,20 +263,20 @@ class Repository {
 				if ( (int) $r->id === $pd || ! Permissions::can_view_folder( (int) $r->id, $user_id ) ) {
 					return null;
 				}
-				return [ 'kind' => 'folder', 'id' => (int) $r->id, 'name' => $r->name, 'folderId' => (int) $r->parent_id, 'path' => self::folder_path_string( (int) $r->parent_id ) ];
+				return [ 'kind' => 'folder', 'id' => (int) $r->id, 'name' => $r->name, 'folderId' => (int) $r->parent_id, 'path' => self::folder_path_string( (int) $r->parent_id, $user_id ) ];
 			case 'file':
 				if ( (int) $r->folder_id === $pd || ! Permissions::can_view_file( (int) $r->id, $user_id ) ) {
 					return null;
 				}
 				return [
 					'kind' => 'file', 'id' => (int) $r->id, 'name' => $r->original_name, 'mime' => $r->mime_type, 'size' => (int) $r->size,
-					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id ),
+					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id, $user_id ),
 				];
 			case 'link':
 				if ( ! Permissions::can_view_link( (int) $r->id, $user_id ) ) {
 					return null;
 				}
-				return [ 'kind' => 'link', 'id' => (int) $r->id, 'name' => $r->title, 'url' => $r->url, 'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id ) ];
+				return [ 'kind' => 'link', 'id' => (int) $r->id, 'name' => $r->title, 'url' => $r->url, 'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id, $user_id ) ];
 			default:
 				if ( ! Permissions::can_view_video( (int) $r->id, $user_id ) ) {
 					return null;
@@ -285,7 +285,7 @@ class Repository {
 					'kind' => 'video', 'id' => (int) $r->id, 'name' => $r->title, 'vimeoId' => $r->vimeo_id,
 					'vimeoHash' => isset( $r->vimeo_hash ) ? (string) $r->vimeo_hash : '',
 					'thumbnailUrl' => isset( $r->thumbnail_url ) ? (string) $r->thumbnail_url : '',
-					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id ),
+					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id, $user_id ),
 				];
 		}
 	}
@@ -332,9 +332,28 @@ class Repository {
 		return false;
 	}
 
-	/** "A › B › C" for a folder id; empty for the root. */
-	public static function folder_path_string( int $folder_id ): string {
-		return $folder_id <= 0 ? '' : \implode( ' › ', \array_column( self::breadcrumbs( $folder_id ), 'name' ) );
+	/**
+	 * The trail a user may see: breadcrumbs() with leading crumbs they cannot view dropped, so a grant on /A/B starts
+	 * the trail at B and never names A. Call inside a memo scope.
+	 */
+	public static function visible_breadcrumbs( int $folder_id, int $user_id ): array {
+		$crumbs = self::breadcrumbs( $folder_id );
+		if ( \user_can( $user_id, 'administrator' ) ) {
+			return $crumbs;
+		}
+		while ( $crumbs && ! Permissions::can_view_folder( (int) $crumbs[0]['id'], $user_id ) ) {
+			\array_shift( $crumbs );
+		}
+		return $crumbs;
+	}
+
+	/** "A › B › C" for a folder id; empty for the root. With a user, only the part of the trail they may view. */
+	public static function folder_path_string( int $folder_id, ?int $user_id = null ): string {
+		if ( $folder_id <= 0 ) {
+			return '';
+		}
+		$crumbs = null === $user_id ? self::breadcrumbs( $folder_id ) : self::visible_breadcrumbs( $folder_id, $user_id );
+		return \implode( ' › ', \array_column( $crumbs, 'name' ) );
 	}
 
 	/** Slugged names along a folder's path (used to name download archives). */

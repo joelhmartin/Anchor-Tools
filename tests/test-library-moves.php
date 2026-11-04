@@ -205,6 +205,32 @@ class Anchor_Library_Moves_Test extends WP_Ajax_UnitTestCase {
 		$this->assertNotSame( 'Guide.pdf', $expected );
 	}
 
+	public function test_move_items_skips_duplicates_and_reports_unchanged() {
+		$a = $this->folder( 'A' );
+		$b = $this->folder( 'B' );
+		$file = $this->stored_file( $a );
+		$here = $this->link( $b );
+		$res = $this->move_items( [
+			[ 'kind' => 'file', 'id' => $file ], [ 'kind' => 'file', 'id' => $file ], [ 'kind' => 'link', 'id' => $here ],
+		], $b );
+		$this->assertSame( 1, $res['data']['moved'] );
+		$this->assertSame( 0, $res['data']['errors'] );
+		$this->assertCount( 2, $res['data']['items'], 'the repeated file is one entry' );
+		$this->assertSame( 'moved', $res['data']['items'][0]['status'] );
+		$this->assertSame( 'unchanged', $res['data']['items'][1]['status'] );
+	}
+
+	public function test_move_items_caps_the_batch() {
+		$b = $this->folder( 'B' );
+		$items = [];
+		for ( $i = 1; $i <= 501; $i++ ) {
+			$items[] = [ 'kind' => 'file', 'id' => $i ];
+		}
+		$res = $this->move_items( $items, $b );
+		$this->assertFalse( $res['success'] );
+		$this->assertSame( 'Too many items', $res['data']['message'] );
+	}
+
 	public function test_move_items_refuses_missing_target() {
 		$a = $this->folder( 'A' );
 		$file = $this->stored_file( $a );
@@ -432,6 +458,17 @@ class Anchor_Library_Moves_Test extends WP_Ajax_UnitTestCase {
 		$res = rest_do_request( $req );
 		$ids = array_map( fn( $f ) => (int) $f['id'], $res->get_data()['folders'] ?? [] );
 		$this->assertSame( [ $b ], $ids );
+
+		// Ruling 5: no trail names A anywhere the member can see.
+		$file = $this->named_file( $b, 'inside.txt' );
+		$crumbs = $this->call( 'anchor_fm_list', [ 'folder_id' => $b ], '' )['data']['breadcrumbs'];
+		$this->assertSame( [ $b ], array_column( $crumbs, 'id' ) );
+		$rest = rest_do_request( new WP_REST_Request( 'GET', '/' . \Anchor\Library\Rest\Routes::NS . '/folders/' . $b ) )->get_data();
+		$this->assertSame( [ $b ], array_map( fn( $c ) => (int) $c['id'], $rest['breadcrumbs'] ) );
+		$hit = \Anchor\Library\Repository::search( 'inside', $member )['results'][0];
+		$this->assertSame( 'B', $hit['path'] );
+		$admin_hit = \Anchor\Library\Repository::search( 'inside', 1 )['results'][0];
+		$this->assertSame( 'A › B', $admin_hit['path'], 'an admin still sees the full path' );
 	}
 
 	public function test_admin_home_and_tree_are_unchanged() {

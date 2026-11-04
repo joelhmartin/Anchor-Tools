@@ -184,17 +184,7 @@
             if (copy) { flash(t.$el); C.copyItems(items, t.id); return; }
             if (isNoop(t.id)) return; // B4: no request
             flash(t.$el);
-            $root.addClass('afm--busy');
-            C.api('anchor_fm_move_items', { items: JSON.stringify(items), target_folder_id: t.id }, { fallback: 'Move failed' })
-                .done(function (res) {
-                    const moved = (((res && res.data) || {}).items || [])
-                        .filter(i => i.status === 'moved').map(i => ({ kind: i.kind, id: i.sourceId }));
-                    C.forgetClipboard(moved);
-                    state.selectedRows.clear();
-                    window.AnchorFMMove.announce(res, t.id);
-                    C.bootstrap({ stay: true });
-                })
-                .always(() => $root.removeClass('afm--busy'));
+            window.AnchorFMMove.run(items, t.id);
         }
 
         $root.on('drop', TARGET, function (e) {

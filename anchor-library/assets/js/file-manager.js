@@ -305,7 +305,7 @@ jQuery(function ($) {
         return (state.clipboard && Array.isArray(state.clipboard.items)) ? state.clipboard.items : [];
     }
     function setClipboard(items) {
-        state.clipboard = { items: items.slice() };
+        state.clipboard = { items: items.slice() }; $grid.find('.is-cut').removeClass('is-cut');
         toast(items.length + ' item' + (items.length === 1 ? '' : 's') + ' copied');
     }
     // C9: drop clipboard entries that a delete or move just took away.
@@ -404,7 +404,8 @@ jQuery(function ($) {
 
     function rowHtml(item, depth) {
         const pad = 12 + (depth || 0) * 20;
-        const selected = state.selectedRows.has(rowKey(item.kind, item.id)) ? ' is-selected' : '';
+        const selected = (state.selectedRows.has(rowKey(item.kind, item.id)) ? ' is-selected' : '')
+            + (state.clipboard && state.clipboard.cut && clipboardItems().some(c => c.kind === item.kind && c.id === item.id) ? ' is-cut' : '');
         const disclosure = item.kind === 'folder'
             ? `<button type="button" class="afm__rowDisclosure" data-afm-row-expand="${item.id}" aria-label="Expand"><span class="dashicons dashicons-arrow-right-alt2"></span></button>`
             : `<span class="afm__rowDisclosure afm__rowDisclosure--empty"></span>`;
@@ -1878,16 +1879,12 @@ jQuery(function ($) {
             const k = ctx.kind;
             const vid = Number(ctx.id);
             if (action === 'open-folder') { loadFolder(vid); return; }
-            if (action === 'open-file') { if (typeof openViewer === 'function') openViewer('file', vid); return; }
-            if (action === 'open-video') { if (typeof openViewer === 'function') openViewer('video', vid); return; }
+            if (action === 'open-file' || action === 'open-video') { openViewer(k, vid); return; }
             if (action === 'open-link') { const l = findRow('link', vid); if (l && l.url) window.open(l.url, '_blank', 'noopener'); return; }
             if (action === 'show-in-folder') {
                 const target = (state.searchFolderById && state.searchFolderById[k + ':' + vid]);
                 const dest = (typeof target === 'number') ? target : state.currentFolderId;
-                $search.val(''); state.search = '';
-                loadFolder(dest);
-                flashRow(k, vid);
-                return;
+                $search.val(''); state.search = ''; loadFolder(dest); flashRow(k, vid); return;
             }
             if (action === 'download') { if (k === 'folder') downloadFolder(vid); else openFileDownload(vid); return; }
             if (action === 'copy-share-link') { if (typeof copyShareLink === 'function') copyShareLink(k, vid); return; }
@@ -1898,7 +1895,8 @@ jQuery(function ($) {
                 copyItems([{ kind: k, id: vid }], (typeof home === 'number') ? home : state.currentFolderId);
                 return;
             }
-            if (action === 'paste-into') { copyItems(clipboardItems(), vid); return; }
+            if (action === 'move-to' || action === 'cut') { window.AnchorFMMove[action === 'cut' ? 'cut' : 'open']([{ kind: k, id: vid }]); return; }
+            if (action === 'paste-into') { if (!window.AnchorFMMove.pasteCut(vid)) copyItems(clipboardItems(), vid); return; }
             if (action === 'rename') { if (typeof startInlineRename === 'function') startInlineRename(k, vid); return; }
             if (action === 'permissions') { openPermissions(k, vid); return; }
             if (action === 'edit-link') {
@@ -2044,6 +2042,7 @@ jQuery(function ($) {
             }
             items.push({ action: 'duplicate', icon: 'admin-page', label: 'Duplicate' });
             items.push({ action: 'copy', icon: 'admin-page', label: 'Copy' });
+            items.push({ action: 'cut', icon: 'editor-removeformatting', label: 'Cut' }, { action: 'move-to', icon: 'randomize', label: 'Move to\u2026' });
             if (kind !== 'link') items.push({ action: 'rename', icon: 'edit', label: 'Rename' });
             if (kind === 'link') items.push({ action: 'edit-link', icon: 'edit', label: 'Edit' });
             if (kind === 'folder' || kind === 'file') items.push({ action: 'permissions', icon: 'shield', label: 'Permissions' });
@@ -2486,8 +2485,7 @@ jQuery(function ($) {
         const kind = $(this).data('afm-row-kind');
         const id = Number($(this).data('afm-row-id'));
         if (kind === 'folder') { loadFolder(id); }
-        else if (kind === 'file') { if (typeof openViewer === 'function') openViewer('file', id); }
-        else if (kind === 'video') { if (typeof openViewer === 'function') openViewer('video', id); }
+        else if (kind === 'file' || kind === 'video') { if (typeof openViewer === 'function') openViewer(kind, id); }
         else if (kind === 'link') { const l = findRow('link', id); if (l && l.url) window.open(l.url, '_blank', 'noopener'); }
     });
 
@@ -2536,6 +2534,7 @@ jQuery(function ($) {
         const adminBtns = AnchorFM.isAdmin
             ? `<button type="button" class="afm__btn afm__btn--secondary" data-afm-bulk="copy">Copy</button>
                <button type="button" class="afm__btn afm__btn--secondary" data-afm-bulk="duplicate">Duplicate</button>
+               <button type="button" class="afm__btn afm__btn--secondary" data-afm-bulk="move">Move to\u2026</button>
                <button type="button" class="afm__btn afm__btn--danger" data-afm-bulk="delete">Delete</button>`
             : '';
         $bar.html(`<span class="afm__bulkCount">${n} selected</span>
@@ -2550,6 +2549,7 @@ jQuery(function ($) {
         if (op === 'copy') { setClipboard(selectionAsItems()); state.selectedRows.clear(); refreshSelectionUI(); return; }
         if (op === 'duplicate') { copyItems(selectionAsItems(), state.currentFolderId); state.selectedRows.clear(); refreshSelectionUI(); return; }
         if (op === 'download') { bulkDownload(selectionAsItems()); return; }
+        if (op === 'move' && AnchorFM.isAdmin) { window.AnchorFMMove.open(selectionAsItems()); return; }
         if (op === 'delete' && AnchorFM.isAdmin) {
             const n = withoutDescendants(selectionAsItems()).length;
             openConfirmModal({
@@ -2884,7 +2884,7 @@ jQuery(function ($) {
         loadFolder, reloadCurrentFolder, bootstrap, findRow, selectionAsItems,
         refreshSelectionUI, openConfirmModal, openModal, closeModal,
         renderTreeNodeHtml: renderTreeNode, folderName: findFolderName,
-        uploadFiles, flashRow, canUploadHere, isAdmin: !!AnchorFM.isAdmin,
+        uploadFiles, flashRow, canUploadHere, folderOfRow, isAdmin: !!AnchorFM.isAdmin,
         // used by the keyboard module
         copyItems, setClipboard, forgetClipboard, clipboardItems, openViewer,
         startInlineRename, closeTopmost, filesTabActive,

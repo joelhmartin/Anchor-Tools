@@ -1,6 +1,6 @@
 /**
  * Keyboard and rename gestures for the file manager list: row navigation,
- * select-all, copy/paste/duplicate shortcuts, F2, Escape, and the
+ * select-all, copy/cut/paste/duplicate shortcuts, F2, Escape, and the
  * "slow second click renames" gesture. Runs on window.AnchorFMCore, so it must
  * be enqueued after file-manager.js.
  */
@@ -27,12 +27,12 @@
             if ($r[0]) { $r[0].focus({ preventScroll: true }); $r[0].scrollIntoView({ block: 'nearest' }); }
         }
 
-        // B9: Ctrl/Cmd+C, V, D belong to the list only while focus is inside it
+        // B9: Ctrl/Cmd+C, X, V, D belong to the list only while focus is inside it
         // and nothing is selected as text. Anywhere else they are the browser's.
         $(document).on('keydown', function (e) {
             if (!isAdmin || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
             const key = String(e.key || '').toLowerCase();
-            if (key !== 'c' && key !== 'v' && key !== 'd') return;
+            if (key !== 'c' && key !== 'v' && key !== 'd' && key !== 'x') return;
             if (!$root[0].contains(document.activeElement)) return;
             if ($(e.target).is('input, textarea, select') || (e.target && e.target.isContentEditable)) return;
             if (window.getSelection && window.getSelection().toString() !== '') return;
@@ -41,9 +41,15 @@
             if (key === 'c') {
                 const items = C.selectionAsItems();
                 if (items.length) { e.preventDefault(); C.setClipboard(items); }
+            } else if (key === 'x') {
+                const items = C.selectionAsItems();
+                if (items.length) { e.preventDefault(); window.AnchorFMMove.cut(items); }
             } else if (key === 'v') {
                 const items = C.clipboardItems();
-                if (items.length) { e.preventDefault(); C.copyItems(items, state.currentFolderId); }
+                if (!items.length) return;
+                e.preventDefault();
+                // A pending cut moves; otherwise paste copies.
+                if (!window.AnchorFMMove.pasteCut(state.currentFolderId)) C.copyItems(items, state.currentFolderId);
             } else {
                 const items = C.selectionAsItems();
                 if (items.length) { e.preventDefault(); C.copyItems(items, state.currentFolderId); }
@@ -52,7 +58,8 @@
 
         // B8: Escape closes the topmost menu/modal/viewer from anywhere on the page.
         $(document).on('keydown', function (e) {
-            if (e.key === 'Escape' && C.closeTopmost()) e.preventDefault();
+            // Escape closes a menu/modal first; failing that it cancels a pending cut.
+            if (e.key === 'Escape' && (C.closeTopmost() || window.AnchorFMMove.cancelCut())) e.preventDefault();
         });
 
         // B7: list keys act only when focus is on a row, the list or the manager

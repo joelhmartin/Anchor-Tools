@@ -2019,3 +2019,26 @@
     gap: 8px;
   }
 }
+
+/* Move to... folder picker (file-manager-move.js) and cut rows */
+.afm__row.is-cut { opacity: 0.45; }
+.afm__pick { display: flex; flex-direction: column; gap: 10px; }
+.afm__pickBar { display: flex; align-items: center; gap: 12px; }
+.afm__pickStatus { color: var(--afm-muted); font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.afm__pickNew { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.afm__pickNew[hidden] { display: none; }
+.afm__pickNew .afm__input { flex: 1 1 180px; min-width: 0; }
+.afm__pickTree {
+  max-height: 320px; overflow: auto; border: 1px solid var(--afm-border);
+  border-radius: var(--afm-radius-sm); padding: 4px; background: var(--afm-bg);
+}
+.afm__pickItem {
+  display: flex; align-items: center; gap: 6px; min-height: 40px; padding-right: 8px;
+  border-radius: 8px; cursor: pointer; color: var(--afm-text);
+}
+.afm__pickItem:hover { background: var(--afm-panel); }
+.afm__pickItem.is-selected { background: rgba(var(--afm-accent-rgb) / 0.14); outline: 2px solid rgba(var(--afm-accent-rgb) / 0.6); outline-offset: -2px; }
+.afm__pickItem.is-disabled { color: var(--afm-faint); }
+.afm__pickItem:focus-visible { outline: 2px solid var(--afm-accent); outline-offset: -2px; }
+.afm__pickToggle { width: 20px; height: 20px; flex: 0 0 20px; font-size: 18px; line-height: 20px; }
+.afm__pickName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

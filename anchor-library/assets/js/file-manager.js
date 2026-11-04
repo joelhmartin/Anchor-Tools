@@ -27,7 +27,7 @@ jQuery(function ($) {
 
     const productDocsFolderId = Number(AnchorFM.productDocsFolderId || 0);
     let externalModalHandler = null;
-    let loadSeq = 0;
+    let loadSeq = 0, bootSeq = 0; // bootSeq: a stale bootstrap() answer is dropped
     let lastFocus = null;
     const state = {
         tab: 'files',
@@ -321,7 +321,7 @@ jQuery(function ($) {
         });
     }
     function copyItems(items, targetFolderId) {
-        if (!items || !items.length) return;
+        items = withoutDescendants(items || []); if (!items.length) return;
         $root.addClass('afm--busy');
         return api('anchor_fm_copy_items', {
             items: JSON.stringify(items),
@@ -692,8 +692,9 @@ jQuery(function ($) {
         const stay = !!(opts && opts.stay);
         $root.addClass('afm--busy');
         if (!stay) $tree.html('<div class="afm__skeleton afm__skeleton--share"></div>');
+        const seq = ++bootSeq;
         api('anchor_fm_bootstrap', {}, { quiet: stay }).done(res => {
-            if (!res || !res.success) return;
+            if (seq !== bootSeq || !res || !res.success) return;
             state.tree = res.data.tree || [];
             rebuildTreeIndex();
             renderTree(state.tree);
@@ -709,11 +710,10 @@ jQuery(function ($) {
                 productDocsFolderId: AnchorFM.productDocsFolderId || 0
             });
         }).fail(xhr => {
+            if (seq !== bootSeq) return;
             if (stay) return toast(errMessage(xhr, null, 'Could not refresh the folder list.'));
             $tree.html('<div class="afm__empty">Could not load folders.</div>');
-        }).always(() => {
-            $root.removeClass('afm--busy');
-        });
+        }).always(() => { if (seq === bootSeq) $root.removeClass('afm--busy'); });
     }
 
     // Every preview surface renders by pointing the browser at the stream
@@ -2474,7 +2474,7 @@ jQuery(function ($) {
     $root.on('click', '[data-afm-bulk]', function () {
         const op = $(this).data('afm-bulk');
         if (op === 'clear') { state.selectedRows.clear(); refreshSelectionUI(); return; }
-        if (op === 'copy') { setClipboard(selectionAsItems()); state.selectedRows.clear(); refreshSelectionUI(); return; }
+        if (op === 'copy') { setClipboard(withoutDescendants(selectionAsItems())); state.selectedRows.clear(); refreshSelectionUI(); return; }
         if (op === 'duplicate') { copyItems(selectionAsItems(), state.currentFolderId); state.selectedRows.clear(); refreshSelectionUI(); return; }
         if (op === 'download') { bulkDownload(selectionAsItems()); return; }
         if (op === 'move' && AnchorFM.isAdmin) { window.AnchorFMMove.open(selectionAsItems()); return; }
@@ -2816,7 +2816,7 @@ jQuery(function ($) {
         // uploadFiles is added by file-manager-upload.js (it owns the whole upload path)
         // used by the keyboard module
         copyItems, setClipboard, forgetClipboard, clipboardItems, openViewer,
-        startInlineRename, closeTopmost, filesTabActive,
+        startInlineRename, closeTopmost, filesTabActive, withoutDescendants,
     };
 
     // Shared UI for sibling scripts (user-manager.js) so they reuse this

@@ -70,7 +70,7 @@
   height: 40px;
   border-radius: 12px;
   background: var(--afm-accent);
-  box-shadow: 0 10px 22px rgba(var(--afm-accent-rgb), 0.18);
+  box-shadow: 0 10px 22px rgba(var(--afm-accent-rgb) / 0.18);
 }
 
 .afm__brandTitle {
@@ -222,8 +222,8 @@
 }
 
 .afm__treeBtn.is-active {
-  background: rgba(var(--afm-accent-rgb), 0.10);
-  border-color: rgba(var(--afm-accent-rgb), 0.30);
+  background: rgba(var(--afm-accent-rgb) / 0.10);
+  border-color: rgba(var(--afm-accent-rgb) / 0.30);
 }
 
 .afm__treeIcon {
@@ -480,7 +480,7 @@
 }
 
 .afm__btn--primary {
-  border-color: rgba(var(--afm-accent-rgb), 0.35);
+  border-color: rgba(var(--afm-accent-rgb) / 0.35);
   background: var(--afm-accent);
   color: #ffffff;
 }
@@ -556,16 +556,16 @@
 }
 
 .afm__tab.is-active {
-  background: rgba(var(--afm-accent-rgb), 0.10);
-  border-color: rgba(var(--afm-accent-rgb), 0.30);
+  background: rgba(var(--afm-accent-rgb) / 0.10);
+  border-color: rgba(var(--afm-accent-rgb) / 0.30);
 }
 
 .afm__dropzone {
   position: absolute;
   inset: 12px;
   border-radius: var(--afm-radius);
-  border: 2px dashed rgba(var(--afm-accent-rgb), 0.35);
-  background: rgba(var(--afm-accent-rgb), 0.06);
+  border: 2px dashed rgba(var(--afm-accent-rgb) / 0.35);
+  background: rgba(var(--afm-accent-rgb) / 0.06);
   display: none;
   align-items: center;
   justify-content: center;
@@ -696,20 +696,20 @@
   border-radius: 14px;
   display: grid;
   place-items: center;
-  background: rgba(var(--afm-accent-rgb), 0.08);
-  border: 1px solid rgba(var(--afm-accent-rgb), 0.16);
+  background: rgba(var(--afm-accent-rgb) / 0.08);
+  border: 1px solid rgba(var(--afm-accent-rgb) / 0.16);
 }
 
 .afm__card--file .afm__cardIcon {
-  background: rgba(var(--afm-accent-2-rgb), 0.08);
-  border-color: rgba(var(--afm-accent-2-rgb), 0.16);
+  background: rgba(var(--afm-accent-2-rgb) / 0.08);
+  border-color: rgba(var(--afm-accent-2-rgb) / 0.16);
 }
 
 .afm__treeBtn.is-drop,
 .afm__crumb.is-drop {
-  outline: 2px dashed rgba(var(--afm-accent-rgb), 0.7);
+  outline: 2px dashed rgba(var(--afm-accent-rgb) / 0.7);
   outline-offset: -2px;
-  background: rgba(var(--afm-accent-rgb), 0.14);
+  background: rgba(var(--afm-accent-rgb) / 0.14);
 }
 
 .afm__treeBtn.is-drop-flash {
@@ -725,8 +725,8 @@
 }
 
 @keyframes afm-drop-flash {
-  0% { box-shadow: 0 0 0 0 rgba(var(--afm-accent-rgb), 0.35); }
-  100% { box-shadow: 0 0 0 10px rgba(var(--afm-accent-rgb), 0); }
+  0% { box-shadow: 0 0 0 0 rgba(var(--afm-accent-rgb) / 0.35); }
+  100% { box-shadow: 0 0 0 10px rgba(var(--afm-accent-rgb) / 0); }
 }
 
 .afm__cardMain {
@@ -765,7 +765,7 @@
   padding: 4px 8px;
   border-radius: 999px;
   border: 1px solid var(--afm-border);
-  background: rgba(var(--afm-accent-rgb), 0.06);
+  background: rgba(var(--afm-accent-rgb) / 0.06);
   font-size: 12px;
 }
 

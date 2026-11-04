@@ -317,7 +317,7 @@ class Folders {
 		// there); files, links and videos always live inside a folder.
 		if ($target < 0) Http::error('Missing target folder');
 
-		if ($target > 0 && !Repository::folder_row($target)) Http::error('Target folder not found', 404);
+		if ($target > 0 && ($err = Repository::write_target_error($target))) Http::error($err[0], $err[1]);
 		if (!Permissions::can_upload_to_folder($target, $user_id)) Http::error('Forbidden', 403);
 
 		$existing = Copier::gather_existing_names($target);
@@ -343,22 +343,26 @@ class Folders {
 			if ($kind === 'file') {
 				$row = Repository::file_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs((int) $row->folder_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if (!Permissions::can_manage_file($id, $user_id)) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$new = Copier::copy_file_row($row, $target, $existing, ((int) $row->folder_id === $target));
 			} elseif ($kind === 'link') {
 				$row = Repository::link_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs((int) $row->folder_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if (!Permissions::can_manage_link($id, $user_id)) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$new = Copier::copy_link_row($row, $target, $existing, ((int) $row->folder_id === $target));
 			} elseif ($kind === 'video') {
 				$row = Repository::video_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs((int) $row->folder_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if (!Permissions::can_manage_video($id, $user_id)) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$new = Copier::copy_video_row($row, $target, $existing, ((int) $row->folder_id === $target));
 			} else { // folder
 				if (!\current_user_can('administrator')) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$row = Repository::folder_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs((int) $row->parent_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if ($id === $target || Repository::is_descendant($target, $id)) {
 					$res['message'] = 'Cannot copy a folder into itself or its own subfolder';
 					$errors++; $results[] = $res; continue;

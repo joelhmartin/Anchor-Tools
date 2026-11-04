@@ -47,6 +47,10 @@ async function resetTree(page) {
     if (/^E2E Lib .*\(copy\)/.test(f.name)) await ajax(page, 'anchor_fm_delete_folder', { folder_id: f.id });
   }
   await ajax(page, 'anchor_fm_move_items', {
+    items: JSON.stringify([{ kind: 'folder', id: SEED.library_folder_a }, { kind: 'folder', id: SEED.library_folder_b }]),
+    target_folder_id: 0,
+  });
+  await ajax(page, 'anchor_fm_move_items', {
     items: JSON.stringify([{ kind: 'folder', id: SEED.library_folder_a1 }, { kind: 'file', id: SEED.library_file_id }]),
     target_folder_id: SEED.library_folder_a,
   });
@@ -143,6 +147,28 @@ test('(c) right-click a file, Move to..., pick a folder, Move here', async ({ pa
   await expect(toast(page)).toContainText(`Moved 1 item to ${NAME_B}`);
   expect((await listFolder(page, SEED.library_folder_b)).files).toContain('e2e-a.txt');
   expect((await listFolder(page, SEED.library_folder_a)).files).not.toContain('e2e-a.txt');
+});
+
+test('(c2) Select all with a folder expanded moves only the folder, not its children', async ({ page }) => {
+  await page.locator(`[data-afm-row-expand="${SEED.library_folder_a}"]`).click();
+  await expect(row(page, 'folder', SEED.library_folder_a1)).toBeVisible();
+  await row(page, 'folder', SEED.library_folder_a).click();
+  await page.keyboard.press('ControlOrMeta+A');
+  await row(page, 'folder', SEED.library_folder_b).click({ modifiers: ['ControlOrMeta'] }); // B is the target, not an item
+  await page.locator('[data-afm-bulk="move"]').click();
+
+  const picker = page.locator('[data-afm-pick-tree]');
+  await expect(picker).toBeVisible();
+  await picker.locator('[data-afm-pick-id]').filter({ has: page.getByText(NAME_B, { exact: true }) }).click();
+  await page.getByRole('button', { name: 'Move here' }).click();
+
+  await expect(toast(page)).toContainText(`Moved 1 item to ${NAME_B}`);
+  expect((await listFolder(page, SEED.library_folder_b)).folders).toEqual([NAME_A]);
+  const inA = await listFolder(page, SEED.library_folder_a);
+  expect(inA.folders).toContain(NAME_A1);
+  expect(inA.files).toContain('e2e-a.txt');
+  // Put A back at Home: the next case's first page load expects it there.
+  await ajax(page, 'anchor_fm_move_items', { items: JSON.stringify([{ kind: 'folder', id: SEED.library_folder_a }]), target_folder_id: 0 });
 });
 
 test('(d) an OS file drag shows the overlay; an internal drag never does', async ({ page }) => {

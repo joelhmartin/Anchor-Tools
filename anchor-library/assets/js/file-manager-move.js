@@ -19,26 +19,30 @@
 
         // ---- announce + undo -------------------------------------------------
 
-        // Undo sends each moved item back to the folder it came from, grouped by
-        // that folder so one request covers every item that shared an origin.
-        // Groups run one after another so name de-duplication sees each result.
+        // Undo sends each moved item back to the folder it came from (under the
+        // name it had), grouped by that folder so one request covers every item
+        // that shared an origin. Groups run one after another so name
+        // de-duplication sees each result; a failed group never stops the rest.
         function undo(moved) {
             const groups = {};
             moved.forEach(function (i) {
-                (groups[i.fromFolderId] = groups[i.fromFolderId] || []).push({ kind: i.kind, id: i.sourceId });
+                (groups[i.fromFolderId] = groups[i.fromFolderId] || []).push({ kind: i.kind, id: i.sourceId, name: i.fromName || '' });
             });
             let failed = 0, reason = '';
+            const fail = function (n, why) { failed += n; if (why && !reason) reason = why; };
             const step = Object.keys(groups).reduce(function (prev, from) {
                 return prev.then(function () {
-                    return C.api('anchor_fm_move_items', {
+                    const d = $.Deferred();
+                    C.api('anchor_fm_move_items', {
                         items: JSON.stringify(groups[from]),
                         target_folder_id: Number(from)
-                    }, { fallback: 'Undo failed' }).then(function (res) {
-                        const d = (res && res.data) || {};
-                        failed += d.errors || 0;
-                        const bad = (d.items || []).find(function (i) { return i.status === 'error' && i.message; });
-                        if (bad && !reason) reason = bad.message;
-                    });
+                    }, { quiet: true }).then(function (res) {
+                        const data = (res && res.data) || {};
+                        fail(data.errors || 0, ((data.items || []).find(function (i) { return i.status === 'error' && i.message; }) || {}).message);
+                    }, function (xhr) {
+                        fail(groups[from].length, C.errMessage(xhr, null, ''));
+                    }).always(function () { d.resolve(); });
+                    return d.promise();
                 });
             }, $.Deferred().resolve().promise());
             step.done(function () {
@@ -61,6 +65,8 @@
             if (moved.length) msg = 'Moved ' + plural(moved.length) + ' to ' + where;
             else msg = !d.errors && rows.length ? 'Already in ' + where : 'Nothing was moved';
             if (d.errors) msg += ', ' + d.errors + " couldn't move" + (bad ? ': ' + bad.message : '');
+            const kept = rows.filter(function (i) { return i.keptPermissions; }).length;
+            if (kept) msg += '; ' + kept + ' kept their own permissions';
             C.toast(msg, moved.length ? { label: 'Undo', onClick: function () { undo(moved); } } : null);
         }
 
@@ -70,6 +76,7 @@
          * Returns the request so a caller can react to success or failure.
          */
         function run(items, targetId) {
+            items = C.withoutDescendants(items); // a folder carries its expanded children
             C.$root.addClass('afm--busy');
             return C.api('anchor_fm_move_items', {
                 items: JSON.stringify(items.map(function (i) { return { kind: i.kind, id: i.id }; })),
@@ -101,6 +108,7 @@
 
         function cut(items) {
             if (!C.isAdmin || !items || !items.length) return;
+            items = C.withoutDescendants(items);
             state.clipboard = { items: items.slice(), cut: true };
             markCut();
             C.toast(plural(items.length) + ' cut. Open a folder and paste to move.');

@@ -544,4 +544,72 @@ class Anchor_Library_Moves_Test extends WP_Ajax_UnitTestCase {
 		$this->assertTrue( $this->call( 'anchor_fm_rename_folder', [ 'folder_id' => $a, 'name' => 'Alpha' ] )['success'], 'its own name is not a clash' );
 		$this->assertTrue( $this->folder( 'Alpha', $a ) > 0, 'same name under a different parent is fine' );
 	}
+
+	// ---- final review fixes ---------------------------------------------------------------------------------
+
+	public function test_move_releases_legacy_snapshot_grants_and_inherits_destination() {
+		global $wpdb;
+		$a = $this->folder( 'A' );
+		$b = $this->folder( 'B' );
+		$member = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		$this->grant_user( 'folder', $a, $member );
+		$file = $this->stored_file( $a );
+		$this->grant_user( 'file', $file, $member ); // what an older move left behind: a copy of A's direct grants
+		$res = $this->move_items( [ [ 'kind' => 'file', 'id' => $file ] ], $b );
+		$this->assertSame( 'moved', $res['data']['items'][0]['status'] );
+		$this->assertArrayNotHasKey( 'keptPermissions', $res['data']['items'][0] );
+		$rows = (int) $wpdb->get_var( 'SELECT COUNT(1) FROM ' . Schema::table( 'permissions' ) . " WHERE entity_type = 'file' AND entity_id = $file" );
+		$this->assertSame( 0, $rows );
+		$this->assertFalse( \Anchor\Library\Permissions::with_memo( fn() => \Anchor\Library\Permissions::can_view_file( $file, $member ) ), 'now inherits B, which does not grant the member' );
+	}
+
+	public function test_move_keeps_custom_file_grants_and_flags_them() {
+		global $wpdb;
+		$a = $this->folder( 'A' );
+		$b = $this->folder( 'B' );
+		$member = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		$file = $this->stored_file( $a );
+		$this->grant_user( 'file', $file, $member ); // A grants nobody directly, so this differs
+		$res = $this->move_items( [ [ 'kind' => 'file', 'id' => $file ] ], $b );
+		$this->assertTrue( $res['data']['items'][0]['keptPermissions'] );
+		$rows = (int) $wpdb->get_var( 'SELECT COUNT(1) FROM ' . Schema::table( 'permissions' ) . " WHERE entity_type = 'file' AND entity_id = $file" );
+		$this->assertSame( 1, $rows );
+	}
+
+	public function test_move_items_restores_requested_name_when_free_else_dedupes() {
+		$a = $this->folder( 'A' );
+		$b = $this->folder( 'B' );
+		$file = $this->named_file( $a, 'Guide.pdf' );
+		$this->named_file( $b, 'Guide.pdf' );
+		$out = $this->move_items( [ [ 'kind' => 'file', 'id' => $file ] ], $b )['data']['items'][0];
+		$this->assertSame( 'Guide.pdf', $out['fromName'] );
+		$this->assertNotSame( 'Guide.pdf', $out['name'] );
+		$back = $this->move_items( [ [ 'kind' => 'file', 'id' => $file, 'name' => $out['fromName'] ] ], $a )['data']['items'][0];
+		$this->assertSame( 'Guide.pdf', $back['name'] );
+		$this->assertSame( 'Guide.pdf', $this->col( 'files', 'original_name', $file ) );
+		// Taken in the target: the normal de-dup applies.
+		$other = $this->named_file( $b, 'Guide.pdf' );
+		$again = $this->move_items( [ [ 'kind' => 'file', 'id' => $file, 'name' => 'Guide.pdf' ] ], $b )['data']['items'][0];
+		$this->assertNotSame( 'Guide.pdf', $again['name'] );
+		$this->assertNotNull( $other );
+	}
+
+	public function test_product_docs_is_not_a_copy_target_or_a_move_or_copy_source() {
+		$this->_setRole( 'administrator' );
+		global $wpdb;
+		$pd = Schema::ensure_product_docs_folder();
+		$other = $this->folder( 'Other' );
+		$file = $this->stored_file( $pd );
+		$msg = 'The Product Docs folder is managed automatically';
+		$mv = $this->move_items( [ [ 'kind' => 'file', 'id' => $file ] ], $other )['data']['items'][0];
+		$this->assertSame( 'error', $mv['status'] );
+		$this->assertSame( $msg, $mv['message'] );
+		$cp = $this->call( 'anchor_fm_copy_items', [ 'target_folder_id' => $other, 'items' => wp_json_encode( [ [ 'kind' => 'file', 'id' => $file ] ] ) ] );
+		$this->assertSame( $msg, $cp['data']['items'][0]['message'] );
+		$mine = $this->stored_file( $other );
+		$into = $this->call( 'anchor_fm_copy_items', [ 'target_folder_id' => $pd, 'items' => wp_json_encode( [ [ 'kind' => 'file', 'id' => $mine ] ] ) ] );
+		$this->assertFalse( $into['success'] );
+		$this->assertSame( $msg, $into['data']['message'] );
+		$this->assertSame( 1, (int) $wpdb->get_var( 'SELECT COUNT(1) FROM ' . Schema::table( 'files' ) . " WHERE folder_id = $pd" ) );
+	}
 }

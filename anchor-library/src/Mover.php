@@ -3,8 +3,8 @@
  * Library move: relocates files (bytes and row), links, videos and folders. One implementation behind the
  * single-item handlers (anchor_fm_move_file / anchor_fm_move_folder) and the batch endpoint (anchor_fm_move_items).
  *
- * A move never touches grants: an item with no explicit rows simply inherits its new folder, one with explicit rows
- * keeps them (permissions are read from the tables on every request, so there is no index to update).
+ * A move leaves grants alone: an item with no explicit rows simply inherits its new folder, and one with its own
+ * explicit rows keeps them, except a file carrying a legacy snapshot of its source folder (see release_snapshot) (permissions are read from the tables on every request, so there is no index to update).
  * A name that already exists in the destination is made unique with Anchor_FM_Copy_Namer, as copy does.
  *
  * @package Anchor\Library
@@ -45,9 +45,10 @@ class Mover {
 	 * Move one item.
 	 *
 	 * @param array $existing Display names already in the destination; updated with the final name.
-	 * @return array{fromFolderId:int,name:string}|\WP_Error Error data carries the HTTP status for single-item callers.
+	 * @param string $rename Name to restore (Undo); used when free in the destination, else the usual de-dup applies.
+	 * @return array{fromFolderId:int,fromName:string,name:string}|\WP_Error Error data carries the HTTP status for single-item callers.
 	 */
-	public static function move( string $kind, int $id, int $target, array &$existing, int $user_id ) {
+	public static function move( string $kind, int $id, int $target, array &$existing, int $user_id, string $rename = '' ) {
 		if ( $id <= 0 || ! \in_array( $kind, self::KINDS, true ) ) {
 			return self::fail( 'Invalid item', 400 );
 		}
@@ -56,11 +57,11 @@ class Mover {
 		}
 		switch ( $kind ) {
 			case 'file':
-				return self::move_file( $id, $target, $existing, $user_id );
+				return self::move_file( $id, $target, $existing, $user_id, $rename );
 			case 'folder':
-				return self::move_folder( $id, $target, $existing, $user_id );
+				return self::move_folder( $id, $target, $existing, $user_id, $rename );
 			default:
-				return self::move_row( $kind, $id, $target, $existing, $user_id );
+				return self::move_row( $kind, $id, $target, $existing, $user_id, $rename );
 		}
 	}
 
@@ -83,14 +84,19 @@ class Mover {
 				continue; // The same item twice in one batch is one move.
 			}
 			$seen[ $kind . ':' . $id ] = true;
-			$res  = [ 'kind' => $kind, 'sourceId' => $id, 'fromFolderId' => 0, 'status' => 'error', 'message' => '', 'name' => '' ];
-			$out  = self::move( $kind, $id, $target, $existing, $user_id );
+			$res  = [ 'kind' => $kind, 'sourceId' => $id, 'fromFolderId' => 0, 'status' => 'error', 'message' => '', 'name' => '', 'fromName' => '' ];
+			$want = \is_array( $it ) && isset( $it['name'] ) ? \trim( \str_replace( [ '/', '\\' ], '', \sanitize_text_field( (string) $it['name'] ) ) ) : '';
+			$out  = self::move( $kind, $id, $target, $existing, $user_id, $want );
 			if ( \is_wp_error( $out ) ) {
 				$res['message'] = $out->get_error_message();
 				++$errors;
 			} else {
 				$res['fromFolderId'] = $out['fromFolderId'];
 				$res['name']         = $out['name'];
+				$res['fromName']     = $out['fromName'];
+				if ( ! empty( $out['keptPermissions'] ) ) {
+					$res['keptPermissions'] = true;
+				}
 				// Already in the destination: nothing changed, so it is neither counted nor undoable.
 				$res['status'] = ! empty( $out['unchanged'] ) ? 'unchanged' : 'moved';
 				if ( 'moved' === $res['status'] ) {
@@ -105,7 +111,7 @@ class Mover {
 
 	// ---- Kinds ----------------------------------------------------------------------------------------------
 
-	private static function move_file( int $id, int $target, array &$existing, int $user_id ) {
+	private static function move_file( int $id, int $target, array &$existing, int $user_id, string $rename ) {
 		$file = Repository::file_row( $id );
 		if ( ! $file ) {
 			return self::fail( 'Not found', 404 );
@@ -115,7 +121,10 @@ class Mover {
 		}
 		$from = (int) $file->folder_id;
 		if ( $from === $target ) {
-			return [ 'fromFolderId' => $from, 'name' => (string) $file->original_name, 'unchanged' => true ];
+			return [ 'fromFolderId' => $from, 'name' => (string) $file->original_name, 'fromName' => (string) $file->original_name, 'unchanged' => true ];
+		}
+		if ( Repository::is_product_docs( $from ) ) {
+			return self::fail( Repository::PD_MANAGED_MESSAGE, 403 );
 		}
 		$current_path = Storage::path_for( $file );
 		if ( ! \file_exists( $current_path ) ) {
@@ -135,7 +144,7 @@ class Mover {
 			return self::fail( 'Could not move file', 500 );
 		}
 
-		$name = \Anchor_FM_Copy_Namer::resolve_unique( $file->original_name, $existing, true, false );
+		$name = \Anchor_FM_Copy_Namer::resolve_unique( '' !== $rename ? $rename : $file->original_name, $existing, true, false );
 		global $wpdb;
 		$updated = $wpdb->update( Schema::table( 'files' ), [
 			'folder_id'     => $target,
@@ -147,12 +156,14 @@ class Mover {
 			return self::fail( 'Could not move file', 500 );
 		}
 		$existing[] = $name;
+		// A legacy snapshot of the source folder's grants must not follow the file into its new home.
+		$kept = PermissionWrites::release_snapshot( $id, $from );
 		Activity::log( 'move_file', 'file', $id, [ 'from' => $from, 'to' => $target ], $user_id );
-		return [ 'fromFolderId' => $from, 'name' => $name ];
+		return [ 'fromFolderId' => $from, 'fromName' => (string) $file->original_name, 'name' => $name, 'keptPermissions' => $kept ];
 	}
 
 	/** Links and videos: a folder_id change, no bytes. */
-	private static function move_row( string $kind, int $id, int $target, array &$existing, int $user_id ) {
+	private static function move_row( string $kind, int $id, int $target, array &$existing, int $user_id, string $rename ) {
 		$link = 'link' === $kind;
 		$row  = $link ? Repository::link_row( $id ) : Repository::video_row( $id );
 		if ( ! $row ) {
@@ -164,9 +175,12 @@ class Mover {
 		}
 		$from = (int) $row->folder_id;
 		if ( $from === $target ) {
-			return [ 'fromFolderId' => $from, 'name' => (string) $row->title, 'unchanged' => true ];
+			return [ 'fromFolderId' => $from, 'name' => (string) $row->title, 'fromName' => (string) $row->title, 'unchanged' => true ];
 		}
-		$name = \Anchor_FM_Copy_Namer::resolve_unique( $row->title, $existing, false, false );
+		if ( Repository::is_product_docs( $from ) ) {
+			return self::fail( Repository::PD_MANAGED_MESSAGE, 403 );
+		}
+		$name = \Anchor_FM_Copy_Namer::resolve_unique( '' !== $rename ? $rename : $row->title, $existing, false, false );
 		global $wpdb;
 		$updated = $wpdb->update( Schema::table( $link ? 'links' : 'videos' ), [
 			'folder_id'  => $target,
@@ -178,10 +192,10 @@ class Mover {
 		}
 		$existing[] = $name;
 		Activity::log( 'move_' . $kind, $kind, $id, [ 'from' => $from, 'to' => $target ], $user_id );
-		return [ 'fromFolderId' => $from, 'name' => $name ];
+		return [ 'fromFolderId' => $from, 'fromName' => (string) $row->title, 'name' => $name ];
 	}
 
-	private static function move_folder( int $id, int $target, array &$existing, int $user_id ) {
+	private static function move_folder( int $id, int $target, array &$existing, int $user_id, string $rename ) {
 		if ( ! \user_can( $user_id, 'administrator' ) ) {
 			return self::fail( 'Forbidden', 403 );
 		}
@@ -200,9 +214,12 @@ class Mover {
 		}
 		$from = (int) $folder->parent_id;
 		if ( $from === $target ) {
-			return [ 'fromFolderId' => $from, 'name' => (string) $folder->name, 'unchanged' => true ];
+			return [ 'fromFolderId' => $from, 'name' => (string) $folder->name, 'fromName' => (string) $folder->name, 'unchanged' => true ];
 		}
-		$name = \Anchor_FM_Copy_Namer::resolve_unique( $folder->name, $existing, false, false );
+		if ( Repository::is_product_docs( $from ) ) {
+			return self::fail( Repository::PD_MANAGED_MESSAGE, 403 );
+		}
+		$name = \Anchor_FM_Copy_Namer::resolve_unique( '' !== $rename ? $rename : $folder->name, $existing, false, false );
 		global $wpdb;
 		$updated = $wpdb->update( Schema::table( 'folders' ), [
 			'parent_id'  => $target,
@@ -214,7 +231,7 @@ class Mover {
 		}
 		$existing[] = $name;
 		Activity::log( 'move_folder', 'folder', $id, [ 'from' => $from, 'to' => $target ], $user_id );
-		return [ 'fromFolderId' => $from, 'name' => $name ];
+		return [ 'fromFolderId' => $from, 'fromName' => (string) $folder->name, 'name' => $name ];
 	}
 
 	private static function fail( string $message, int $status ): \WP_Error {

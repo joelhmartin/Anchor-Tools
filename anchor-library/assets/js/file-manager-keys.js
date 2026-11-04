@@ -40,7 +40,7 @@
 
             if (key === 'c') {
                 const items = C.selectionAsItems();
-                if (items.length) { e.preventDefault(); C.setClipboard(items); }
+                if (items.length) { e.preventDefault(); C.setClipboard(C.withoutDescendants(items)); }
             } else if (key === 'x') {
                 const items = C.selectionAsItems();
                 if (items.length) { e.preventDefault(); window.AnchorFMMove.cut(items); }
@@ -59,7 +59,7 @@
         // B8: Escape closes the topmost menu/modal/viewer from anywhere on the page.
         $(document).on('keydown', function (e) {
             // Escape closes a menu/modal first; failing that it cancels a pending cut.
-            if (e.key === 'Escape' && (C.closeTopmost() || window.AnchorFMMove.cancelCut())) e.preventDefault();
+            if (e.key === 'Escape' && !$(e.target).is('input, textarea') && (C.closeTopmost() || window.AnchorFMMove.cancelCut())) e.preventDefault();
         });
 
         // B7: list keys act only when focus is on a row, the list or the manager

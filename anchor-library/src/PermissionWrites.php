@@ -116,6 +116,45 @@ class PermissionWrites {
 		}
 	}
 
+	/** The view grants an entity carries directly: sorted "type:key" subjects and its normalized policy JSON. */
+	private static function direct_view_grants( string $type, int $id ): array {
+		global $wpdb;
+		$subjects = [];
+		foreach ( (array) $wpdb->get_results( $wpdb->prepare(
+			'SELECT subject_type, subject_key FROM ' . Schema::table( 'permissions' ) . " WHERE entity_type = %s AND entity_id = %d AND capability = 'view'",
+			$type, $id
+		) ) as $r ) {
+			$subjects[] = $r->subject_type . ':' . $r->subject_key;
+		}
+		\sort( $subjects );
+		$raw = $wpdb->get_var( $wpdb->prepare(
+			'SELECT policy FROM ' . Schema::table( 'permission_policies' ) . " WHERE entity_type = %s AND entity_id = %d AND capability = 'view'",
+			$type, $id
+		) );
+		$policy = \Anchor_FM_Permission_Policy::normalize( $raw ?: [] );
+		return [ $subjects, \Anchor_FM_Permission_Policy::rule_count( $policy ) > 0 ? \wp_json_encode( $policy ) : '' ];
+	}
+
+	/**
+	 * A file whose view grants (role rows, user rows and policy) exactly equal its source folder's direct grants is a
+	 * legacy snapshot taken by an older move. Delete them so it inherits its new folder.
+	 *
+	 * @return bool True when the file has its own, different grants, which stay.
+	 */
+	public static function release_snapshot( int $file_id, int $source_folder_id ): bool {
+		$own = self::direct_view_grants( 'file', $file_id );
+		if ( ! $own[0] && '' === $own[1] ) {
+			return false;
+		}
+		if ( $own !== self::direct_view_grants( 'folder', $source_folder_id ) ) {
+			return true;
+		}
+		global $wpdb;
+		$wpdb->delete( Schema::table( 'permissions' ), [ 'entity_type' => 'file', 'entity_id' => $file_id, 'capability' => 'view' ], [ '%s', '%d', '%s' ] );
+		$wpdb->delete( Schema::table( 'permission_policies' ), [ 'entity_type' => 'file', 'entity_id' => $file_id, 'capability' => 'view' ], [ '%s', '%d', '%s' ] );
+		return false;
+	}
+
 	/** Role keys a folder or file may be shared with: every registered role except administrator. */
 	public static function valid_role_keys() {
 		$roles = \array_keys((array) \wp_roles()->roles);

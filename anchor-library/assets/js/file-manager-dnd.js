@@ -120,7 +120,7 @@
                 if (!(id > 0)) { e.preventDefault(); return; }
                 items = [itemFrom('folder', id)];
             }
-            items = items.filter(i => !(i.kind === 'folder' && pdId && i.id === pdId));
+            items = C.withoutDescendants(items).filter(i => !(i.kind === 'folder' && pdId && i.id === pdId));
             if (!items.length) { e.preventDefault(); return; }
             drag = { items, copy: false };
             const d = dt(e);
@@ -157,7 +157,7 @@
                 setOver(t.$el);
             } else if (hasFiles(e) && t.id > 0 && !(pdId && t.id === pdId)) {
                 e.preventDefault();
-                e.stopPropagation(); // keep the whole-pane overlay logic out of it
+                e.stopPropagation(); // stop the event reaching ancestor dragover handlers; overUploadTarget() is what keeps the pane overlay off
                 d.dropEffect = 'copy';
                 $root.removeClass('afm--drag');
                 setOver(t.$el);

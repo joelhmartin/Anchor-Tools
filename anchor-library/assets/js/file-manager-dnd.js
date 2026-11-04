@@ -11,8 +11,15 @@
 (function ($) {
     $(function () {
         const C = window.AnchorFMCore;
-        if (!C || !C.isAdmin) return;
+        if (!C) return;
         const { $root, $content, state } = C;
+        // Everyone: a dropped OS file must not make the browser navigate away.
+        const osFiles = e => {
+            const t = e.originalEvent.dataTransfer && e.originalEvent.dataTransfer.types;
+            return !!t && Array.prototype.indexOf.call(t, 'Files') !== -1;
+        };
+        $root.on('dragover drop', function (e) { if (osFiles(e)) e.preventDefault(); });
+        if (!C.isAdmin) return;
         const pdId = Number((window.AnchorFM && window.AnchorFM.productDocsFolderId) || 0);
         const TARGET = '[data-afm-row-kind="folder"], [data-afm-open-folder], [data-afm-crumb]';
 
@@ -124,7 +131,16 @@
             items.forEach(i => $root.find('[data-afm-row="' + i.kind + ':' + i.id + '"]').addClass('is-dragging'));
         });
 
+        // The source row can be re-rendered mid-drag, so its dragend may never
+        // bubble; the document-level dragend (not a drop handler) clears state too.
         $root.on('dragend', endDrag);
+        $(document).on('dragend', endDrag);
+
+        // Older Safari needs dragenter cancelled for the drop to be allowed.
+        $root.on('dragenter', TARGET, function (e) {
+            const t = targetOf(this);
+            if (drag && t && validTarget(t.id)) e.preventDefault();
+        });
 
         // ---- over / leave ---------------------------------------------------
 
@@ -133,7 +149,8 @@
             if (!t) return;
             const d = dt(e);
             if (drag) {
-                if (!validTarget(t.id)) { d.dropEffect = 'none'; clearOver(); return; }
+                // Invalid, or every dragged item is already there (B4): no highlight.
+                if (!validTarget(t.id) || (!wantsCopy(e) && isNoop(t.id))) { d.dropEffect = 'none'; clearOver(); return; }
                 drag.copy = wantsCopy(e);
                 e.preventDefault();
                 d.dropEffect = drag.copy ? 'copy' : 'move';
@@ -235,12 +252,6 @@
             $root.removeClass('afm--drag');
             clearOver();
             if (C.canUploadHere()) C.uploadFiles(dt(e).files);
-        });
-
-        // Anywhere else in the portal, an OS file drop does nothing (rather than
-        // the browser navigating away to the file). This is not an upload path.
-        $root.on('dragover drop', function (e) {
-            if (!drag && hasFiles(e)) e.preventDefault();
         });
     });
 })(jQuery);

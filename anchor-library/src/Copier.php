@@ -127,8 +127,12 @@ class Copier {
 		return $count;
 	}
 
-	/** Recursively copy a folder into $target_parent_id. Returns new folder id or \WP_Error. */
-	public static function copy_folder_tree($folder, $target_parent_id, array &$existing, $force_copy, $depth = 0) {
+	/**
+	 * Recursively copy a folder into $target_parent_id. Returns new folder id or \WP_Error.
+	 * $failed counts descendants that could not be copied (missing bytes, failed insert), so a caller can tell a
+	 * complete copy from a partial one.
+	 */
+	public static function copy_folder_tree($folder, $target_parent_id, array &$existing, $force_copy, $depth = 0, &$failed = 0) {
 		if ($depth > Copier::MAX_DEPTH) { return new \WP_Error('too_deep', 'Folder nesting too deep to copy'); }
 		global $wpdb;
 
@@ -152,10 +156,10 @@ class Copier {
 		$src_id = (int) $folder->id;
 
 		foreach ((array) $wpdb->get_results($wpdb->prepare("SELECT * FROM " . Schema::table('folders') . " WHERE parent_id = %d", $src_id)) as $sf) {
-			Copier::copy_folder_tree($sf, $new_id, $child_existing, false, $depth + 1);
+			if (\is_wp_error(Copier::copy_folder_tree($sf, $new_id, $child_existing, false, $depth + 1, $failed))) { $failed++; }
 		}
 		foreach ((array) $wpdb->get_results($wpdb->prepare("SELECT * FROM " . Schema::table('files') . " WHERE folder_id = %d", $src_id)) as $f) {
-			Copier::copy_file_row($f, $new_id, $child_existing, false);
+			if (\is_wp_error(Copier::copy_file_row($f, $new_id, $child_existing, false))) { $failed++; }
 		}
 		foreach ((array) $wpdb->get_results($wpdb->prepare("SELECT * FROM " . Schema::table('links') . " WHERE folder_id = %d", $src_id)) as $l) {
 			Copier::copy_link_row($l, $new_id, $child_existing, false);

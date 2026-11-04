@@ -10,9 +10,11 @@
 namespace Anchor\Library\Ajax;
 
 use Anchor\Library\Activity;
+use Anchor\Library\Copier;
 use Anchor\Library\Http;
+use Anchor\Library\Mover;
 use Anchor\Library\Permissions;
-use Anchor\Library\PermissionWrites;
+use Anchor\Library\Purger;
 use Anchor\Library\Repository;
 use Anchor\Library\Schema;
 use Anchor\Library\Storage;
@@ -43,6 +45,7 @@ class Files {
 		$folder_id = isset($_POST['folder_id']) ? (int) $_POST['folder_id'] : 0;
 		if ($folder_id <= 0) Http::error('Missing folder_id');
 		if (!Permissions::can_upload_to_folder($folder_id, $user_id)) Http::error('Forbidden', 403);
+		if ($err = Repository::write_target_error($folder_id)) Http::error($err[0], $err[1]);
 
 		if (empty($_FILES['files'])) Http::error('No files');
 		StorageMonitor::require_not_exposed();
@@ -61,27 +64,34 @@ class Files {
 
 		for ($i = 0; $i < \count($names); $i++) {
 			if (!isset($tmp_names[$i])) continue;
-			if ((int) $errors[$i] !== UPLOAD_ERR_OK) continue;
-
 			$original = (string) $names[$i];
+			$err_code = (int) ($errors[$i] ?? UPLOAD_ERR_NO_FILE);
+			if ($err_code === UPLOAD_ERR_NO_FILE) continue;
+			if ($err_code !== UPLOAD_ERR_OK) {
+				// Name every skipped file so the client can say why, rather than reloading to an unchanged list.
+				$rejected[] = ['name' => $original, 'reason' => ($err_code === UPLOAD_ERR_INI_SIZE || $err_code === UPLOAD_ERR_FORM_SIZE) ? 'too_large' : 'server'];
+				continue;
+			}
+
 			$tmp = (string) $tmp_names[$i];
 			$size = (int) $sizes[$i];
 
 			$valid = Uploads::validate_type($tmp, \sanitize_file_name($original));
 			if ($valid === false) {
-				$rejected[] = $original;
+				$rejected[] = ['name' => $original, 'reason' => 'type'];
 				continue;
 			}
 			$mime = $valid['type'];
 
 			$unique = Storage::reserve_stored_name($folder_dir, $valid['filename']);
 			if ($unique === false) {
-				$rejected[] = $original;
+				$rejected[] = ['name' => $original, 'reason' => 'server'];
 				continue;
 			}
 			$dest = \trailingslashit($folder_dir) . $unique;
 			if (!@\move_uploaded_file($tmp, $dest)) {
 				@\unlink($dest);
+				$rejected[] = ['name' => $original, 'reason' => 'server'];
 				continue;
 			}
 
@@ -120,7 +130,8 @@ class Files {
 		$user_id = \get_current_user_id();
 		$file_id = isset($_POST['file_id']) ? (int) $_POST['file_id'] : 0;
 		if ($file_id <= 0) Http::error('Missing file_id');
-		if (!Permissions::can_manage_file($file_id, $user_id)) Http::error('Forbidden', 403);
+		// Admin only, like every other writer (a folder owner's "manage" never reaches this in the UI).
+		if (!\user_can($user_id, 'administrator') || !Permissions::can_manage_file($file_id, $user_id)) Http::error('Forbidden', 403);
 
 		$file = Repository::file_row($file_id);
 		if (!$file) Http::error('Not found', 404);
@@ -144,6 +155,9 @@ class Files {
 			['%s','%d']
 		);
 
+		Purger::delete_policies('file', [$file_id]);
+		Purger::strip_product_docs([$file_id]);
+
 		Activity::log('delete_file', 'file', $file_id, ['name' => $file->original_name], $user_id);
 		Http::success(['fileId' => $file_id]);
 	}
@@ -153,10 +167,18 @@ class Files {
 		$user_id = \get_current_user_id();
 
 		$file_id = isset($_POST['file_id']) ? (int) $_POST['file_id'] : 0;
-		$name = isset($_POST['name']) ? \sanitize_file_name((string) $_POST['name']) : '';
+		// The name stays as typed (spaces and capitals included); only markup and path separators go.
+		$name = isset($_POST['name']) ? \trim(\str_replace(['/', '\\'], '', \sanitize_text_field((string) $_POST['name']))) : '';
 		if ($file_id <= 0 || $name === '') Http::error('Missing fields');
 		if (!\user_can($user_id, 'administrator') || !Permissions::can_manage_file($file_id, $user_id)) {
 			Http::error('Forbidden', 403);
+		}
+		$current = Repository::file_row($file_id);
+		if (!$current) Http::error('Not found', 404);
+		// Dropping the extension would break the file type shown and downloaded, so keep the old one.
+		$old_ext = \pathinfo((string) $current->original_name, PATHINFO_EXTENSION);
+		if ($old_ext !== '' && \pathinfo($name, PATHINFO_EXTENSION) === '') {
+			$name = \rtrim($name, '.') . '.' . $old_ext;
 		}
 
 		global $wpdb;
@@ -175,48 +197,11 @@ class Files {
 		$target_folder = isset($_POST['folder_id']) ? (int) $_POST['folder_id'] : 0;
 		if ($file_id <= 0 || $target_folder <= 0) Http::error('Missing fields');
 
-		if (!Permissions::can_manage_file($file_id, $user_id)) Http::error('Forbidden', 403);
-		if (!Permissions::can_upload_to_folder($target_folder, $user_id)) Http::error('Forbidden', 403);
-
-		$file = Repository::file_row($file_id);
-		if (!$file) Http::error('Not found', 404);
-
-		if ((int) $file->folder_id === $target_folder) {
-			Http::success(['moved' => true]);
-		}
-
-		$current_path = Storage::path_for($file);
-		if (!\file_exists($current_path)) Http::error('File missing on disk', 404);
-
-		// Never reuse the source's stored name blindly: a same-named file in
-		// the destination would be overwritten, and two rows would then share
-		// one path (AFM-05).
-		$target_dir = Storage::ensure_folder_dir($target_folder);
-		$stored = Storage::reserve_stored_name($target_dir, $file->stored_name);
-		if ($stored === false) Http::error('Could not move file', 500);
-		$dest = \trailingslashit($target_dir) . $stored;
-		if (!@\rename($current_path, $dest)) {
-			@\unlink($dest);
-			Http::error('Could not move file', 500);
-		}
-
-		global $wpdb;
-		$files_table = Schema::table('files');
-		$updated = $wpdb->update($files_table, [
-			'folder_id' => $target_folder,
-			'stored_name' => $stored,
-		], ['id' => $file_id], ['%d', '%s'], ['%d']);
-		if ($updated === false) {
-			// Put the bytes back where the row still says they are.
-			@\rename($dest, $current_path);
-			Http::error('Could not move file', 500);
-		}
-
-		// Ensure view permissions follow the destination folder (when no explicit file perms exist).
-		PermissionWrites::copy_view('folder', $target_folder, 'file', $file_id, false);
-
-		Activity::log('move_file', 'file', $file_id, ['from' => (int) $file->folder_id, 'to' => $target_folder], $user_id);
-		Http::success(['moved' => true]);
+		if ($err = Mover::target_error($target_folder, $user_id)) Http::error($err[0], $err[1]);
+		$existing = Copier::gather_existing_names($target_folder);
+		$res = Mover::move('file', $file_id, $target_folder, $existing, $user_id);
+		if (\is_wp_error($res)) Http::error($res->get_error_message(), Mover::status_of($res));
+		Http::success(['moved' => true, 'name' => $res['name'], 'fromFolderId' => $res['fromFolderId']]);
 	}
 
 	public static function ajax_preview() {
@@ -363,6 +348,7 @@ class Files {
 		$url = isset($_POST['url']) ? \esc_url_raw((string) $_POST['url']) : '';
 		if ($folder_id <= 0 || $title === '' || $url === '') Http::error('Missing fields');
 		if (!Permissions::can_manage_folder($folder_id, $user_id)) Http::error('Forbidden', 403);
+		if ($err = Repository::write_target_error($folder_id)) Http::error($err[0], $err[1]);
 
 		global $wpdb;
 		$links = Schema::table('links');

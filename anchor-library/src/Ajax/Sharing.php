@@ -36,9 +36,9 @@ class Sharing {
 		$entity_id = isset($_POST['entity_id']) ? (int) $_POST['entity_id'] : 0;
 		if (!\in_array($entity_type, ['file', 'folder'], true) || $entity_id <= 0) Http::error('Missing fields');
 
-		$allowed = $entity_type === 'file'
+		$allowed = \user_can($user_id, 'administrator') && ($entity_type === 'file'
 			? Permissions::can_manage_file($entity_id, $user_id)
-			: Permissions::can_manage_folder($entity_id, $user_id);
+			: Permissions::can_manage_folder($entity_id, $user_id));
 		if (!$allowed) Http::error('Forbidden', 403);
 
 		global $wpdb;
@@ -89,10 +89,16 @@ class Sharing {
 		}
 		if (!\in_array($entity_type, ['file', 'folder'], true) || $entity_id <= 0) Http::error('Missing fields');
 
-		$allowed = $entity_type === 'file'
+		$allowed = \user_can($user_id, 'administrator') && ($entity_type === 'file'
 			? Permissions::can_manage_file($entity_id, $user_id)
-			: Permissions::can_manage_folder($entity_id, $user_id);
+			: Permissions::can_manage_folder($entity_id, $user_id));
 		if (!$allowed) Http::error('Forbidden', 403);
+		// The admin short-circuit answers "manage" for ids that do not exist; refuse them before writing grants.
+		if ($entity_type === 'file') {
+			if (!Repository::file_row($entity_id)) Http::error('Not found', 404);
+		} elseif ($err = Repository::write_target_error($entity_id)) {
+			Http::error($err[0], $err[1]);
+		}
 
 		$valid_roles = PermissionWrites::valid_role_keys();
 
@@ -116,9 +122,11 @@ class Sharing {
 			$uid = \is_array($u) && isset($u['id']) ? (int) $u['id'] : (int) $u;
 			if ($uid <= 0) continue;
 			$wp_user = \get_user_by('id', $uid);
+			// Granting an id nobody holds would silently hand the item to whoever gets that id later.
+			if (!$wp_user) Http::error('Unknown user', 400);
 			$normalized_users[$uid] = [
 				'id' => (string) $uid,
-				'name' => $wp_user ? $wp_user->display_name : (\is_array($u) && isset($u['name']) ? \sanitize_text_field((string) $u['name']) : (string) $uid),
+				'name' => $wp_user->display_name,
 			];
 		}
 		$users = \array_values($normalized_users);

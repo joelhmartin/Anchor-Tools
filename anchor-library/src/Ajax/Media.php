@@ -71,6 +71,7 @@ class Media {
 		if (!\user_can($user_id, 'administrator') || !Permissions::can_manage_folder($folder_id, $user_id)) {
 			Http::error('Forbidden', 403);
 		}
+		if ($err = Repository::write_target_error($folder_id)) Http::error($err[0], $err[1]);
 
 		$refs = \Anchor_FM_Vimeo::split_refs($raw);
 		if (empty($refs)) Http::error('Paste at least one Vimeo link or ID');
@@ -130,6 +131,7 @@ class Media {
 		if (!\user_can($user_id, 'administrator') || !Permissions::can_manage_folder($folder_id, $user_id)) {
 			Http::error('Forbidden', 403);
 		}
+		if ($err = Repository::write_target_error($folder_id)) Http::error($err[0], $err[1]);
 
 		// Accepts either a bulk `videos` array or the single-video
 		// {title, vimeo} shape the old modal posted.

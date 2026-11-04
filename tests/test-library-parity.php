@@ -130,7 +130,7 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 
 	public function test_every_plugin_ajax_action_is_registered() {
 		$actions = array_filter( array_map( 'trim', file( ANCHOR_TOOLS_PLUGIN_DIR . 'tests/fixtures/library-ajax-actions.txt' ) ) );
-		$this->assertCount( 51, $actions );
+		$this->assertCount( 52, $actions );
 		foreach ( $actions as $hook ) {
 			$this->assertNotFalse( has_action( $hook ), "$hook has no callback after boot()" );
 		}

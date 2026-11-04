@@ -115,6 +115,9 @@ class Portal {
 			'isAdmin' => \current_user_can('administrator'),
 			'vimeoEnabled' => true,
 			'productDocsFolderId' => $product_docs_id,
+			// Upload limits the client checks before sending (the server still enforces them).
+			'uploadMaxBytes' => (int) \wp_max_upload_size(),
+			'postMaxBytes' => (int) \wp_convert_hr_to_bytes((string) \ini_get('post_max_size')),
 			'user' => [
 				'id' => \get_current_user_id(),
 				'roles' => \array_values((array) $user->roles),
@@ -285,6 +288,11 @@ class Portal {
 							<button type="button" class="afm__btn afm__btn--primary" data-afm-action="upload">
 								<span class="dashicons dashicons-upload" aria-hidden="true"></span>
 								<?php \esc_html_e('Upload', 'anchor-schema'); ?>
+							</button>
+							<input type="file" webkitdirectory class="afm__fileInput" data-afm-folder-input>
+							<button type="button" class="afm__btn" data-afm-action="upload-folder">
+								<span class="dashicons dashicons-category" aria-hidden="true"></span>
+								<?php \esc_html_e('Upload folder', 'anchor-schema'); ?>
 							</button>
 						</div>
 					</div>

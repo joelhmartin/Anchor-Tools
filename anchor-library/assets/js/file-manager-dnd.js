@@ -199,9 +199,11 @@
             } else if (hasFiles(e)) {
                 e.preventDefault();
                 e.stopPropagation();
-                const files = dt(e).files;
+                const d = dt(e);
+                const items = d.items, files = d.files;
                 endDrag();
-                if (t.id > 0 && C.filesTabActive()) C.uploadFiles(files, t.id);
+                // Folders on the desktop arrive as entries; read them before the handler returns.
+                if (t.id > 0 && C.filesTabActive()) window.AnchorFMUpload.dropEntries(items, t.id, files);
             }
         });
 
@@ -227,7 +229,7 @@
             if (overUploadTarget(e)) { $root.removeClass('afm--drag'); return; }
             e.preventDefault(); // otherwise the browser would open the dropped file
             if (C.canUploadHere()) $root.addClass('afm--drag');
-            dt(e).dropEffect = C.canUploadHere() ? 'copy' : 'none';
+            dt(e).dropEffect = 'copy'; // even at Home: the drop then toasts why nothing uploads
         });
         $content.on('dragleave', function (e) {
             if (!osEvent(e)) return;
@@ -241,7 +243,8 @@
             osDepth = 0;
             $root.removeClass('afm--drag');
             clearOver();
-            if (C.canUploadHere()) C.uploadFiles(dt(e).files);
+            // At Home or in search this toasts "Open a folder to upload into it".
+            window.AnchorFMUpload.dropEntries(dt(e).items, 0, dt(e).files);
         });
     });
 })(jQuery);

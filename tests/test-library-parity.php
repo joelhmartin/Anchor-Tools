@@ -202,6 +202,9 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		$ap = wp_scripts()->get_data( 'anchor-documents-portal', 'data' );
 		$this->assertStringContainsString( 'var AnchorFM = ', $fm );
 		$this->assertStringContainsString( '"nonce":"' . wp_create_nonce( 'anchor_fm_nonce' ) . '"', $fm );
+		// The client checks these before sending (Task 5); wp_localize_script quotes scalars; the client Number()s them.
+		$this->assertMatchesRegularExpression( '/"uploadMaxBytes":"\d+"/', $fm );
+		$this->assertMatchesRegularExpression( '/"postMaxBytes":"\d+"/', $fm );
 		$this->assertStringContainsString( 'var AnchorAP = ', $ap );
 		$this->assertStringContainsString( '"nonce":"' . wp_create_nonce( 'anchor_fm_nonce' ) . '"', $ap );
 		$this->assertStringContainsString( ANCHOR_TOOLS_PLUGIN_URL . 'anchor-library/assets/js/file-manager.js', wp_scripts()->registered['anchor-file-manager']->src );

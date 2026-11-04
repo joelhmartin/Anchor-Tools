@@ -20,7 +20,7 @@ jQuery(function ($) {
     const $dropzone = $root.find('[data-afm-dropzone]');
     const $content = $root.find('.afm__content');
     const $fileInput = $root.find('[data-afm-file-input]');
-    const $uploadBtn = $root.find('[data-afm-action="upload"]');
+    const $uploadBtn = $root.find('[data-afm-action="upload"],[data-afm-action="upload-folder"]');
     const $linkBtn = $root.find('[data-afm-action="new-link"]');
     const $frame = $root.find('.afm__frame');
     const $resizer = $root.find('[data-afm-resizer]');
@@ -714,65 +714,6 @@ jQuery(function ($) {
         }).always(() => {
             $root.removeClass('afm--busy');
         });
-    }
-
-    function ensureUploadProgress() {
-        let $p = $root.find('[data-afm-upload-progress]');
-        if (!$p.length) {
-            $p = $(`<div class="afm__uploadProgress" data-afm-upload-progress>
-                <div class="afm__uploadBar"><div class="afm__uploadBarFill"></div></div>
-                <span class="afm__uploadPct">0%</span></div>`).appendTo($root);
-        }
-        $p.find('.afm__uploadBarFill').css('width', '0%');
-        $p.find('.afm__uploadPct').text('0%');
-        return $p;
-    }
-
-    // folderId defaults to the open folder; drag-and-drop passes the folder under the pointer.
-    function uploadFiles(files, folderId) {
-        if (!files || !files.length) return;
-        const target = Number(folderId) > 0 ? Number(folderId) : state.currentFolderId;
-        if (!AnchorFM.isAdmin || !(target > 0)) return;
-        if (target === state.currentFolderId && !canUploadHere()) return;
-
-        const data = new FormData();
-        data.append('action', 'anchor_fm_upload');
-        data.append('nonce', AnchorFM.nonce);
-        data.append('folder_id', String(target));
-        Array.from(files).forEach(f => data.append('files[]', f, f.name));
-
-        $root.addClass('afm--busy');
-        ensureUploadProgress();
-        $.ajax({
-            url: AnchorFM.ajax,
-            method: 'POST',
-            data,
-            processData: false,
-            contentType: false,
-            xhr: function () {
-                const xhr = new window.XMLHttpRequest();
-                xhr.upload.addEventListener('progress', function (evt) {
-                    if (evt.lengthComputable) {
-                        const pct = Math.round((evt.loaded / evt.total) * 100);
-                        const $p = $root.find('[data-afm-upload-progress]');
-                        $p.find('.afm__uploadBarFill').css('width', pct + '%');
-                        $p.find('.afm__uploadPct').text(pct + '%');
-                    }
-                }, false);
-                return xhr;
-            },
-        }).always(() => $root.removeClass('afm--busy'))
-            .done((res) => {
-                const rejected = res && res.data && res.data.rejected;
-                if (rejected && rejected.length) {
-                    toast('Some files were not uploaded: ' + rejected.map(r => (r && r.name) || r).join(', '));
-                }
-                loadFolder(state.currentFolderId);
-                $root.find('[data-afm-upload-progress]').remove();
-            })
-            .fail(() => {
-                $root.find('[data-afm-upload-progress]').remove();
-            });
     }
 
     // Every preview surface renders by pointing the browser at the stream
@@ -2160,19 +2101,6 @@ jQuery(function ($) {
         closeMenu();
     });
 
-    $root.on('click', '[data-afm-action="upload"]', function (e) {
-        if (ignoreIfNotFilesTab(e)) return;
-        $fileInput.trigger('click');
-    });
-    $fileInput.on('change', function (e) {
-        if (ignoreIfNotFilesTab(e)) {
-            $(this).val('');
-            return;
-        }
-        uploadFiles(this.files);
-        $(this).val('');
-    });
-
     let searchTimer = null;
     $search.on('input', function () {
         const term = String($(this).val() || '').trim();
@@ -2687,14 +2615,14 @@ jQuery(function ($) {
         $t.remove(); if (cb) cb();
     }
     // action = {label, onClick} adds a button (e.g. Undo) and keeps the toast up longer.
-    function toast(msg, action) {
+    function toast(msg, action, ms) {
         const $t = $(`<div class="afm__toast">${esc(msg)}</div>`).appendTo($root);
         if (action && action.label) {
             $('<button type="button" class="afm__toastAction"></button>').text(action.label).appendTo($t)
                 .on('click', function () { $t.remove(); action.onClick(); });
         }
         setTimeout(() => $t.addClass('is-show'), 10);
-        setTimeout(() => { $t.removeClass('is-show'); setTimeout(() => $t.remove(), 300); }, action ? 8000 : 1800);
+        setTimeout(() => { $t.removeClass('is-show'); setTimeout(() => $t.remove(), 300); }, ms || (action ? 8000 : 1800));
     }
     function handleDeepLink() {
         const m = (window.location.hash || '').match(/^#afm-(file|video|folder|link)-(\d+)$/);
@@ -2884,7 +2812,8 @@ jQuery(function ($) {
         loadFolder, reloadCurrentFolder, bootstrap, findRow, selectionAsItems,
         refreshSelectionUI, openConfirmModal, openModal, closeModal,
         renderTreeNodeHtml: renderTreeNode, folderName: findFolderName,
-        uploadFiles, flashRow, canUploadHere, folderOfRow, isAdmin: !!AnchorFM.isAdmin,
+        flashRow, canUploadHere, folderOfRow, isAdmin: !!AnchorFM.isAdmin,
+        // uploadFiles is added by file-manager-upload.js (it owns the whole upload path)
         // used by the keyboard module
         copyItems, setClipboard, forgetClipboard, clipboardItems, openViewer,
         startInlineRename, closeTopmost, filesTabActive,

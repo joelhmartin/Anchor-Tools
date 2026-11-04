@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.44.14
+Stable tag: 3.45.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,11 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.45.0 =
+* Library: moving things is much easier. Drag any file, folder, link or video onto a folder in the list, a folder in the sidebar, a path crumb at the top, or Home. Drag a whole selection at once. You can also use Move to... (a folder picker with a New folder button), or cut and paste. Every move shows "Moved N items to ..." with an Undo button. Links and videos can be moved too, and the page stays in the folder you are in instead of jumping.
+* Library: mistakes are never silent now. Every error shows a message, a failed Permissions load can no longer wipe a folder's access (Save stays off until it loads), and folder downloads that cannot be built tell you why instead of opening a blank page.
+* Library: uploads are sturdier. Big drops go up in batches, you can upload a whole folder, and any file that was skipped (too big, wrong type) is named. Clients get Download in the menu, and "Copy share link" is now "Copy link". Several server-side fixes make moves, renames, deletes and permissions more reliable.
 
 = 3.44.14 =
 * Library: Duplicate on a top-level folder works (it silently did nothing). Folders can be copied or pasted to the top level; files, links and videos say "Only folders can go at the top level". Copy errors now show a message, Ctrl/Cmd+D and V work at the top level, and Duplicate from search results copies beside the original.

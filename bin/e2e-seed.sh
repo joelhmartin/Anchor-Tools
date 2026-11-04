@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true,"announcements":true,"agreements":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true,"announcements":true,"agreements":true,"library":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery + Compliance + Courses + Announcements + Agreements modules enabled."
+log "Events + Gallery + Compliance + Courses + Announcements + Agreements + Library modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -923,5 +923,69 @@ wp post meta update "${AAGR_PRODUCT2}" _anchor_agreement_id "${AAGR_DOC2}" >/dev
 wp eval '$p = ABSPATH . "wp-content/plugins/'"${PLUGIN_SLUG}"'/e2e/.seed.json"; $d = json_decode( (string) file_get_contents( $p ), true ) ?: []; $d["agreements_product_id"] = '"${AAGR_PRODUCT}"'; $d["agreements_product2_id"] = '"${AAGR_PRODUCT2}"'; file_put_contents( $p, json_encode( $d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );'
 log "Agreements fixture ready: agreement #${AAGR_DOC}, product #${AAGR_PRODUCT}."
 echo "AAGR_PRODUCT_ID=${AAGR_PRODUCT}"
+
+# ---------------------------------------------------------------------------
+# Anchor Library fixture: a page with [anchor_file_manager] and the folders
+# "E2E Lib A" (holding "E2E Lib A1" and e2e-a.txt) and "E2E Lib B", for
+# e2e/library-file-manager.spec.js. Re-seeding RESETS the fixture: any earlier
+# "E2E Lib" folders/files (and the copies a spec made) are removed first, so the
+# spec always starts from the same tree. Ids are merged into e2e/.seed.json.
+# ---------------------------------------------------------------------------
+LIB_PAGE_ID="$(wp post list --post_type=page --post_status=any --name=library-file-manager --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${LIB_PAGE_ID}" ]; then
+  LIB_PAGE_ID="$(wp post create --post_type=page --post_status=publish --post_title='Library' --post_name=library-file-manager --post_content='[anchor_file_manager]' --porcelain)"
+else
+  wp post update "${LIB_PAGE_ID}" --post_status=publish --post_content='[anchor_file_manager]' >/dev/null
+fi
+LIB_PHP="$(mktemp)"
+cat > "${LIB_PHP}" <<'PHP'
+<?php
+global $wpdb;
+if ( class_exists( '\Anchor\Library\Schema' ) ) {
+	\Anchor\Library\Schema::maybe_upgrade();
+}
+$f = $wpdb->prefix . 'anchor_fm_folders';
+$t = $wpdb->prefix . 'anchor_fm_files';
+$now = current_time( 'mysql' );
+// Reset: every "E2E Lib%" folder (wherever a spec left it), its descendants and files.
+$all = array_map( 'intval', $wpdb->get_col( "SELECT id FROM {$f} WHERE name LIKE 'E2E Lib%'" ) );
+for ( $queue = $all; $queue; ) {
+	$kids = $wpdb->get_col( 'SELECT id FROM ' . $f . ' WHERE parent_id IN (' . implode( ',', $queue ) . ')' );
+	$queue = array_diff( array_map( 'intval', $kids ), $all );
+	$all = array_merge( $all, $queue );
+}
+if ( $all ) {
+	$in = implode( ',', $all );
+	$wpdb->query( "DELETE FROM {$t} WHERE folder_id IN ({$in})" );
+	$wpdb->query( "DELETE FROM {$f} WHERE id IN ({$in})" );
+}
+$wpdb->query( "DELETE FROM {$t} WHERE original_name = 'e2e-a.txt'" );
+$mk = static function ( string $name, int $parent ) use ( $wpdb, $f, $now ) {
+	$wpdb->insert( $f, [ 'parent_id' => $parent, 'name' => $name, 'owner_user_id' => 0, 'is_private' => 0, 'created_by' => 1, 'created_at' => $now, 'updated_at' => $now ] );
+	return (int) $wpdb->insert_id;
+};
+$a  = $mk( 'E2E Lib A', 0 );
+$a1 = $mk( 'E2E Lib A1', $a );
+$b  = $mk( 'E2E Lib B', 0 );
+// A real file on disk: a move renames the bytes into the destination folder's directory.
+$dir    = \Anchor\Library\Storage::ensure_folder_dir( $a );
+$stored = \Anchor\Library\Storage::reserve_stored_name( $dir, 'e2e-a.txt' );
+file_put_contents( trailingslashit( $dir ) . $stored, 'hello' );
+$wpdb->insert( $t, [ 'folder_id' => $a, 'original_name' => 'e2e-a.txt', 'stored_name' => $stored, 'mime_type' => 'text/plain', 'size' => 5, 'sha1' => sha1( 'hello' ), 'uploader_user_id' => 1, 'created_at' => $now ] );
+$file = (int) $wpdb->insert_id;
+$path = getenv( 'ANCHOR_E2E_SEED_JSON_PATH' );
+$data = json_decode( (string) file_get_contents( $path ), true );
+$data = is_array( $data ) ? $data : [];
+$data['library_page_url'] = get_permalink( (int) getenv( 'ANCHOR_E2E_LIB_PAGE_ID' ) );
+$data['library_folder_a'] = $a;
+$data['library_folder_a1'] = $a1;
+$data['library_folder_b'] = $b;
+$data['library_file_id'] = $file;
+file_put_contents( $path, json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );
+echo "library fixture: A={$a} A1={$a1} B={$b} file={$file}\n";
+PHP
+ANCHOR_E2E_SEED_JSON_PATH="${PLUGIN_DIR}/e2e/.seed.json" ANCHOR_E2E_LIB_PAGE_ID="${LIB_PAGE_ID}" wp eval-file "${LIB_PHP}"
+rm -f "${LIB_PHP}"
+log "Library fixture ready: page #${LIB_PAGE_ID}."
 
 log "Seed complete."

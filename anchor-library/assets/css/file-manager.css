@@ -570,6 +570,7 @@
   align-items: center;
   justify-content: center;
   z-index: 2;
+  pointer-events: none;
 }
 
 .afm--drag .afm__dropzone {
@@ -704,18 +705,23 @@
   border-color: rgba(var(--afm-accent-2-rgb), 0.16);
 }
 
-.afm__card--folder.is-drop,
-.afm__treeBtn.is-drop {
-  outline: 2px dashed rgba(var(--afm-accent-rgb), 0.6);
+.afm__treeBtn.is-drop,
+.afm__crumb.is-drop {
+  outline: 2px dashed rgba(var(--afm-accent-rgb), 0.7);
+  outline-offset: -2px;
+  background: rgba(var(--afm-accent-rgb), 0.14);
 }
 
-.afm--dragMode .afm__card--folder {
-  cursor: grab;
-}
-
-.afm__card--folder.is-drop-flash,
 .afm__treeBtn.is-drop-flash {
   animation: afm-drop-flash 0.5s ease;
+}
+
+/* An internal drag is in progress: the whole-page upload overlay stays hidden. */
+.afm--dragMode .afm__row.is-dragging { opacity: 0.45; }
+.afm--dragMode .afm__dropzone { display: none; }
+.afm__toastAction {
+  margin-left: 12px; background: none; border: 0; padding: 0; color: #fff;
+  font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer;
 }
 
 @keyframes afm-drop-flash {

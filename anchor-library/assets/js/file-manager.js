@@ -125,7 +125,8 @@ jQuery(function ($) {
      * about what the server will actually accept.
      */
     function canUploadHere() {
-        return !!AnchorFM.isAdmin && capRank(state.currentCapability) >= 2;
+        // F1: the server refuses uploads at Home (folder 0), so never offer one.
+        return !!AnchorFM.isAdmin && state.currentFolderId > 0 && !(state.search && state.search.length >= 2) && capRank(state.currentCapability) >= 2;
     }
 
     function capRank(cap) {
@@ -153,7 +154,7 @@ jQuery(function ($) {
                     ${hasChildren ? `<button type="button" class="afm__treeToggle" data-afm-tree-toggle="${node.id}" aria-label="Toggle folder" aria-expanded="${isExpanded ? 'true' : 'false'}">
                         <span class="dashicons dashicons-arrow-right-alt2" aria-hidden="true"></span>
                     </button>` : `<span class="afm__treeToggle is-placeholder" aria-hidden="true"></span>`}
-                    <button type="button" class="afm__treeBtn" data-afm-open-folder="${node.id}" title="${labelText}">
+                    <button type="button" class="afm__treeBtn" data-afm-open-folder="${node.id}" title="${labelText}"${AnchorFM.isAdmin && !node.isProductDocs ? ' draggable="true"' : ''}>
                         <span class="dashicons dashicons-category afm__treeIcon" aria-hidden="true"></span>
                         <span class="afm__treeLabel">${label}</span>
                     </button>
@@ -168,7 +169,11 @@ jQuery(function ($) {
 
     function renderTree(tree) {
         const html = tree && tree.length ? tree.map(renderTreeNode).join('') : `<div class="afm__empty">${esc(AnchorFM.i18n.noFolders)}</div>`;
-        $tree.html(html);
+        // Home is a drop target for admins (move a folder to the top level).
+        const home = AnchorFM.isAdmin
+            ? `<div class="afm__treeNode is-leaf"><div class="afm__treeRow"><span class="afm__treeToggle is-placeholder" aria-hidden="true"></span><button type="button" class="afm__treeBtn" data-afm-open-folder="0" data-afm-tree-home title="Home"><span class="dashicons dashicons-admin-home afm__treeIcon" aria-hidden="true"></span><span class="afm__treeLabel">Home</span></button></div></div>`
+            : '';
+        $tree.html(home + html);
         highlightTreeSelection();
     }
 
@@ -405,8 +410,8 @@ jQuery(function ($) {
             : `<span class="afm__rowDisclosure afm__rowDisclosure--empty"></span>`;
         const sizeText = item.kind === 'file' ? esc(fmtSize(item.size)) : '—';
         const modified = item.createdAt ? esc(String(item.createdAt).slice(0, 10)) : '—';
-        // Files and folders can be moved (drag onto a folder row or the sidebar tree).
-        const draggable = (AnchorFM.isAdmin && (item.kind === 'file' || item.kind === 'folder')) ? ' draggable="true"' : '';
+        // Every kind can be moved (file-manager-dnd.js owns the drag behaviour).
+        const draggable = AnchorFM.isAdmin ? ' draggable="true"' : '';
         return `
             <div class="afm__row afm__row--${item.kind}${selected}"${draggable}
                  data-afm-row="${item.kind}:${item.id}"
@@ -722,14 +727,17 @@ jQuery(function ($) {
         return $p;
     }
 
-    function uploadFiles(files) {
+    // folderId defaults to the open folder; drag-and-drop passes the folder under the pointer.
+    function uploadFiles(files, folderId) {
         if (!files || !files.length) return;
-        if (!canUploadHere()) return;
+        const target = Number(folderId) > 0 ? Number(folderId) : state.currentFolderId;
+        if (!AnchorFM.isAdmin || !(target > 0)) return;
+        if (target === state.currentFolderId && !canUploadHere()) return;
 
         const data = new FormData();
         data.append('action', 'anchor_fm_upload');
         data.append('nonce', AnchorFM.nonce);
-        data.append('folder_id', String(state.currentFolderId));
+        data.append('folder_id', String(target));
         Array.from(files).forEach(f => data.append('files[]', f, f.name));
 
         $root.addClass('afm--busy');
@@ -2142,28 +2150,6 @@ jQuery(function ($) {
         loadFolder($(this).data('afm-open-folder'));
     });
 
-    $root.on('click', '[data-afm-folder-card]', function (e) {
-        const id = $(this).data('afm-folder-card');
-        if ($(e.target).closest('[data-afm-folder-menu]').length) return;
-        if (ignoreIfNotFilesTab(e)) return;
-        loadFolder(id);
-    });
-
-    $root.on('click', '[data-afm-file-card]', function (e) {
-        const id = $(this).data('afm-file-card');
-        if ($(e.target).closest('[data-afm-file-menu]').length) return;
-        openViewer('file', id);
-    });
-
-    $root.on('click', '[data-afm-link-card]', function (e) {
-        const id = $(this).data('afm-link-card');
-        if ($(e.target).closest('[data-afm-link-menu]').length) return;
-        const link = findLinkById(id);
-        if (link && link.url) {
-            window.open(link.url, '_blank', 'noopener');
-        }
-    });
-
     $root.on('click', '[data-afm-action="close-drawer"]', closeDrawer);
     $root.on('click', '[data-afm-action="close-modal"]', closeModal);
     $root.on('click', '[data-afm-action="modal-primary"]', handleModalPrimary);
@@ -2186,42 +2172,6 @@ jQuery(function ($) {
         }
         uploadFiles(this.files);
         $(this).val('');
-    });
-
-    let dragDepth = 0;
-    $content.on('dragenter', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (ignoreIfNotFilesTab(e)) return;
-        if (!canUploadHere()) return;
-        dragDepth++;
-        $root.addClass('afm--drag');
-    });
-    $content.on('dragover', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (ignoreIfNotFilesTab(e)) return;
-        if (!canUploadHere()) return;
-        $root.addClass('afm--drag');
-    });
-    $content.on('dragleave', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (ignoreIfNotFilesTab(e)) return;
-        if (!canUploadHere()) return;
-        dragDepth = Math.max(0, dragDepth - 1);
-        if (!dragDepth) $root.removeClass('afm--drag');
-    });
-    $content.on('drop', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (ignoreIfNotFilesTab(e)) return;
-        dragDepth = 0;
-        $root.removeClass('afm--drag');
-        if (!canUploadHere()) return;
-        if (e.originalEvent && e.originalEvent.dataTransfer) {
-            uploadFiles(e.originalEvent.dataTransfer.files);
-        }
     });
 
     let searchTimer = null;
@@ -2736,10 +2686,15 @@ jQuery(function ($) {
         $t[0].select(); try { document.execCommand('copy'); } catch (e) {}
         $t.remove(); if (cb) cb();
     }
-    function toast(msg) {
+    // action = {label, onClick} adds a button (e.g. Undo) and keeps the toast up longer.
+    function toast(msg, action) {
         const $t = $(`<div class="afm__toast">${esc(msg)}</div>`).appendTo($root);
+        if (action && action.label) {
+            $('<button type="button" class="afm__toastAction"></button>').text(action.label).appendTo($t)
+                .on('click', function () { $t.remove(); action.onClick(); });
+        }
         setTimeout(() => $t.addClass('is-show'), 10);
-        setTimeout(() => { $t.removeClass('is-show'); setTimeout(() => $t.remove(), 300); }, 1800);
+        setTimeout(() => { $t.removeClass('is-show'); setTimeout(() => $t.remove(), 300); }, action ? 8000 : 1800);
     }
     function handleDeepLink() {
         const m = (window.location.hash || '').match(/^#afm-(file|video|folder|link)-(\d+)$/);
@@ -2801,135 +2756,6 @@ jQuery(function ($) {
             $n.text(msg);
         });
     });
-
-    // Drag to move files into folders (admin/manage only)
-    let dragFileId = null;
-    let dragFolderId = null;
-
-    $root.on('dragstart', '[data-afm-file-card]', function (e) {
-        const id = Number($(this).data('afm-file-card'));
-        if (!AnchorFM.isAdmin) return;
-        dragFileId = id;
-        dragFolderId = null;
-        if (e.originalEvent && e.originalEvent.dataTransfer) {
-            e.originalEvent.dataTransfer.effectAllowed = 'copyMove';
-            e.originalEvent.dataTransfer.setData('text/plain', String(id));
-        }
-        $root.addClass('afm--dragMode');
-    });
-
-    $root.on('dragstart', '[data-afm-folder-card], [data-afm-open-folder]', function (e) {
-        const id = Number($(this).data('afm-folder-card') || $(this).data('afm-open-folder'));
-        if (!AnchorFM.isAdmin) return;
-        dragFolderId = id;
-        dragFileId = null;
-        if (e.originalEvent && e.originalEvent.dataTransfer) {
-            e.originalEvent.dataTransfer.effectAllowed = 'copyMove';
-            e.originalEvent.dataTransfer.setData('text/plain', String(id));
-        }
-        $root.addClass('afm--dragMode');
-    });
-
-    // Finder rows: files and folders drag onto folder rows (or the sidebar tree) to move.
-    $root.on('dragstart', '[data-afm-row]', function (e) {
-        if (!AnchorFM.isAdmin) return;
-        const kind = $(this).data('afm-row-kind');
-        const id = Number($(this).data('afm-row-id'));
-        if (kind === 'file') { dragFileId = id; dragFolderId = null; }
-        else if (kind === 'folder') { dragFolderId = id; dragFileId = null; }
-        else return;
-        if (e.originalEvent && e.originalEvent.dataTransfer) {
-            e.originalEvent.dataTransfer.effectAllowed = 'copyMove';
-            e.originalEvent.dataTransfer.setData('text/plain', String(id));
-        }
-        $root.addClass('afm--dragMode');
-    });
-
-    $root.on('dragend', '[data-afm-file-card],[data-afm-folder-card],[data-afm-open-folder],[data-afm-row]', function () {
-        dragFileId = null;
-        dragFolderId = null;
-        $root.removeClass('afm--drag');
-        $root.removeClass('afm--dragMode');
-        $root.find('.afm__card--folder, .afm__treeBtn, .afm__row--folder').removeClass('is-drop');
-    });
-
-    // Use capture on document to better catch drops over folder cards
-    $(document).on('dragover', function (e) {
-        if (!AnchorFM.isAdmin) return;
-        if (!dragFileId && !dragFolderId) return;
-        const el = document.elementFromPoint(e.clientX, e.clientY);
-        const $target = $(el).closest('[data-afm-folder-card], [data-afm-open-folder], [data-afm-row-kind="folder"]');
-        $root.find('.afm__card--folder, .afm__treeBtn, .afm__row--folder').removeClass('is-drop');
-        if ($target.length) {
-            e.preventDefault();
-            if (e.originalEvent && e.originalEvent.dataTransfer) {
-                e.originalEvent.dataTransfer.dropEffect = 'move';
-            }
-            $target.addClass('is-drop');
-        }
-    });
-
-    $root.on('dragleave', '[data-afm-folder-card], [data-afm-open-folder], [data-afm-row-kind="folder"]', function () {
-        $(this).removeClass('is-drop');
-    });
-    $root.on('drop', '[data-afm-folder-card], [data-afm-open-folder], [data-afm-row-kind="folder"]', function (e) {
-        if (!AnchorFM.isAdmin) return;
-        if (!dragFileId && !dragFolderId) return;
-        e.preventDefault();
-        const folderId = Number($(this).data('afm-folder-card') || $(this).data('afm-open-folder') || $(this).data('afm-row-id'));
-        if (productDocsFolderId && folderId === productDocsFolderId) return;
-        const copyMode = !!(e.originalEvent && (e.originalEvent.ctrlKey || e.originalEvent.altKey));
-        handleDropOnFolder($(this), folderId, copyMode);
-    });
-
-    $(document).on('drop', function (e) {
-        if (!AnchorFM.isAdmin) return;
-        if (!dragFileId && !dragFolderId) return;
-        const el = document.elementFromPoint(e.clientX, e.clientY);
-        const $target = $(el).closest('[data-afm-folder-card], [data-afm-open-folder], [data-afm-row-kind="folder"]');
-        if ($target.length) {
-            e.preventDefault();
-            const folderId = Number($target.data('afm-folder-card') || $target.data('afm-open-folder') || $target.data('afm-row-id'));
-            if (productDocsFolderId && folderId === productDocsFolderId) return;
-            const copyMode = !!(e.originalEvent && (e.originalEvent.ctrlKey || e.originalEvent.altKey));
-            handleDropOnFolder($target, folderId, copyMode);
-        }
-    });
-
-    function handleDropOnFolder($el, folderId, copyMode) {
-        $el.removeClass('is-drop');
-        if (copyMode) {
-            const items = [];
-            if (dragFileId) { items.push({ kind: 'file', id: dragFileId }); }
-            else if (dragFolderId) {
-                if (folderId === dragFolderId) return;
-                items.push({ kind: 'folder', id: dragFolderId });
-            }
-            if (items.length) { flashDrop($el); copyItems(items, folderId); }
-            return;
-        }
-        if (dragFileId) {
-            api('anchor_fm_move_file', { file_id: dragFileId, folder_id: folderId }).done(res => {
-                if (res && res.success) {
-                    flashDrop($el);
-                    bootstrap({ stay: true });
-                }
-            });
-        } else if (dragFolderId) {
-            if (folderId === dragFolderId) return;
-            api('anchor_fm_move_folder', { folder_id: dragFolderId, target_folder_id: folderId }).done(res => {
-                if (res && res.success) {
-                    flashDrop($el);
-                    bootstrap({ stay: true });
-                }
-            });
-        }
-    }
-
-    function flashDrop($el) {
-        $el.addClass('is-drop-flash');
-        window.setTimeout(() => $el.removeClass('is-drop-flash'), 500);
-    }
 
     // Panels follow the tree selection; Product Docs panel is admin-only and triggered by the admin tab.
 
@@ -3058,7 +2884,7 @@ jQuery(function ($) {
         loadFolder, reloadCurrentFolder, bootstrap, findRow, selectionAsItems,
         refreshSelectionUI, openConfirmModal, openModal, closeModal,
         renderTreeNodeHtml: renderTreeNode, folderName: findFolderName,
-        uploadFiles, flashRow, isAdmin: !!AnchorFM.isAdmin,
+        uploadFiles, flashRow, canUploadHere, isAdmin: !!AnchorFM.isAdmin,
         // used by the keyboard module
         copyItems, setClipboard, forgetClipboard, clipboardItems, openViewer,
         startInlineRename, closeTopmost, filesTabActive,

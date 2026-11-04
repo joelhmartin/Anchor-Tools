@@ -341,9 +341,11 @@ class Folders {
 		$raw = isset($_POST['items']) ? \wp_unslash($_POST['items']) : '';
 		$items = \json_decode((string) $raw, true);
 		if (!\is_array($items) || !$items) Http::error('No items to copy');
-		if ($target <= 0) Http::error('Missing target folder');
+		// 0 is the top level: folders may be copied there (as they may be moved
+		// there); files, links and videos always live inside a folder.
+		if ($target < 0) Http::error('Missing target folder');
 
-		if (!Repository::folder_row($target)) Http::error('Target folder not found', 404);
+		if ($target > 0 && !Repository::folder_row($target)) Http::error('Target folder not found', 404);
 		if (!Permissions::can_upload_to_folder($target, $user_id)) Http::error('Forbidden', 403);
 
 		$existing = Copier::gather_existing_names($target);
@@ -358,6 +360,10 @@ class Folders {
 
 			if ($id <= 0 || !\in_array($kind, ['file', 'link', 'video', 'folder'], true)) {
 				$res['message'] = 'Invalid item';
+				$errors++; $results[] = $res; continue;
+			}
+			if ($target === 0 && $kind !== 'folder') {
+				$res['message'] = 'Only folders can go at the top level';
 				$errors++; $results[] = $res; continue;
 			}
 

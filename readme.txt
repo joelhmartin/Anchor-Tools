@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.44.13
+Stable tag: 3.44.14
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.44.14 =
+* Library: Duplicate on a top-level folder works (it silently did nothing). Folders can be copied or pasted to the top level; files, links and videos say "Only folders can go at the top level". Copy errors now show a message, Ctrl/Cmd+D and V work at the top level, and Duplicate from search results copies beside the original.
 
 = 3.44.13 =
 * Events: the "Pay in full / monthly payments" choice follows the ticket the buyer picks. A ticket that gets the pay-in-full saving shows "Pay in full ($750 off)"; any other ticket, or no single ticket picked yet, shows plain "Pay in full". Each plan option shows the picked ticket's monthly amount. Works in the event registration form and in WooCommerce product forms that use Woocommerce::plan_choice().

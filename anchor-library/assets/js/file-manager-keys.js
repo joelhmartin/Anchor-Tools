@@ -82,7 +82,10 @@
 
             if (e.key === 'ArrowDown') { e.preventDefault(); setActive($rows, Math.min($rows.length - 1, idx + 1)); }
             else if (e.key === 'ArrowUp') { e.preventDefault(); setActive($rows, Math.max(0, idx - 1)); }
-            else if (e.key === 'ArrowRight' && kind === 'folder' && !state.expandedRows[id]) { $cur.find('[data-afm-row-expand]').trigger('click'); }
+            else if (e.key === 'ArrowRight' && kind === 'folder' && !state.expandedRows[id]) {
+                $cur.find('[data-afm-row-expand]').trigger('click');
+                const r = rowOf(kind, id)[0]; if (r) r.focus({ preventScroll: true });
+            }
             else if (e.key === 'ArrowLeft' && kind === 'folder' && state.expandedRows[id]) {
                 $cur.find('[data-afm-row-expand]').trigger('click');
                 const r = rowOf(kind, id)[0]; if (r) r.focus({ preventScroll: true });

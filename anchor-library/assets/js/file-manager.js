@@ -506,6 +506,7 @@ jQuery(function ($) {
     }
 
     function closeModal() {
+        if (state.modalLocked) return;
         $modal.prop('hidden', true);
         $root.removeClass('afm--modalOpen');
         state.selectedEntity = null;
@@ -1620,6 +1621,7 @@ jQuery(function ($) {
         const todo = withoutDescendants(items || []);
         if (!todo.length) return;
         setModalBusy(true, 'Deleting…');
+        state.modalLocked = true; // closeModal() ignores dismissal until the deletes finish
         let done = 0, failed = 0, reason = '';
         for (const it of todo) {
             const del = DELETE_KINDS[it.kind];
@@ -1634,6 +1636,7 @@ jQuery(function ($) {
         }
         forgetClipboard(items);
         state.selectedRows.clear();
+        state.modalLocked = false;
         setModalBusy(false, 'Delete');
         closeModal();
         toast(done + ' deleted' + (failed ? ', ' + failed + ' failed: ' + reason : ''));
@@ -1715,7 +1718,7 @@ jQuery(function ($) {
                 return;
             }
             setModalBusy(true, 'Fetching…');
-            api('anchor_fm_vimeo_resolve', { folder_id: state.currentFolderId, refs: src })
+            api('anchor_fm_vimeo_resolve', { folder_id: state.currentFolderId, refs: src }, { quiet: true })
                 .done(res => {
                     setModalBusy(false, 'Fetch');
                     if (!res || !res.success) { videoNotice(errMessage(null, res, 'Could not read those videos')); return; }
@@ -1745,7 +1748,7 @@ jQuery(function ($) {
             if (!videos.length) return;
 
             setModalBusy(true, 'Adding…');
-            api('anchor_fm_vimeo_add', { folder_id: state.currentFolderId, videos: videos })
+            api('anchor_fm_vimeo_add', { folder_id: state.currentFolderId, videos: videos }, { quiet: true })
                 .done(res => {
                     setModalBusy(false, 'Add');
                     if (!res || !res.success) { videoNotice(errMessage(null, res, 'Could not add video')); return; }
@@ -2517,7 +2520,7 @@ jQuery(function ($) {
         fetchChildren(fid).then(rows => {
             $btn.removeClass('is-loading');
             if (gen !== state.childGeneration) return;
-            if (!rows) { toast('Could not open that folder.'); return; }
+            if (!rows) return; // api() already toasted the server's reason
             state.expandedRows[fid] = rows;
             renderList(state.currentList, state.currentCapability);
         });
@@ -2940,7 +2943,10 @@ jQuery(function ($) {
             lastUserResults = [];
             return;
         }
-        api('anchor_fm_user_search', { term }, { quiet: true }).done(res => {
+        api('anchor_fm_user_search', { term }, { quiet: true }).fail(xhr => {
+            lastUserResults = [];
+            $suggest.prop('hidden', false).html(`<div class="afm__suggestItem is-empty">${esc(errMessage(xhr, null, 'Search failed.'))}</div>`);
+        }).done(res => {
             if (!res || !res.success) return;
             lastUserResults = res.data.users || [];
             if (!lastUserResults.length) {
@@ -3048,7 +3054,7 @@ jQuery(function ($) {
     // / -upload / -productdocs) are enqueued after this file and read it; a
     // helper they need is added here by name, never re-implemented.
     window.AnchorFMCore = {
-        $root, $content, state, api, apiErr, toast, errMessage, isExpired,
+        $root, $content, state, api, apiErr, toast, errMessage, isExpired, esc,
         loadFolder, reloadCurrentFolder, bootstrap, findRow, selectionAsItems,
         refreshSelectionUI, openConfirmModal, openModal, closeModal,
         renderTreeNodeHtml: renderTreeNode, folderName: findFolderName,

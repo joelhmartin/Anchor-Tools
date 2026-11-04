@@ -425,6 +425,26 @@ class Anchor_Library_Parity_Test extends WP_Ajax_UnitTestCase {
 		$this->assertStringContainsString( 'action=anchor_fm_stream', $prev['data']['preview']['inlineUrl'] );
 	}
 
+	public function test_duplicating_a_top_level_folder_copies_it_beside_the_original() {
+		global $wpdb;
+		$top  = $this->folder( 'Top' );
+		$this->folder( 'Child', $top );
+		$file = $this->stored_file( $top );
+
+		$copy = $this->call( 'anchor_fm_copy_items', [ 'target_folder_id' => 0, 'items' => wp_json_encode( [ [ 'kind' => 'folder', 'id' => $top ] ] ) ] );
+		$this->assertTrue( $copy['success'], wp_json_encode( $copy ) );
+		$this->assertSame( 1, $copy['data']['copied'] );
+		$new = (int) $copy['data']['items'][0]['newId'];
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT parent_id, name FROM ' . Schema::table( 'folders' ) . ' WHERE id = %d', $new ) );
+		$this->assertSame( 0, (int) $row->parent_id );
+		$this->assertSame( 'Top (copy)', $row->name );
+		$this->assertSame( 1, (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(1) FROM ' . Schema::table( 'folders' ) . ' WHERE parent_id = %d', $new ) ) );
+
+		$loose = $this->call( 'anchor_fm_copy_items', [ 'target_folder_id' => 0, 'items' => wp_json_encode( [ [ 'kind' => 'file', 'id' => $file ] ] ) ] );
+		$this->assertSame( 0, $loose['data']['copied'] );
+		$this->assertSame( 'Only folders can go at the top level', $loose['data']['items'][0]['message'] );
+	}
+
 	public function test_vimeo_add_update_get_and_delete() {
 		$f   = $this->folder( 'Videos' );
 		$add = $this->call( 'anchor_fm_vimeo_add', [ 'folder_id' => $f, 'videos' => [ [ 'vimeo' => '123456', 'title' => 'Intro' ] ] ] );

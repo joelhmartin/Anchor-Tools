@@ -319,6 +319,8 @@ jQuery(function ($) {
                 const m = res && res.data && res.data.message;
                 if (typeof toast === 'function') toast(m || 'Copy failed');
             }
+        }).fail(function (xhr) {
+            if (typeof toast === 'function') toast(errMessage(xhr, null, 'Copy failed'));
         }).always(function () { $root.removeClass('afm--busy'); });
     }
 
@@ -337,10 +339,10 @@ jQuery(function ($) {
             if (items.length) { e.preventDefault(); setClipboard(items); }
         } else if (key === 'v') {
             const items = clipboardItems();
-            if (items.length && state.currentFolderId > 0) { e.preventDefault(); copyItems(items, state.currentFolderId); }
+            if (items.length) { e.preventDefault(); copyItems(items, state.currentFolderId); }
         } else if (key === 'd') {
             const items = selectionAsItems();
-            if (items.length && state.currentFolderId > 0) { e.preventDefault(); copyItems(items, state.currentFolderId); }
+            if (items.length) { e.preventDefault(); copyItems(items, state.currentFolderId); }
         }
     });
 
@@ -1826,7 +1828,12 @@ jQuery(function ($) {
             }
             if (action === 'copy-share-link') { if (typeof copyShareLink === 'function') copyShareLink(k, vid); return; }
             if (action === 'copy') { setClipboard([{ kind: k, id: vid }]); return; }
-            if (action === 'duplicate') { copyItems([{ kind: k, id: vid }], state.currentFolderId); return; }
+            if (action === 'duplicate') {
+                // Duplicate beside the original, which in search results may not be the open folder.
+                const home = (state.searchFolderById && state.searchFolderById[k + ':' + vid]);
+                copyItems([{ kind: k, id: vid }], (typeof home === 'number') ? home : state.currentFolderId);
+                return;
+            }
             if (action === 'paste-into') { copyItems(clipboardItems(), vid); return; }
             if (action === 'rename') { if (typeof startInlineRename === 'function') startInlineRename(k, vid); return; }
             if (action === 'permissions') { openPermissions(k, vid); return; }

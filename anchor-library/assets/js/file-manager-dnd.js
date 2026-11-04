@@ -203,7 +203,9 @@
                 const items = d.items, files = d.files;
                 endDrag();
                 // Folders on the desktop arrive as entries; read them before the handler returns.
-                if (t.id > 0 && C.filesTabActive()) window.AnchorFMUpload.dropEntries(items, t.id, files);
+                if (!C.filesTabActive()) return;
+                if (t.id > 0) window.AnchorFMUpload.dropEntries(items, t.id, files);
+                else C.toast('Open a folder to upload into it'); // the Home crumb / tree root
             }
         });
 

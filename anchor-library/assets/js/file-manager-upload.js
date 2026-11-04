@@ -25,7 +25,7 @@
         const POST_OVERHEAD = 16 * 1024; // multipart framing around the bytes
         const MAX_NAMES_IN_TOAST = 5;
         const OS_JUNK = /^(\.ds_store|thumbs\.db|desktop\.ini)$/i;
-        const REASON_TEXT = { too_large: 'too large', type: 'type not allowed', server: 'server error' };
+        const REASON_TEXT = { too_large: 'too large', type: 'type not allowed', server: 'server error', busy: 'another upload is running' };
 
         const uploadMax = Number(AnchorFM.uploadMaxBytes) || 0; // 0 = unknown, the server decides
         const postMax = Number(AnchorFM.postMaxBytes) || 0;     // 0 = PHP has no limit
@@ -116,7 +116,7 @@
 
         // Sends every job. Resolves {uploaded:[], rejected:[{name,reason}], cancelled, notSent}.
         async function sendJobs(jobs, job, $p) {
-            const out = { uploaded: [], rejected: [], cancelled: false, notSent: 0 };
+            const out = { uploaded: [], rejected: [], cancelled: false, notSent: 0, expired: false };
             const sendable = [];
             jobs.forEach(function (j) {
                 const why = sizeProblem(j.file);
@@ -138,7 +138,7 @@
                 if (r.aborted) { out.cancelled = true; out.notSent += b.items.length; continue; }
                 out.uploaded = out.uploaded.concat(r.uploaded);
                 out.rejected = out.rejected.concat(r.rejected);
-                if (r.expired) stopped = true; // every later batch would fail the same way
+                if (r.expired) { stopped = true; out.expired = true; } // every later batch would fail the same way
                 done += b.bytes;
                 filesDone += b.items.length;
             }
@@ -198,9 +198,10 @@
         async function buildFolderJobs(entries, rootId, job, $p) {
             const cache = {};
             const jobs = [], rejected = [], fail = { created: false, message: '' };
+            let unbuilt = 0;
             for (let i = 0; i < entries.length; i++) {
-                if (job.cancelled) break;
                 const e = entries[i];
+                if (job.cancelled) { if (e.file) unbuilt++; continue; }
                 setProgress($p, 0, 'Preparing folders…');
                 let parent = rootId;
                 for (let d = 0; d < e.dirs.length && parent; d++) {
@@ -214,7 +215,7 @@
                 if (parent) jobs.push({ file: e.file, folderId: parent });
                 else rejected.push({ name: e.file.name, reason: 'server' });
             }
-            return { jobs: jobs, rejected: rejected, created: fail.created, message: fail.message };
+            return { jobs: jobs, rejected: rejected, created: fail.created, message: fail.message, unbuilt: unbuilt };
         }
 
         // ---- result toast -------------------------------------------------------
@@ -223,9 +224,9 @@
             const parts = [];
             const n = out.uploaded.length;
             if (n) parts.push(n + ' uploaded');
-            if (out.cancelled) {
-                parts.push('Cancelled' + (out.notSent ? ', ' + out.notSent + ' not sent' : ''));
-            }
+            if (out.expired) parts.push('Your session expired. Reload the page');
+            if (out.cancelled) parts.push('Cancelled');
+            if (out.notSent) parts.push(out.notSent + ' not sent');
             const rej = out.rejected;
             if (rej.length) {
                 const shown = rej.slice(0, MAX_NAMES_IN_TOAST).map(function (r) {
@@ -257,22 +258,28 @@
 
         // entries (optional): [{dirs, file}] for a folder upload; otherwise `files` go straight into `target`.
         async function start(target, files, entries, preRejected) {
-            if (running) { C.toast('An upload is already running'); return { uploaded: [], rejected: [] }; }
+            if (running) {
+                const names = (entries ? entries.filter(function (r) { return r.file; }).map(function (r) { return r.file; }) : files)
+                    .map(function (f) { return { name: f.name, reason: 'busy' }; });
+                C.toast(summarize({ uploaded: [], rejected: names, cancelled: false, notSent: 0 }, ''), null, 9000);
+                return { uploaded: [], rejected: names };
+            }
             const job = { cancelled: false, xhr: null };
             running = job;
             const $p = showProgress(job);
             $root.addClass('afm--busy');
             let out, folderMessage = '', created = false;
             try {
-                let jobs, pre = preRejected || [];
+                let jobs, pre = preRejected || [], unbuilt = 0;
                 if (entries) {
                     const built = await buildFolderJobs(entries, target, job, $p);
-                    jobs = built.jobs; pre = built.rejected; created = built.created; folderMessage = built.message;
+                    jobs = built.jobs; pre = built.rejected; created = built.created; folderMessage = built.message; unbuilt = built.unbuilt;
                 } else {
                     jobs = files.map(function (f) { return { file: f, folderId: target }; });
                 }
                 out = await sendJobs(jobs, job, $p);
                 out.rejected = pre.concat(out.rejected);
+                out.notSent += unbuilt;
                 if (job.cancelled) out.cancelled = true;
             } catch (err) {
                 out = { uploaded: [], rejected: [], cancelled: false, notSent: 0 };
@@ -283,11 +290,11 @@
                 $root.removeClass('afm--busy');
             }
             if (created && !out.uploaded.length && !out.rejected.length && !out.cancelled && !folderMessage) folderMessage = 'Folders created';
-            C.toast(summarize(out, folderMessage), null, (out.rejected.length || out.cancelled || folderMessage) ? 9000 : 0);
+            C.toast(summarize(out, folderMessage), null, (out.rejected.length || out.cancelled || out.expired || out.notSent || folderMessage) ? 9000 : 0);
             // New subfolders change the tree (and the open folder's list); otherwise reload only if the
             // folder that got the files is still the one on screen.
             if (created) C.bootstrap({ stay: true });
-            else if (out.uploaded.length && state.currentFolderId === target) C.loadFolder(target);
+            else if ((out.uploaded.length || out.cancelled) && state.currentFolderId === target) C.loadFolder(target);
             return { uploaded: out.uploaded, rejected: out.rejected };
         }
 

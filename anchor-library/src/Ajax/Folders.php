@@ -13,7 +13,9 @@ namespace Anchor\Library\Ajax;
 use Anchor\Library\Activity;
 use Anchor\Library\Copier;
 use Anchor\Library\Http;
+use Anchor\Library\Mover;
 use Anchor\Library\Permissions;
+use Anchor\Library\Purger;
 use Anchor\Library\Repository;
 use Anchor\Library\Schema;
 use Anchor\Library\Storage;
@@ -31,9 +33,12 @@ class Folders {
 		'anchor_fm_rename_folder' => 'ajax_rename_folder',
 		'anchor_fm_delete_folder' => 'ajax_delete_folder',
 		'anchor_fm_move_folder' => 'ajax_move_folder',
+		'anchor_fm_move_items' => 'ajax_move_items',
 		'anchor_fm_copy_items' => 'ajax_copy_items',
 		'anchor_fm_download_folder' => 'ajax_download_folder',
 	];
+
+	private const DUPLICATE_FOLDER = 'A folder with that name already exists here';
 
 	public static function ajax_bootstrap() {
 		Http::auth();
@@ -61,7 +66,7 @@ class Folders {
 		$folder_id = isset( $_POST['folder_id'] ) ? (int) $_POST['folder_id'] : 0;
 		if ( $folder_id < 0 ) Http::error( 'Invalid folder_id' );
 		$product_docs_id = Repository::product_docs_folder_id();
-		if ( $folder_id === $product_docs_id ) {
+		if ( $product_docs_id > 0 && $folder_id === $product_docs_id ) {
 			Http::error( 'Forbidden', 403 );
 		}
 		if ( $folder_id > 0 && ! Permissions::can_view_folder( $folder_id, $user_id ) ) {
@@ -76,13 +81,13 @@ class Folders {
 				: Permissions::folder_capability( $folder_id, $user_id );
 			$payload = [
 				'folderId' => $folder_id,
-				'breadcrumbs' => $folder_id === 0 ? [] : Repository::breadcrumbs( $folder_id ),
+				'breadcrumbs' => $folder_id === 0 ? [] : Repository::visible_breadcrumbs( $folder_id, $user_id ),
 				'folders' => $lists['folders'],
 				'links' => $lists['links'],
 				'files' => $lists['files'],
 				'videos' => $lists['videos'],
 				'capability' => $cap,
-				'isProductDocs' => $folder_id === $product_docs_id,
+				'isProductDocs' => $product_docs_id > 0 && $folder_id === $product_docs_id,
 				// Every other folder this user may open, so expanding one costs no request at all. Sent on every
 				// listing, which is what keeps it fresh: the client's copy is never older than its last navigation.
 				'contents' => Repository::contents_map( $user_id ),
@@ -106,6 +111,8 @@ class Folders {
 		if ($parent_id < 0 || $name === '') Http::error('Missing fields');
 
 		if (!\user_can($user_id, 'administrator')) Http::error('Forbidden', 403);
+		if ($parent_id > 0 && ($err = Repository::write_target_error($parent_id))) Http::error($err[0], $err[1]);
+		if (self::sibling_folder_exists($parent_id, $name)) Http::error(self::DUPLICATE_FOLDER, 400);
 
 		global $wpdb;
 		$folders = Schema::table('folders');
@@ -134,6 +141,10 @@ class Folders {
 		if ($folder_id <= 0 || $name === '') Http::error('Missing fields');
 
 		if (!\user_can($user_id, 'administrator')) Http::error('Forbidden', 403);
+		if ($err = Repository::write_target_error($folder_id)) Http::error($err[0], $err[1]);
+		if (self::sibling_folder_exists((int) Repository::folder_row($folder_id)->parent_id, $name, $folder_id)) {
+			Http::error(self::DUPLICATE_FOLDER, 400);
+		}
 
 		global $wpdb;
 		$folders = Schema::table('folders');
@@ -154,6 +165,7 @@ class Folders {
 		if ($folder_id <= 0) Http::error('Missing folder_id');
 
 		if (!\user_can($user_id, 'administrator')) Http::error('Forbidden', 403);
+		if (Repository::is_product_docs($folder_id)) Http::error(Repository::PD_MANAGED_MESSAGE, 403);
 
 		$result = self::delete_folder_recursive($folder_id, $user_id);
 		if (!$result['ok']) {
@@ -163,29 +175,29 @@ class Folders {
 		Http::success(['folderId' => $folder_id]);
 	}
 
+	/** Whether $parent_id already holds a folder called $name (other than $exclude_id). */
+	private static function sibling_folder_exists(int $parent_id, string $name, int $exclude_id = 0): bool {
+		global $wpdb;
+		return (int) $wpdb->get_var($wpdb->prepare(
+			'SELECT COUNT(1) FROM ' . Schema::table('folders') . ' WHERE parent_id = %d AND name = %s AND id <> %d',
+			$parent_id, $name, $exclude_id
+		)) > 0;
+	}
+
+	/**
+	 * Delete a folder and everything under it. Database rows go first in one transaction (a failed statement rolls
+	 * everything back and leaves the bytes alone), then the bytes and directories are removed.
+	 */
 	private static function delete_folder_recursive($folder_id, $actor_user_id) {
 		global $wpdb;
-		$folders_table = Schema::table('folders');
-		$files_table = Schema::table('files');
-		$perms_table = Schema::table('permissions');
-		$links_table = Schema::table('links');
-		$videos_table = Schema::table('videos');
-		$video_views_table = Schema::table('video_views');
-
-		$folder = Repository::folder_row($folder_id);
-		if (!$folder) {
+		if (!Repository::folder_row($folder_id)) {
 			return ['ok' => false, 'message' => 'Folder not found'];
 		}
 
-		// Collect folder IDs (folder + all descendants)
-		$rows = $wpdb->get_results("SELECT id, parent_id FROM {$folders_table}");
 		$children = [];
-		foreach ((array) $rows as $r) {
-			$pid = (int) $r->parent_id;
-			if (!isset($children[$pid])) $children[$pid] = [];
-			$children[$pid][] = (int) $r->id;
+		foreach ((array) $wpdb->get_results('SELECT id, parent_id FROM ' . Schema::table('folders')) as $r) {
+			$children[(int) $r->parent_id][] = (int) $r->id;
 		}
-
 		$folder_ids = [];
 		$stack = [(int) $folder_id];
 		$seen = [];
@@ -199,101 +211,60 @@ class Folders {
 			}
 		}
 
-		if (!$folder_ids) {
-			return ['ok' => false, 'message' => 'Nothing to delete'];
+		$dph = \implode(',', \array_fill(0, \count($folder_ids), '%d'));
+		$file_rows = (array) $wpdb->get_results(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
+			['SELECT id, folder_id, stored_name FROM ' . Schema::table('files') . " WHERE folder_id IN ({$dph})"],
+			$folder_ids
+		)));
+		$file_ids = \array_map(static fn($f) => (int) $f->id, $file_rows);
+		$video_ids = \array_map('intval', (array) $wpdb->get_col(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
+			['SELECT id FROM ' . Schema::table('videos') . " WHERE folder_id IN ({$dph})"],
+			$folder_ids
+		))));
+
+		// Every statement, in order: [sql template, args]. A false from $wpdb->query is a failure (it never throws).
+		$stmts = [];
+		$ph = static fn(array $ids) => \implode(',', \array_fill(0, \count($ids), '%d'));
+		if ($file_ids) {
+			$fph = $ph($file_ids);
+			$stmts[] = ['DELETE FROM ' . Schema::table('files') . " WHERE id IN ({$fph})", $file_ids];
+			$stmts[] = ['DELETE FROM ' . Schema::table('permissions') . " WHERE entity_type = 'file' AND entity_id IN ({$fph})", $file_ids];
+			// Uploaded video files carry watch history too; prune it with the same source discriminator so Vimeo rows are untouched.
+			$stmts[] = ['DELETE FROM ' . Schema::table('video_views') . " WHERE source = %s AND video_id IN ({$fph})", \array_merge([\Anchor_FM_Media_Progress::SOURCE_FILE], $file_ids)];
 		}
+		$stmts[] = ['DELETE FROM ' . Schema::table('permissions') . " WHERE entity_type = 'folder' AND entity_id IN ({$dph})", $folder_ids];
+		$stmts[] = ['DELETE FROM ' . Schema::table('links') . " WHERE folder_id IN ({$dph})", $folder_ids];
+		if ($video_ids) {
+			$vph = $ph($video_ids);
+			// source is load-bearing: without it this also deletes the watch history of uploaded files whose files.id collides with a videos.id.
+			$stmts[] = ['DELETE FROM ' . Schema::table('video_views') . " WHERE source = %s AND video_id IN ({$vph})", \array_merge([\Anchor_FM_Media_Progress::SOURCE_VIMEO], $video_ids)];
+			$stmts[] = ['DELETE FROM ' . Schema::table('videos') . " WHERE id IN ({$vph})", $video_ids];
+		}
+		$stmts[] = ['DELETE FROM ' . Schema::table('folders') . " WHERE id IN ({$dph})", $folder_ids];
 
-		// Fetch and delete files on disk
-		$placeholders = \implode(',', \array_fill(0, \count($folder_ids), '%d'));
-		$query = "SELECT id, folder_id, stored_name, original_name FROM {$files_table} WHERE folder_id IN ({$placeholders})";
-		$args = \array_merge([$query], $folder_ids);
-		$sql = \call_user_func_array([$wpdb, 'prepare'], $args);
-		$file_rows = $wpdb->get_results($sql);
+		$ok = false !== $wpdb->query('START TRANSACTION');
+		foreach ($stmts as [$sql, $args]) {
+			if (!$ok) break;
+			$ok = false !== $wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge([$sql], $args)));
+		}
+		$ok = $ok && Purger::delete_policies('folder', $folder_ids) && Purger::delete_policies('file', $file_ids);
+		if (!$ok) {
+			$wpdb->query('ROLLBACK');
+			return ['ok' => false, 'message' => 'Failed to delete folder'];
+		}
+		$wpdb->query('COMMIT');
 
-		$file_ids = [];
-		foreach ((array) $file_rows as $f) {
-			$file_ids[] = (int) $f->id;
+		// Rows are gone: now the bytes and each folder's directory (guard files included).
+		foreach ($file_rows as $f) {
 			$path = \trailingslashit(Storage::base_dir()) . ((int) $f->folder_id) . '/' . $f->stored_name;
-			if (\file_exists($path) && \is_file($path)) {
+			if (\is_file($path)) {
 				@\unlink($path);
 			}
 		}
-
-		// Delete DB rows
-		$wpdb->query("START TRANSACTION");
-		try {
-			if ($file_ids) {
-				$fph = \implode(',', \array_fill(0, \count($file_ids), '%d'));
-				$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-					["DELETE FROM {$files_table} WHERE id IN ({$fph})"],
-					$file_ids
-				)));
-
-				$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-					["DELETE FROM {$perms_table} WHERE entity_type = 'file' AND entity_id IN ({$fph})"],
-					$file_ids
-				)));
-
-				// Uploaded video files carry watch history too; prune it with
-				// the same source discriminator so Vimeo rows are untouched.
-				$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-					["DELETE FROM {$video_views_table} WHERE source = %s AND video_id IN ({$fph})"],
-					[\Anchor_FM_Media_Progress::SOURCE_FILE],
-					$file_ids
-				)));
-			}
-
-			$dph = \implode(',', \array_fill(0, \count($folder_ids), '%d'));
-			$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-				["DELETE FROM {$perms_table} WHERE entity_type = 'folder' AND entity_id IN ({$dph})"],
-				$folder_ids
-			)));
-
-			// Remove links in these folders.
-			$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-				["DELETE FROM {$links_table} WHERE folder_id IN ({$dph})"],
-				$folder_ids
-			)));
-
-			// Remove videos in these folders and their watch-history rows.
-			$video_ids = $wpdb->get_col(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-				["SELECT id FROM {$videos_table} WHERE folder_id IN ({$dph})"],
-				$folder_ids
-			)));
-			if ($video_ids) {
-				$vph = \implode(',', \array_fill(0, \count($video_ids), '%d'));
-				// source is load-bearing: without it this also deletes the
-				// watch history of uploaded files whose files.id collides
-				// with one of these videos.id values.
-				$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-					["DELETE FROM {$video_views_table} WHERE source = %s AND video_id IN ({$vph})"],
-					[\Anchor_FM_Media_Progress::SOURCE_VIMEO],
-					\array_map('intval', $video_ids)
-				)));
-				$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-					["DELETE FROM {$videos_table} WHERE id IN ({$vph})"],
-					\array_map('intval', $video_ids)
-				)));
-			}
-
-			$wpdb->query(\call_user_func_array([$wpdb, 'prepare'], \array_merge(
-				["DELETE FROM {$folders_table} WHERE id IN ({$dph})"],
-				$folder_ids
-			)));
-
-			$wpdb->query("COMMIT");
-		} catch (\Throwable $e) {
-			$wpdb->query("ROLLBACK");
-			return ['ok' => false, 'message' => 'Failed to delete folder'];
-		}
-
-		// Best-effort: remove now-empty storage dirs for folders deleted.
 		foreach ($folder_ids as $fid) {
-			$dir = \trailingslashit(Storage::base_dir()) . ((int) $fid);
-			if (\is_dir($dir)) {
-				@\rmdir($dir);
-			}
+			Purger::remove_folder_dir((int) $fid);
 		}
+		Purger::strip_product_docs($file_ids);
 
 		Activity::log('delete_folder_recursive', 'folder', $folder_id, [
 			'deleted_folder_ids' => \count($folder_ids),
@@ -305,32 +276,33 @@ class Folders {
 
 	public static function ajax_move_folder() {
 		Http::auth();
-		if (!\current_user_can('administrator')) Http::error('Forbidden', 403);
+		$user_id = \get_current_user_id();
+		if (!\user_can($user_id, 'administrator')) Http::error('Forbidden', 403);
 
 		$folder_id = isset($_POST['folder_id']) ? (int) $_POST['folder_id'] : 0;
 		$target_id = isset($_POST['target_folder_id']) ? (int) $_POST['target_folder_id'] : 0;
 		if ($folder_id <= 0 || $target_id < 0) Http::error('Missing fields');
-		if ($folder_id === $target_id) Http::error('Cannot move into itself', 400);
 
-		if (Repository::is_descendant($target_id, $folder_id)) {
-			Http::error('Cannot move into a child folder', 400);
-		}
+		if ($err = Mover::target_error($target_id, $user_id)) Http::error($err[0], $err[1]);
+		$existing = Copier::gather_existing_names($target_id);
+		$res = Mover::move('folder', $folder_id, $target_id, $existing, $user_id);
+		if (\is_wp_error($res)) Http::error($res->get_error_message(), Mover::status_of($res));
+		Http::success(['moved' => true, 'name' => $res['name'], 'fromFolderId' => $res['fromFolderId']]);
+	}
 
-		global $wpdb;
-		$folders = Schema::table('folders');
-		$exists = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(1) FROM {$folders} WHERE id = %d", $folder_id));
-		if (!$exists) Http::error('Folder not found', 404);
+	/** Batch move: POST items = JSON [{kind, id}], target_folder_id. Per-item outcomes; Undo uses fromFolderId. */
+	public static function ajax_move_items() {
+		Http::auth();
+		$user_id = \get_current_user_id();
+		if (!\user_can($user_id, 'administrator')) Http::error('Forbidden', 403);
 
-		$target_exists = $target_id === 0 ? 1 : (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(1) FROM {$folders} WHERE id = %d", $target_id));
-		if (!$target_exists) Http::error('Target not found', 404);
+		$target = isset($_POST['target_folder_id']) ? (int) $_POST['target_folder_id'] : 0;
+		$items = \json_decode((string) (isset($_POST['items']) ? \wp_unslash($_POST['items']) : ''), true);
+		if (!\is_array($items) || !$items) Http::error('No items to move');
+		if (\count($items) > Mover::MAX_ITEMS) Http::error('Too many items', 400);
+		if ($err = Mover::target_error($target, $user_id)) Http::error($err[0], $err[1]);
 
-		$wpdb->update($folders, [
-			'parent_id' => $target_id,
-			'updated_at' => \current_time('mysql'),
-		], ['id' => $folder_id], ['%d','%s'], ['%d']);
-
-		Activity::log('move_folder', 'folder', $folder_id, ['to' => $target_id], \get_current_user_id());
-		Http::success(['moved' => true]);
+		Http::success(Mover::move_items($items, $target, $user_id));
 	}
 
 	public static function ajax_copy_items() {
@@ -345,7 +317,7 @@ class Folders {
 		// there); files, links and videos always live inside a folder.
 		if ($target < 0) Http::error('Missing target folder');
 
-		if ($target > 0 && !Repository::folder_row($target)) Http::error('Target folder not found', 404);
+		if ($target > 0 && ($err = Repository::write_target_error($target))) Http::error($err[0], $err[1]);
 		if (!Permissions::can_upload_to_folder($target, $user_id)) Http::error('Forbidden', 403);
 
 		$existing = Copier::gather_existing_names($target);
@@ -371,22 +343,26 @@ class Folders {
 			if ($kind === 'file') {
 				$row = Repository::file_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs((int) $row->folder_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if (!Permissions::can_manage_file($id, $user_id)) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$new = Copier::copy_file_row($row, $target, $existing, ((int) $row->folder_id === $target));
 			} elseif ($kind === 'link') {
 				$row = Repository::link_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs((int) $row->folder_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if (!Permissions::can_manage_link($id, $user_id)) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$new = Copier::copy_link_row($row, $target, $existing, ((int) $row->folder_id === $target));
 			} elseif ($kind === 'video') {
 				$row = Repository::video_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs((int) $row->folder_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if (!Permissions::can_manage_video($id, $user_id)) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$new = Copier::copy_video_row($row, $target, $existing, ((int) $row->folder_id === $target));
 			} else { // folder
 				if (!\current_user_can('administrator')) { $res['message'] = 'Forbidden'; $errors++; $results[] = $res; continue; }
 				$row = Repository::folder_row($id);
 				if (!$row) { $res['message'] = 'Not found'; $errors++; $results[] = $res; continue; }
+				if (Repository::is_product_docs($id) || Repository::is_product_docs((int) $row->parent_id)) { $res['message'] = Repository::PD_MANAGED_MESSAGE; $errors++; $results[] = $res; continue; }
 				if ($id === $target || Repository::is_descendant($target, $id)) {
 					$res['message'] = 'Cannot copy a folder into itself or its own subfolder';
 					$errors++; $results[] = $res; continue;
@@ -395,7 +371,13 @@ class Folders {
 					$res['message'] = 'Folder is too large to copy';
 					$errors++; $results[] = $res; continue;
 				}
-				$new = Copier::copy_folder_tree($row, $target, $existing, ((int) $row->parent_id === $target));
+				$failed = 0;
+				$new = Copier::copy_folder_tree($row, $target, $existing, ((int) $row->parent_id === $target), 0, $failed);
+				if (!\is_wp_error($new) && $failed > 0) {
+					$res['newId'] = (int) $new;
+					$res['message'] = \sprintf('Copied, but %d item(s) inside could not be copied', $failed);
+					$errors++; $results[] = $res; continue;
+				}
 			}
 
 			if (\is_wp_error($new)) {
@@ -434,6 +416,13 @@ class Folders {
 		} );
 		if ( ! $entries ) {
 			Http::error( 'No files to download', 400 );
+		}
+		if ( ! \class_exists( '\\ZipArchive' ) ) {
+			Http::error( 'Zip downloads are not available on this server', 500 );
+		}
+		// check=1 lets the client learn about a refusal as JSON before it navigates the browser to the zip.
+		if ( ! empty( $_REQUEST['check'] ) ) {
+			Http::success( [ 'files' => \count( $entries['files'] ) ] );
 		}
 
 		$tmp = \wp_tempnam( 'anchor-folder-zip' );
@@ -488,7 +477,9 @@ class Folders {
 		$query        = "SELECT id, folder_id, original_name, stored_name FROM {$files_table} WHERE folder_id IN ({$placeholders})";
 		$file_rows    = (array) $wpdb->get_results( \call_user_func_array( [ $wpdb, 'prepare' ], \array_merge( [ $query ], $folder_ids ) ) );
 
+		// Entry names are relative to the downloaded folder, so ancestor names the user may not see never leak.
 		$base_parts = Repository::folder_path_names( $folder_id );
+		$base_depth = \count( $base_parts );
 		$base       = $base_parts ? $base_parts : [ 'folder-' . $folder_id ];
 		$files      = [];
 		$used       = [];
@@ -496,13 +487,13 @@ class Folders {
 			if ( ! Permissions::can_view_file( (int) $row->id, $user_id ) ) continue;
 			$path = Storage::path_for( $row );
 			if ( ! \file_exists( $path ) || ! \is_readable( $path ) ) continue;
-			$parts   = Repository::folder_path_names( (int) $row->folder_id ) ?: $base;
+			$parts   = \array_slice( Repository::folder_path_names( (int) $row->folder_id ), $base_depth );
 			$files[] = [ 'path' => $path, 'entry' => self::zip_entry_path( $parts, (string) $row->original_name, $used ) ];
 		}
 		if ( ! $files ) {
 			return [];
 		}
-		return [ 'name' => self::zip_segment( \implode( '-', $base ), 'folder-' . $folder_id ), 'files' => $files ];
+		return [ 'name' => self::zip_segment( (string) \end( $base ), 'folder-' . $folder_id ), 'files' => $files ];
 	}
 
 	/**

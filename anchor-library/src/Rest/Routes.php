@@ -160,7 +160,7 @@ class Routes {
 				'folder'      => $folder_id > 0
 					? Shapes::folder( $folder_id, (string) $row->name, (int) $row->parent_id, Shapes::counts( $children ) )
 					: Shapes::folder( 0, '', 0, Shapes::counts( $children ) ),
-				'breadcrumbs' => $folder_id > 0 ? Repository::breadcrumbs( $folder_id ) : [],
+				'breadcrumbs' => $folder_id > 0 ? Repository::visible_breadcrumbs( $folder_id, $user_id ) : [],
 				'folders'     => $folders,
 				'files'       => \array_map( [ Shapes::class, 'file' ], $children['files'] ),
 				'videos'      => \array_map( [ Shapes::class, 'video' ], $children['videos'] ),

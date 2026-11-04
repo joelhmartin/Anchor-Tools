@@ -18,6 +18,11 @@ class Repository {
 
 	/** Search hit ceiling per kind. */
 	private const SEARCH_LIMIT = 200;
+	/** Most candidate rows a search reads per kind before giving up (marks the result truncated). */
+	private const SEARCH_SCAN_CEILING = 5000;
+
+	/** Refusal text for any write aimed at the Product Docs container (it is managed automatically). */
+	public const PD_MANAGED_MESSAGE = 'The Product Docs folder is managed automatically';
 
 	// ---- Rows -----------------------------------------------------------------------------------------------
 
@@ -51,6 +56,27 @@ class Repository {
 	/** Id of the hidden Product Docs container, or 0 when it has not been created. */
 	public static function product_docs_folder_id(): int {
 		return (int) \get_option( Schema::OPT_PD_FOLDER_ID, 0 );
+	}
+
+	public static function is_product_docs( int $folder_id ): bool {
+		$pd = self::product_docs_folder_id();
+		return $pd > 0 && $folder_id === $pd;
+	}
+
+	/**
+	 * Guard for any write that puts something inside, or acts on, a folder: the admin short-circuit in Permissions
+	 * answers "manage" for ids that no longer exist, so every writer asks this too.
+	 *
+	 * @return array{0:string,1:int}|null [message, HTTP status], or null when the folder is a legitimate target.
+	 */
+	public static function write_target_error( int $folder_id ): ?array {
+		if ( $folder_id <= 0 || ! self::folder_row( $folder_id ) ) {
+			return [ 'Folder not found', 404 ];
+		}
+		if ( self::is_product_docs( $folder_id ) ) {
+			return [ self::PD_MANAGED_MESSAGE, 403 ];
+		}
+		return null;
 	}
 
 	// ---- Row shapes (shared by the listing, the preload and the REST layer) -------------------------------
@@ -118,15 +144,19 @@ class Repository {
 			}
 			global $wpdb;
 			$folders = Schema::table( 'folders' );
-			$rows    = $wpdb->get_results( $wpdb->prepare(
-				"SELECT id, parent_id, name, owner_user_id, is_private FROM {$folders} WHERE parent_id = %d AND is_private = 0 ORDER BY name ASC",
-				$folder_id
-			) );
-			foreach ( (array) $rows as $f ) {
-				if ( (int) $f->id === $pd || ! Permissions::can_view_folder( (int) $f->id, $user_id ) ) {
-					continue;
+			if ( 0 === $folder_id && ! \user_can( $user_id, 'administrator' ) ) {
+				$out['folders'] = self::topmost_viewable( $user_id, $pd );
+			} else {
+				$rows = $wpdb->get_results( $wpdb->prepare(
+					"SELECT id, parent_id, name, owner_user_id, is_private FROM {$folders} WHERE parent_id = %d AND is_private = 0 ORDER BY name ASC",
+					$folder_id
+				) );
+				foreach ( (array) $rows as $f ) {
+					if ( (int) $f->id === $pd || ! Permissions::can_view_folder( (int) $f->id, $user_id ) ) {
+						continue;
+					}
+					$out['folders'][] = self::shape_folder( $f );
 				}
-				$out['folders'][] = self::shape_folder( $f );
 			}
 
 			if ( $folder_id > 0 ) {
@@ -143,6 +173,36 @@ class Repository {
 		} );
 	}
 
+	/**
+	 * Home for a non-admin: the top-most folders they can open, i.e. viewable folders whose parent they cannot view.
+	 * A grant on /A/B alone lists B, and A (which they cannot open) is never named. Product Docs and private folders
+	 * are skipped, and so is anything beneath them. Call inside a memo scope.
+	 */
+	private static function topmost_viewable( int $user_id, int $pd ): array {
+		global $wpdb;
+		$rows  = (array) $wpdb->get_results( 'SELECT id, parent_id, name, owner_user_id, is_private FROM ' . Schema::table( 'folders' ) . ' WHERE is_private = 0 ORDER BY name ASC' );
+		$by_id = [];
+		foreach ( $rows as $r ) {
+			if ( (int) $r->id !== $pd ) {
+				$by_id[ (int) $r->id ] = $r;
+			}
+		}
+		$out = [];
+		foreach ( $by_id as $id => $r ) {
+			$parent = (int) $r->parent_id;
+			if ( $parent > 0 && ! isset( $by_id[ $parent ] ) ) {
+				continue; // Under Product Docs or a private folder.
+			}
+			if ( ! Permissions::can_view_folder( $id, $user_id ) ) {
+				continue;
+			}
+			if ( 0 === $parent || ! Permissions::can_view_folder( $parent, $user_id ) ) {
+				$out[] = self::shape_folder( $r );
+			}
+		}
+		return $out;
+	}
+
 	/** Folders the user may open at the top level. */
 	public static function roots( int $user_id ): array {
 		return self::children( 0, $user_id )['folders'];
@@ -150,7 +210,9 @@ class Repository {
 
 	/**
 	 * Name search across folders, files, links and videos, permission-filtered, up to 200 hits per kind. A term
-	 * shorter than two characters finds nothing.
+	 * shorter than two characters finds nothing. Candidates are read in batches until the cap of permitted hits is
+	 * met or the rows run out (hard ceiling: SEARCH_SCAN_CEILING rows per kind), so unviewable matches cannot crowd
+	 * out viewable ones; `truncated` means some kind hit its cap or the ceiling, i.e. more may exist.
 	 *
 	 * @return array{results:array,truncated:bool}
 	 */
@@ -161,66 +223,86 @@ class Repository {
 		}
 		return Permissions::with_memo( static function () use ( $term, $user_id ) {
 			global $wpdb;
-			$like = '%' . $wpdb->esc_like( $term ) . '%';
-			$pd   = self::product_docs_folder_id();
-			$cap  = self::SEARCH_LIMIT;
-			$res  = [];
+			$like  = '%' . $wpdb->esc_like( $term ) . '%';
+			$pd    = self::product_docs_folder_id();
+			$cap   = self::SEARCH_LIMIT;
+			$batch = \user_can( $user_id, 'administrator' ) ? $cap + 1 : $cap * 5;
+			$res   = [];
+			$trunc = false;
 
-			$rows = $wpdb->get_results( $wpdb->prepare(
-				'SELECT id, parent_id, name FROM ' . Schema::table( 'folders' ) . ' WHERE is_private = 0 AND name LIKE %s ORDER BY name ASC LIMIT %d',
-				$like, $cap
-			) );
-			foreach ( (array) $rows as $r ) {
+			// kind => [table, columns, name column, extra WHERE]
+			$kinds = [
+				'folder' => [ 'folders', 'id, parent_id, name', 'name', 'is_private = 0 AND ' ],
+				'file'   => [ 'files', 'id, folder_id, original_name, mime_type, size', 'original_name', '' ],
+				'link'   => [ 'links', 'id, folder_id, title, url', 'title', '' ],
+				'video'  => [ 'videos', 'id, folder_id, title, vimeo_id, vimeo_hash, thumbnail_url', 'title', '' ],
+			];
+			foreach ( $kinds as $kind => [ $table, $cols, $name_col, $extra ] ) {
+				// Page through candidates until the cap is met (plus one, to know more exist), they run out,
+				// or the scan ceiling stops it.
+				$hits    = [];
+				$scanned = 0;
+				while ( \count( $hits ) <= $cap ) {
+					if ( $scanned >= self::SEARCH_SCAN_CEILING ) {
+						$trunc = true;
+						break;
+					}
+					$rows = (array) $wpdb->get_results( $wpdb->prepare(
+						"SELECT {$cols} FROM " . Schema::table( $table ) . " WHERE {$extra}{$name_col} LIKE %s ORDER BY {$name_col} ASC, id ASC LIMIT %d OFFSET %d",
+						$like, $batch, $scanned
+					) );
+					foreach ( $rows as $r ) {
+						$hit = self::search_hit( $kind, $r, $pd, $user_id );
+						if ( $hit ) {
+							$hits[] = $hit;
+						}
+					}
+					$scanned += \count( $rows );
+					if ( \count( $rows ) < $batch ) {
+						break;
+					}
+				}
+				if ( \count( $hits ) > $cap ) {
+					$trunc = true;
+				}
+				$res = \array_merge( $res, \array_slice( $hits, 0, $cap ) );
+			}
+			return [ 'results' => $res, 'truncated' => $trunc ];
+		} );
+	}
+
+	/** One search row shaped as a hit, or null when the user may not see it. */
+	private static function search_hit( string $kind, $r, int $pd, int $user_id ): ?array {
+		switch ( $kind ) {
+			case 'folder':
 				if ( (int) $r->id === $pd || ! Permissions::can_view_folder( (int) $r->id, $user_id ) ) {
-					continue;
+					return null;
 				}
-				$res[] = [ 'kind' => 'folder', 'id' => (int) $r->id, 'name' => $r->name, 'folderId' => (int) $r->parent_id, 'path' => self::folder_path_string( (int) $r->parent_id ) ];
-			}
-
-			$rows = $wpdb->get_results( $wpdb->prepare(
-				'SELECT id, folder_id, original_name, mime_type, size FROM ' . Schema::table( 'files' ) . ' WHERE original_name LIKE %s ORDER BY original_name ASC LIMIT %d',
-				$like, $cap
-			) );
-			foreach ( (array) $rows as $r ) {
+				return [ 'kind' => 'folder', 'id' => (int) $r->id, 'name' => $r->name, 'folderId' => (int) $r->parent_id, 'path' => self::folder_path_string( (int) $r->parent_id, $user_id ) ];
+			case 'file':
 				if ( (int) $r->folder_id === $pd || ! Permissions::can_view_file( (int) $r->id, $user_id ) ) {
-					continue;
+					return null;
 				}
-				$res[] = [
+				return [
 					'kind' => 'file', 'id' => (int) $r->id, 'name' => $r->original_name, 'mime' => $r->mime_type, 'size' => (int) $r->size,
-					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id ),
+					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id, $user_id ),
 				];
-			}
-
-			$rows = $wpdb->get_results( $wpdb->prepare(
-				'SELECT id, folder_id, title, url FROM ' . Schema::table( 'links' ) . ' WHERE title LIKE %s ORDER BY title ASC LIMIT %d',
-				$like, $cap
-			) );
-			foreach ( (array) $rows as $r ) {
+			case 'link':
 				if ( ! Permissions::can_view_link( (int) $r->id, $user_id ) ) {
-					continue;
+					return null;
 				}
-				$res[] = [ 'kind' => 'link', 'id' => (int) $r->id, 'name' => $r->title, 'url' => $r->url, 'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id ) ];
-			}
-
-			$rows = $wpdb->get_results( $wpdb->prepare(
-				'SELECT id, folder_id, title, vimeo_id, vimeo_hash, thumbnail_url FROM ' . Schema::table( 'videos' ) . ' WHERE title LIKE %s ORDER BY title ASC LIMIT %d',
-				$like, $cap
-			) );
-			foreach ( (array) $rows as $r ) {
+				return [ 'kind' => 'link', 'id' => (int) $r->id, 'name' => $r->title, 'url' => $r->url, 'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id, $user_id ) ];
+			default:
 				if ( ! Permissions::can_view_video( (int) $r->id, $user_id ) ) {
-					continue;
+					return null;
 				}
-				$res[] = [
+				return [
 					'kind' => 'video', 'id' => (int) $r->id, 'name' => $r->title, 'vimeoId' => $r->vimeo_id,
 					'vimeoHash' => isset( $r->vimeo_hash ) ? (string) $r->vimeo_hash : '',
 					'thumbnailUrl' => isset( $r->thumbnail_url ) ? (string) $r->thumbnail_url : '',
-					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id ),
+					'folderId' => (int) $r->folder_id, 'path' => self::folder_path_string( (int) $r->folder_id, $user_id ),
 				];
-			}
-
-			$truncated = \count( $res ) > $cap;
-			return [ 'results' => $truncated ? \array_slice( $res, 0, $cap ) : $res, 'truncated' => $truncated ];
-		} );
+		}
 	}
 
 	/** Root-to-leaf [id, name] trail for a folder; bounded and cycle-safe. */
@@ -265,9 +347,28 @@ class Repository {
 		return false;
 	}
 
-	/** "A › B › C" for a folder id; empty for the root. */
-	public static function folder_path_string( int $folder_id ): string {
-		return $folder_id <= 0 ? '' : \implode( ' › ', \array_column( self::breadcrumbs( $folder_id ), 'name' ) );
+	/**
+	 * The trail a user may see: breadcrumbs() with leading crumbs they cannot view dropped, so a grant on /A/B starts
+	 * the trail at B and never names A. Call inside a memo scope.
+	 */
+	public static function visible_breadcrumbs( int $folder_id, int $user_id ): array {
+		$crumbs = self::breadcrumbs( $folder_id );
+		if ( \user_can( $user_id, 'administrator' ) ) {
+			return $crumbs;
+		}
+		while ( $crumbs && ! Permissions::can_view_folder( (int) $crumbs[0]['id'], $user_id ) ) {
+			\array_shift( $crumbs );
+		}
+		return $crumbs;
+	}
+
+	/** "A › B › C" for a folder id; empty for the root. With a user, only the part of the trail they may view. */
+	public static function folder_path_string( int $folder_id, ?int $user_id = null ): string {
+		if ( $folder_id <= 0 ) {
+			return '';
+		}
+		$crumbs = null === $user_id ? self::breadcrumbs( $folder_id ) : self::visible_breadcrumbs( $folder_id, $user_id );
+		return \implode( ' › ', \array_column( $crumbs, 'name' ) );
 	}
 
 	/** Slugged names along a folder's path (used to name download archives). */
@@ -279,7 +380,7 @@ class Repository {
 		return $names;
 	}
 
-	/** The user's visible folder tree: folders they may view plus the ancestors that lead to them. */
+	/** The user's visible folder tree: the folders they may open, rooted at their top-most viewable folders. */
 	public static function tree( int $user_id ): array {
 		return Permissions::with_memo( static function () use ( $user_id ) {
 			global $wpdb;
@@ -296,27 +397,22 @@ class Repository {
 				}
 			}
 
+			// Only folders the user can open. A viewable folder whose parent they cannot open becomes a root, and
+			// the ancestors they cannot open are never sent (their names would leak).
 			$visible = [];
 			foreach ( $by_id as $id => $row ) {
-				if ( ! Permissions::can_view_folder( $id, $user_id ) ) {
-					continue;
-				}
-				$visible[ $id ] = true;
-				$parent         = ! empty( $row->parent_id ) ? (int) $row->parent_id : 0;
-				$depth          = 0;
-				while ( $parent && $depth < 50 ) {
-					++$depth;
-					if ( ! isset( $by_id[ $parent ] ) ) {
-						break;
-					}
-					$visible[ $parent ] = true;
-					$parent             = ! empty( $by_id[ $parent ]->parent_id ) ? (int) $by_id[ $parent ]->parent_id : 0;
+				if ( Permissions::can_view_folder( $id, $user_id ) ) {
+					$visible[ $id ] = true;
 				}
 			}
 
 			$children = [];
 			foreach ( \array_keys( $visible ) as $id ) {
-				$children[ ! empty( $by_id[ $id ]->parent_id ) ? (int) $by_id[ $id ]->parent_id : 0 ][] = $id;
+				$parent = ! empty( $by_id[ $id ]->parent_id ) ? (int) $by_id[ $id ]->parent_id : 0;
+				if ( $parent > 0 && ! isset( $by_id[ $parent ] ) ) {
+					continue; // Under Product Docs or a private folder.
+				}
+				$children[ ( $parent > 0 && isset( $visible[ $parent ] ) ) ? $parent : 0 ][] = $id;
 			}
 
 			$build = static function ( int $parent_id ) use ( &$build, $children, $by_id, $pd ): array {

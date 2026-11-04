@@ -13,6 +13,30 @@ Module key `library` (disabled by default), directory `anchor-library/`, namespa
 - **Text domain:** strings moved from `anchor-private-file-manager` to `anchor-schema`. Any site translation files for the old domain no longer apply.
 - **Vimeo:** the module does not read the plugin's `.env` (`VIMEO_ACCESS_TOKEN`) any more. The portal and API use only the stored `vimeo_id` / `vimeo_hash` embeds. The one outbound Vimeo call is the public oEmbed lookup (`Anchor_FM_Vimeo::fetch_meta()`), made when an admin adds a video or resolves its title and thumbnail; it needs no token. The plain-text "Vimeo token" settings field was removed (nothing read it); the `anchor_fm_vimeo_token` option is left untouched in the database.
 
+## Moving things in the portal (3.45.0)
+
+The portal is `[anchor_file_manager]`. Moving is admin-only; every path below ends in the one request `anchor_fm_move_items` (`Mover::move_items`), so the server is the authority and every client guard has a matching server check.
+
+- **Drag and drop** (`assets/js/file-manager-dnd.js`): any list row (file, folder, link or video) and any tree folder can be dragged. Drop targets are folder rows, tree nodes (including Home) and breadcrumb crumbs. Dragging a selected row drags the whole selection; dragging an unselected row drags just that row. Hold Ctrl, Alt or Cmd to copy instead of move. A drop where every item is already in the target does nothing (no request). Known limit: Firefox cannot start a drag from the sidebar tree nodes (they are buttons); list rows drag fine there. A selection that includes rows expanded under a selected folder moves, copies and drags only the folder (its children go with it). A moved file that carries a legacy copy of its source folder's grants drops them and inherits the destination; a file with its own different grants keeps them, and the Undo toast says so. Product Docs, a folder onto itself or its own descendant, and files/links/videos onto Home are not valid targets.
+- **Move to... picker** (`file-manager-move.js`): row menu, bulk bar, or the Move to... command. A tree of destinations with a New folder button. Invalid destinations are greyed out with the reason shown.
+- **Cut and paste:** Cut in the menu (or Ctrl/Cmd+X), open a folder and Paste (or "Paste here" on a folder row). Esc cancels a pending cut.
+- **Undo:** every move, from any of the above, ends with a toast `Moved N item(s) to <Folder>` and an **Undo** button (about 8 seconds). Undo sends each item back to the folder it came from. Folders do not copy their grants (they inherit from where they sit); a file with no explicit grants inherits its new folder, and a file with explicit grants keeps them.
+- **Everything is movable:** files, folders, links and videos. Only folders can live at the top level (Home); other kinds are refused with `Only folders can go at the top level`. A mixed batch dragged to Home moves the folders and reports each refused item in the one toast. A move into a folder that already has the name gets a unique name (`Anchor_FM_Copy_Namer`). Create and rename refuse a same-name sibling.
+- **Stays where you are:** a move, copy or delete keeps the open folder (`bootstrap({ stay: true })`); a folder move never navigates into the destination.
+- **Home for non-admins:** Home lists the folders a user can view whose parent they cannot view (the tree's roots are the same set, and REST `GET /folders/0` returns it too). Names of ancestors they cannot view are not sent.
+- **Opening and renaming:** a double-click opens for everyone. Rename is F2, the menu, or a slow second click on an already-selected row's name.
+- **OS files:** dragging files from the desktop onto a folder row, tree node or crumb uploads into that folder; over the list it shows the drop overlay and uploads into the open folder. An internal drag never shows the overlay.
+- **Uploads** (`file-manager-upload.js`): files go in batches under the server's `post_max_size`, folders upload with their structure, and every skipped file (too large, blocked type, failed) is named in the result toast.
+- **Downloads:** folder and bulk downloads first call `anchor_fm_download_folder` with `check=1`; the browser only navigates when the check passes, so an error shows as a message, not a blank page. Zip entry paths are relative to the downloaded folder. The menu has Download for a file or folder; "Copy link" (was "Copy share link") copies the member link.
+
+### Error contract
+
+Every handler refusal is an HTTP status of 400 or above with `{ success: false, data: { message } }`, so it arrives in the client's `.fail()`. `AnchorFMCore.api` toasts the server's message unless the caller passes `quiet` and renders its own; a 403 with no JSON body is an expired nonce ("Your session expired. Reload the page."). A bulk response (`anchor_fm_move_items`) is HTTP 200 with per-item `status` (`moved`, `unchanged`, `error`) and `message`; the client names the first failure. The Permissions window keeps Save disabled until the grants have loaded, so a failed load can never be saved back as "no grants". `delete_file`, `get_permissions` and `set_permissions` require an administrator. The Product Docs container refuses delete, rename, move, create-into and set_permissions with `The Product Docs folder is managed automatically`.
+
+### Tests
+
+`tests/` (PHPUnit) covers the server; `e2e/library-file-manager.spec.js` (Playwright, needs `npm run env:seed`, which enables the module, adds a page with the shortcode and the fixture folders `E2E Lib A` (with `E2E Lib A1` and `e2e-a.txt`) and `E2E Lib B`) drives drag onto a folder and the Home crumb, Move to... with Undo, top-level Duplicate, the OS-file overlay and the Permissions failure.
+
 ## Cutover and rollback runbook (TMJ)
 
 Each live step needs the owner's explicit OK. Rehearse on the local DevKinsta copy first.

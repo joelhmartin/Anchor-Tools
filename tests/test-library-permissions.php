@@ -403,15 +403,16 @@ class Anchor_Library_Permissions_Test extends Anchor_Library_TestCase {
 		$this->assertCount( 3, Repository::breadcrumbs( $c ), 'a parent cycle ends instead of looping' );
 	}
 
-	public function test_tree_hides_unviewable_branches_but_keeps_ancestors_of_visible_ones() {
+	public function test_tree_hides_unviewable_branches_and_roots_at_the_topmost_viewable_folder() {
 		$a = $this->folder( 'A' );
 		$b = $this->folder( 'B', $a );
 		$x = $this->folder( 'X' );
 		$this->grant( 'folder', $b, 'role', 'subscriber' );
 		$tree = Repository::tree( $this->member );
-		$this->assertSame( [ $a ], wp_list_pluck( $tree, 'id' ) );
-		$this->assertSame( [ $b ], wp_list_pluck( $tree[0]['children'], 'id' ) );
+		// Runthrough ruling 5: an ancestor the user cannot open is not sent (its name would leak); B is the root.
+		$this->assertSame( [ $b ], wp_list_pluck( $tree, 'id' ) );
 		$this->assertNotContains( $x, wp_list_pluck( $tree, 'id' ) );
+		$this->assertStringNotContainsString( '"A"', wp_json_encode( $tree ) );
 	}
 
 	public function test_contents_map_matches_per_folder_listing_and_respects_the_ceiling() {

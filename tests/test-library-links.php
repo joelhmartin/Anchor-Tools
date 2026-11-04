@@ -388,8 +388,8 @@ class Anchor_Library_Links_Test extends Anchor_Library_TestCase {
 		$entries = array_column( $zip['files'], 'entry' );
 		sort( $entries );
 		$this->assertCount( 2, $entries );
-		$this->assertSame( 'docs/Q1-report.pdf', $entries[0] );
-		$this->assertSame( 'docs/', substr( $entries[1], 0, 5 ) );
+		$this->assertSame( 'Q1-report.pdf', $entries[0], 'entries are relative to the downloaded folder' );
+		$this->assertStringNotContainsString( '/', $entries[1] );
 		$this->assertStringNotContainsString( '"', $entries[1] );
 		$this->assertStringNotContainsString( ' ', $entries[1] );
 		$this->assertSame( [], Permissions::with_memo( fn() => \Anchor\Library\Ajax\Folders::zip_entries( $this->folder, self::factory()->user->create( [ 'role' => 'editor' ] ) ) ), 'nothing viewable: empty' );

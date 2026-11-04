@@ -119,7 +119,7 @@
 
 **Interfaces:**
 - Consumes `AnchorFMCore` (Task 2) and `anchor_fm_move_items`/`anchor_fm_copy_items` (Task 1). It calls `AnchorFMCore.uploadFiles(files, folderId)`, which Task 5 owns; until then use the existing upload function with a `folderId` param added in Task 2's core if it isn't there.
-- Produces `AnchorFMMoves.afterMove(response, targetId)`, the shared Undo toast. Define it in `file-manager-move.js`'s namespace as `window.AnchorFMMove.announce(res, targetId)` so Task 4 reuses it; create the stub here if Task 4 isn't done yet.
+- Uses `window.AnchorFMMove.announce(res, targetId)` (the Undo toast, owned by Task 4). Task 3 runs first, so put a working minimal `announce` in `file-manager-move.js` (toast + Undo via `anchor_fm_move_items`), which Task 4 then completes.
 
 - [ ] **Step 1:** Make one internal-drag state `{items:[{kind,id}], copy:boolean}`. Set it on `dragstart` from any row kind (file, folder, link, video) and from tree nodes (add `draggable="true"` to tree buttons for admins). When the grabbed row is selected, drag the whole selection; otherwise select it alone (B2). Set a drag image count badge with `setDragImage`.
 - [ ] **Step 2:** OS-vs-internal: the upload dropzone acts only when `dataTransfer.types` includes `Files` AND no internal drag is active. Reset `dragDepth` on dragend and drop (B10). Show the upload overlay only when `canUploadHere()`, which now requires `currentFolderId > 0` (F1).

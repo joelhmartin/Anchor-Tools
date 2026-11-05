@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.45.2
+Stable tag: 3.45.3
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,10 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.45.3 =
+* Library: a folder can have an "Available until" date. After that day, people who can only view it lose access to it and everything inside it, enforced on the server. Admins and managers keep access, and the files and watch history stay. Set it from the folder's menu.
+* Events: "Keep session recordings (days)" on the event. Above 0, saving creates a Library folder for the event, with a subfolder per online session that closes that many days after its session. Only people registered for the event can open it. The room links to it, and the roster gets a Recording views panel showing how much of each recording each registrant played.
 
 = 3.45.2 =
 * Popups: new "Row" tile style for video cards (thumbnail left, title and subtitle right), plus Card Title and Card Subtitle fields. Colours inherit from the page and can be set with the --up-row-* CSS variables.

@@ -182,6 +182,7 @@ class Occurrences {
         'in_person_includes_stream',
         'stream_open_before_minutes',
         'stream_close_after_minutes',
+        'recording_days',
         'required_roles',
         'required_roles_mode',
         'registration_open',

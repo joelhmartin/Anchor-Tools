@@ -339,6 +339,9 @@ class Module {
     /** @var Room_Attendance|null Who was in the /live/ room, per session. */
     public $room_attendance = null;
 
+    /** @var Recording_Folders|null Session recordings as Library folders. */
+    public $recording_folders = null;
+
     /** @var App_Auth|null Application Passwords hardening for the member app. */
     public $app_auth;
 
@@ -461,6 +464,8 @@ class Module {
         require_once $dir . 'class-entitlements.php';
         // Who was in the /live/ room, per session.
         require_once $dir . 'class-room-attendance.php';
+        // Session recordings as Library folders, per event and per session.
+        require_once $dir . 'class-recording-folders.php';
         require_once $dir . 'class-feed.php';
         require_once $dir . 'class-app-auth.php';
         require_once $dir . 'class-app-connect.php';
@@ -489,6 +494,7 @@ class Module {
         // $module->entitlements is the one handle every surface uses.
         $this->entitlements = new Entitlements( $this );
         $this->room_attendance = new Room_Attendance( $this );
+        $this->recording_folders = new Recording_Folders( $this );
 
         // Member-app feed: selection + row mapping over the above (no hooks yet).
         $this->feed = new Feed( $this );
@@ -3003,6 +3009,7 @@ class Module {
             'in_person_includes_stream' => [ 'type' => 'boolean', 'show_in_rest' => false ],
             'stream_open_before_minutes' => [ 'type' => 'integer', 'show_in_rest' => false ],
             'stream_close_after_minutes' => [ 'type' => 'integer', 'show_in_rest' => false ],
+            'recording_days' => [ 'type' => 'integer', 'show_in_rest' => false ],
             // Prerequisites (§4.6) — role slugs the registrant must already hold.
             'required_roles' => [ 'type' => 'array', 'show_in_rest' => false ],
             'required_roles_mode' => [ 'type' => 'string', 'show_in_rest' => false ],
@@ -3077,6 +3084,7 @@ class Module {
             'in_person_includes_stream' => true,
             'stream_open_before_minutes' => 15,
             'stream_close_after_minutes' => 30,
+            'recording_days' => 0,
             'required_roles' => [],
             'required_roles_mode' => 'any',
         ];
@@ -3406,6 +3414,11 @@ class Module {
                 <div class="anchor-event-field">
                     <label for="anchor_event_stream_close_after_minutes"><?php echo esc_html__( 'Close the room (minutes after)', 'anchor-schema' ); ?></label>
                     <input type="number" min="0" step="1" id="anchor_event_stream_close_after_minutes" name="anchor_event_stream_close_after_minutes" value="<?php echo esc_attr( (int) $meta['stream_close_after_minutes'] ); ?>" />
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_recording_days"><?php echo esc_html__( 'Keep session recordings (days)', 'anchor-schema' ); ?></label>
+                    <input type="number" min="0" step="1" id="anchor_event_recording_days" name="anchor_event_recording_days" value="<?php echo esc_attr( (int) ( $meta['recording_days'] ?? 0 ) ); ?>" />
+                    <span class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Above 0, saving creates a Library folder for this event with a subfolder per online session. Only people registered for this event can open it, and each subfolder closes this many days after its session. Add each recording to its subfolder. 0 is off.', 'anchor-schema' ); ?></span>
                 </div>
                 <?php /* room_url() needs a resolvable stream as well as the
                          access switch (Task 11), so the Room URL row appears
@@ -6187,6 +6200,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'in_person_includes_stream' => ! empty( $src['anchor_event_in_person_includes_stream'] ) ? 1 : 0,
             'stream_open_before_minutes' => max( 0, (int) ( $src['anchor_event_stream_open_before_minutes'] ?? 15 ) ),
             'stream_close_after_minutes' => max( 0, (int) ( $src['anchor_event_stream_close_after_minutes'] ?? 30 ) ),
+            'recording_days' => max( 0, (int) ( $src['anchor_event_recording_days'] ?? 0 ) ),
             'required_roles_mode' => ( ( $src['anchor_event_required_roles_mode'] ?? '' ) === 'all' ) ? 'all' : 'any',
         ];
 
@@ -11112,6 +11126,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
             . $this->room_state_block( $event_id, $state )
             . $this->render_room_schedule( $event_id, $state )
+            . $this->recording_folders->render_room_link( $event_id )
             . $staff
             . '</div>';
     }

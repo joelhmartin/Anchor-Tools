@@ -43,7 +43,7 @@ class Anchor_Library_Schema_Test extends Anchor_Library_TestCase {
 	}
 
 	public function test_pinned_db_version_matches_the_plugin_at_the_source_pin() {
-		$this->assertSame( '2.17.0', Schema::DB_VERSION );
+		$this->assertSame( '2.18.0', Schema::DB_VERSION );
 	}
 
 	public function test_install_creates_all_tables() {

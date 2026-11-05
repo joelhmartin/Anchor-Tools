@@ -16,10 +16,10 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 class Schema {
 
 	/**
-	 * Version stamped into anchor_fm_db_version. Equal to the plugin's VERSION at the source pin (2.17.0, which has
-	 * no schema change over 2.16.x: the last real DB steps are 2.15.0's host pins and 2.12.0's coverage columns).
+	 * Version stamped into anchor_fm_db_version. 2.18.0 adds folders.available_until, the module's first schema step
+	 * past the source plugin's 2.17.0 pin.
 	 */
-	public const DB_VERSION = '2.17.0';
+	public const DB_VERSION = '2.18.0';
 
 	public const OPT_DB_VERSION            = 'anchor_fm_db_version';
 	public const OPT_EMAIL_ON_UPLOAD       = 'anchor_fm_email_on_upload';
@@ -100,6 +100,7 @@ class Schema {
 				name VARCHAR(190) NOT NULL,
 				owner_user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
 				is_private TINYINT(1) NOT NULL DEFAULT 0,
+				available_until DATE NULL DEFAULT NULL,
 				created_by BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
 				created_at DATETIME NOT NULL,
 				updated_at DATETIME NOT NULL,
@@ -256,6 +257,21 @@ class Schema {
 			self::table( 'video_views' ),
 			$index_name
 		) ) > 0;
+	}
+
+	/**
+	 * Add folders.available_until to a site older than 2.18.0. Listings select the column by name, so the version is
+	 * only stamped once it is confirmed there and a failed ALTER is retried on the next request.
+	 */
+	private static function ensure_folder_availability_column(): bool {
+		global $wpdb;
+		$folders = self::table( 'folders' );
+		$sql     = $wpdb->prepare( "SHOW COLUMNS FROM {$folders} LIKE %s", 'available_until' );
+		if ( $wpdb->get_var( $sql ) ) { // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			return true;
+		}
+		$wpdb->query( "ALTER TABLE {$folders} ADD COLUMN available_until DATE NULL DEFAULT NULL AFTER is_private" ); // phpcs:ignore
+		return (bool) $wpdb->get_var( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	}
 
 	/**
@@ -425,11 +441,12 @@ class Schema {
 		self::ensure_links_table();
 		$policies_ok = self::ensure_permission_policies_table();
 		$views_ok    = self::ensure_videos_table();
+		$until_ok    = self::ensure_folder_availability_column();
 
 		if ( $views_ok && $pre_coverage ) {
 			$views_ok = self::reset_pre_coverage_watch_stats();
 		}
-		if ( $views_ok && $policies_ok ) {
+		if ( $views_ok && $policies_ok && $until_ok ) {
 			\update_option( self::OPT_DB_VERSION, self::DB_VERSION );
 		}
 	}

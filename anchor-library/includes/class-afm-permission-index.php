@@ -28,6 +28,9 @@ class Anchor_FM_Permission_Index {
     /** id => ['parent' => int, 'owner' => int] */
     private $folders = [];
 
+    /** folder id => 'Y-m-d' last day it is available; only folders that have one */
+    private $folder_until = [];
+
     /** "type:id" => [normalized subject key => [capability, ...]] */
     private $user_caps = [];
     private $role_caps = [];
@@ -55,6 +58,15 @@ class Anchor_FM_Permission_Index {
             'parent' => (int) $parent_id,
             'owner'  => (int) $owner_user_id,
         ];
+    }
+
+    public function add_folder_until($id, $until) {
+        $this->folder_until[(int) $id] = (string) $until;
+    }
+
+    /** Last day the folder is available, or '' when it has no date. */
+    public function folder_until($id) {
+        return $this->folder_until[(int) $id] ?? '';
     }
 
     public function add_permission($entity_type, $entity_id, $subject_type, $subject_key, $capability) {

@@ -249,6 +249,11 @@
   white-space: nowrap;
 }
 
+.afm__tag--lapsed {
+  color: #b42318;
+  border-color: currentColor;
+}
+
 .afm__main {
   min-width: 0;
   display: flex;

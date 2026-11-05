@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.45.0
+Stable tag: 3.45.1
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.45.1 =
+* Events: the livestream room now records attendance. The event console shows each registrant's sessions and time in the room (once a minute while the room is open and visible during a session), with a CSV export. It shows presence on the page, not proof of watching.
 
 = 3.45.0 =
 * Library: moving things is much easier. Drag any file, folder, link or video onto a folder in the list, a folder in the sidebar, a path crumb at the top, or Home. Drag a whole selection at once. You can also use Move to... (a folder picker with a New folder button), or cut and paste. Every move shows "Moved N items to ..." with an Undo button. Links and videos can be moved too, and the page stays in the folder you are in instead of jumping.

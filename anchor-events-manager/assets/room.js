@@ -5,6 +5,7 @@
   var cfg = window.ANCHOR_EVENTS_ROOM || {};
   var timer = null;
   var poll = null;
+  var ping = null;
   var skew = 0; // serverNow - clientNow, in seconds.
 
   function $block() {
@@ -38,6 +39,7 @@
     // after the visitor was already told to refresh.
     if (timer) { window.clearInterval(timer); timer = null; }
     if (poll) { window.clearInterval(poll); poll = null; }
+    if (ping) { window.clearInterval(ping); ping = null; }
     var $el = $block();
     if (!$el.length || $el.find('.anchor-room-error').length) { return; }
     $el.append(
@@ -74,6 +76,19 @@
     }).fail(showError);
   }
 
+  // Attendance. The server decides what counts, so a failed ping just loses a
+  // minute of credit and must never disturb somebody's stream.
+  function sendPing() {
+    if (!cfg.restUrl || !cfg.eventId || document.visibilityState !== 'visible') { return; }
+    if ($block().attr('data-state') !== 'live') { return; }
+    $.ajax({
+      url: cfg.restUrl + cfg.eventId + '/room/ping',
+      method: 'POST',
+      dataType: 'json',
+      beforeSend: function (xhr) { xhr.setRequestHeader('X-WP-Nonce', cfg.nonce); }
+    });
+  }
+
   function tick() {
     var $el = $block();
     if (!$el.length) { return; }
@@ -95,6 +110,7 @@
 
     if (timer) { window.clearInterval(timer); timer = null; }
     if (poll) { window.clearInterval(poll); poll = null; }
+    if (ping) { window.clearInterval(ping); ping = null; }
 
     var state = $el.attr('data-state');
     if (state === 'countdown' || state === 'between') {
@@ -104,8 +120,12 @@
     if (state === 'live') {
       // Catch `ended` / `between` without a reload (spec §5.6).
       poll = window.setInterval(refresh, (cfg.pollSeconds || 300) * 1000);
+      sendPing();
+      ping = window.setInterval(sendPing, (cfg.pingSeconds || 60) * 1000);
     }
   }
+
+  document.addEventListener('visibilitychange', sendPing);
 
   $(start);
 })(jQuery);

@@ -336,6 +336,9 @@ class Module {
     /** @var Entitlements|null Event roles + access (spec §4; always loaded). */
     public $entitlements = null;
 
+    /** @var Room_Attendance|null Who was in the /live/ room, per session. */
+    public $room_attendance = null;
+
     /** @var App_Auth|null Application Passwords hardening for the member app. */
     public $app_auth;
 
@@ -456,6 +459,8 @@ class Module {
         // Event roles / access (virtual-events spec §4) — free + paid, no
         // WooCommerce dependency.
         require_once $dir . 'class-entitlements.php';
+        // Who was in the /live/ room, per session.
+        require_once $dir . 'class-room-attendance.php';
         require_once $dir . 'class-feed.php';
         require_once $dir . 'class-app-auth.php';
         require_once $dir . 'class-app-connect.php';
@@ -483,6 +488,7 @@ class Module {
         // WooCommerce dependency. Constructed like Registrations/Roster so
         // $module->entitlements is the one handle every surface uses.
         $this->entitlements = new Entitlements( $this );
+        $this->room_attendance = new Room_Attendance( $this );
 
         // Member-app feed: selection + row mapping over the above (no hooks yet).
         $this->feed = new Feed( $this );
@@ -8223,6 +8229,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'nonce'       => \wp_create_nonce( 'wp_rest' ),
             'eventId'     => (int) \get_the_ID(),
             'pollSeconds' => 300,
+            'pingSeconds' => Room_Attendance::PING_SECONDS,
             'i18n'        => [
                 'refresh' => \__( 'Something went wrong. Refresh the page.', 'anchor-schema' ),
                 'now'     => \__( 'now', 'anchor-schema' ),
@@ -8249,6 +8256,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             },
             'callback' => [ $this, 'rest_room' ],
         ] );
+
+        $this->room_attendance->register_routes();
 
         // The member-app feed (spec 2026-10-12-events-feed-api).
         $this->feed->register_routes();

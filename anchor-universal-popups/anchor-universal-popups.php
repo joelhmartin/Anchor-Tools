@@ -219,7 +219,9 @@ class Anchor_Universal_Popups_Module {
             'aspect_ratio' => '16:9',       // thumbnail aspect ratio
             'thumb_size' => 'maxres',       // maxres (1280x720), high (480x360), medium (320x180), default (120x90)
             'custom_thumb' => '',           // custom thumbnail URL from media library (overrides auto-fetched)
-            'tile_style' => 'card',         // card, minimal, overlay, cinematic
+            'tile_style' => 'card',         // card, minimal, overlay, cinematic, row
+            'card_title' => '',             // text shown on the card; blank = the video's own title
+            'card_subtitle' => '',          // second line on row tiles
             'theme' => 'dark',              // dark, light, auto
             'show_title' => '1',            // 0 or 1
             'title_position' => 'bottom-left', // top-left, top-center, top-right, center, bottom-left, bottom-center, bottom-right
@@ -616,6 +618,7 @@ class Anchor_Universal_Popups_Module {
                   <option value="minimal" <?php selected($m['tile_style'], 'minimal'); ?>>Minimal</option>
                   <option value="overlay" <?php selected($m['tile_style'], 'overlay'); ?>>Overlay</option>
                   <option value="cinematic" <?php selected($m['tile_style'], 'cinematic'); ?>>Cinematic</option>
+                  <option value="row" <?php selected($m['tile_style'], 'row'); ?>>Row (thumbnail left, title and subtitle right)</option>
                 </select>
               </div>
 
@@ -652,6 +655,18 @@ class Anchor_Universal_Popups_Module {
               <div class="up-field">
                 <label><strong>Border Radius</strong></label>
                 <input type="number" name="up_border_radius" value="<?php echo esc_attr($m['border_radius']); ?>" min="0" max="32" step="1" style="width:80px;" /> px
+              </div>
+
+              <div class="up-field">
+                <label for="up_card_title"><strong>Card Title</strong></label>
+                <input type="text" name="up_card_title" id="up_card_title" value="<?php echo esc_attr($m['card_title']); ?>" class="widefat" />
+                <p class="description">Leave blank to use the video's own title. Row tiles always show their title.</p>
+              </div>
+
+              <div class="up-field">
+                <label for="up_card_subtitle"><strong>Card Subtitle</strong></label>
+                <input type="text" name="up_card_subtitle" id="up_card_subtitle" value="<?php echo esc_attr($m['card_subtitle']); ?>" class="widefat" />
+                <p class="description">Shown under the title on Row tiles.</p>
               </div>
 
               <div class="up-field">
@@ -976,7 +991,7 @@ class Anchor_Universal_Popups_Module {
 
         $fields = [
             'mode','video_url','video_id','aspect_ratio','thumb_size','custom_thumb',
-            'tile_style','theme','show_title','title_position','show_duration','show_channel',
+            'tile_style','card_title','card_subtitle','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
             'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','lock_scroll','autoplay','video_end','entrance_effect','close_color',
             'html','css','js',
@@ -1483,7 +1498,8 @@ class Anchor_Universal_Popups_Module {
         // Fetch metadata
         $meta = $this->fetch_video_meta($provider, $video_id, $m['thumb_size']);
         $thumb = ! empty( $m['custom_thumb'] ) ? $m['custom_thumb'] : $meta['thumb'];
-        $title = $meta['title'];
+        $title = $m['card_title'] !== '' ? $m['card_title'] : $meta['title'];
+        $subtitle = $m['card_subtitle'];
         $duration = $meta['duration'];
         $channel = $meta['channel'];
 
@@ -1523,7 +1539,13 @@ class Anchor_Universal_Popups_Module {
         // Play button SVG
         $play_svg = $play_style !== 'none' ? $this->get_play_button_svg($play_style) : '';
 
-        $has_meta = $show_title || $show_channel;
+        // Row tiles put their text beside the thumbnail, not over it.
+        $is_row = $tile_style === 'row';
+        if ($is_row && !$title) {
+            // Provider titles need a Google API key, so a row can't rely on one.
+            $title = get_the_title($post_id);
+        }
+        $has_meta = !$is_row && ($show_title || $show_channel);
         $title_pos = $m['title_position'] ?: 'bottom-left';
 
         // Build inline style
@@ -1567,6 +1589,19 @@ class Anchor_Universal_Popups_Module {
                 </div>
                 <?php endif; ?>
             </div>
+            <?php if ($is_row): ?>
+            <div class="up-video-card__body">
+                <?php if ($title): ?>
+                <span class="up-video-card__title"><?php echo esc_html($title); ?></span>
+                <?php endif; ?>
+                <?php if ($subtitle !== ''): ?>
+                <span class="up-video-card__subtitle"><?php echo esc_html($subtitle); ?></span>
+                <?php endif; ?>
+                <?php if ($show_channel): ?>
+                <span class="up-video-card__subtitle"><?php echo esc_html($channel); ?></span>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
         </div>
         <?php
         return ob_get_clean();

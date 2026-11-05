@@ -396,6 +396,8 @@ class Roster {
         $table->display();
         echo '</form>';
 
+        echo $this->module->room_attendance->render_panel( $event_id, true ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside.
+
         $this->render_add_form( $event_id );
     }
 
@@ -1677,7 +1679,7 @@ class Roster {
      * @param array{header:string[],rows:array<int,array>} $table
      * @return void Exits.
      */
-    private function stream_csv( $filename, array $table ) {
+    public function stream_csv( $filename, array $table ) {
         \nocache_headers();
         header( 'Content-Type: text/csv; charset=utf-8' );
         header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
@@ -2373,7 +2375,7 @@ class Roster {
             </p>
         </div>
         <?php
-        return (string) \ob_get_clean();
+        return (string) \ob_get_clean() . $this->module->room_attendance->render_panel( $event_id );
     }
 
     /**

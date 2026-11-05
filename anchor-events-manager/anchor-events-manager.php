@@ -336,6 +336,9 @@ class Module {
     /** @var Entitlements|null Event roles + access (spec §4; always loaded). */
     public $entitlements = null;
 
+    /** @var Room_Attendance|null Who was in the /live/ room, per session. */
+    public $room_attendance = null;
+
     /** @var App_Auth|null Application Passwords hardening for the member app. */
     public $app_auth;
 
@@ -456,6 +459,8 @@ class Module {
         // Event roles / access (virtual-events spec §4) — free + paid, no
         // WooCommerce dependency.
         require_once $dir . 'class-entitlements.php';
+        // Who was in the /live/ room, per session.
+        require_once $dir . 'class-room-attendance.php';
         require_once $dir . 'class-feed.php';
         require_once $dir . 'class-app-auth.php';
         require_once $dir . 'class-app-connect.php';
@@ -483,6 +488,7 @@ class Module {
         // WooCommerce dependency. Constructed like Registrations/Roster so
         // $module->entitlements is the one handle every surface uses.
         $this->entitlements = new Entitlements( $this );
+        $this->room_attendance = new Room_Attendance( $this );
 
         // Member-app feed: selection + row mapping over the above (no hooks yet).
         $this->feed = new Feed( $this );
@@ -2194,6 +2200,11 @@ class Module {
             ];
         }
 
+        // Attendance is per account and has no pages of its own: page 1 carries all of it.
+        if ( $page === 1 && $this->room_attendance ) {
+            $items = \array_merge( $items, $this->room_attendance->privacy_items( $email_address ) );
+        }
+
         return [
             'data' => $items,
             'done' => \count( $seat_ids ) < $per_page,
@@ -2219,6 +2230,8 @@ class Module {
             $this->registrations->anonymize_seat( $seat_id );
         }
 
+        $attendance_removed = $this->room_attendance ? $this->room_attendance->forget_email( $email_address ) : false;
+
         // REG-D55 — say WHAT was retained. anonymize_seat() scrubs name, email,
         // phone and the custom answers but deliberately keeps the seat's
         // customer id and order id, either of which resolves straight back to
@@ -2233,7 +2246,8 @@ class Module {
         return [
             // Seats are retained with PII scrubbed (kept for capacity + audit), not
             // physically deleted — so nothing is "removed", everything is "retained".
-            'items_removed'  => false,
+            // Attendance rows, unlike seats, are deleted outright.
+            'items_removed'  => $attendance_removed,
             'items_retained' => ! empty( $seat_ids ),
             'messages'       => $messages,
             'done'           => \count( $seat_ids ) < $per_page,
@@ -8223,6 +8237,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'nonce'       => \wp_create_nonce( 'wp_rest' ),
             'eventId'     => (int) \get_the_ID(),
             'pollSeconds' => 300,
+            'pingSeconds' => Room_Attendance::PING_SECONDS,
             'i18n'        => [
                 'refresh' => \__( 'Something went wrong. Refresh the page.', 'anchor-schema' ),
                 'now'     => \__( 'now', 'anchor-schema' ),
@@ -8249,6 +8264,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             },
             'callback' => [ $this, 'rest_room' ],
         ] );
+
+        $this->room_attendance->register_routes();
 
         // The member-app feed (spec 2026-10-12-events-feed-api).
         $this->feed->register_routes();

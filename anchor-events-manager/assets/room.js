@@ -5,6 +5,7 @@
   var cfg = window.ANCHOR_EVENTS_ROOM || {};
   var timer = null;
   var poll = null;
+  var ping = null;
   var skew = 0; // serverNow - clientNow, in seconds.
 
   function $block() {
@@ -38,6 +39,7 @@
     // after the visitor was already told to refresh.
     if (timer) { window.clearInterval(timer); timer = null; }
     if (poll) { window.clearInterval(poll); poll = null; }
+    if (ping) { window.clearInterval(ping); ping = null; }
     var $el = $block();
     if (!$el.length || $el.find('.anchor-room-error').length) { return; }
     $el.append(
@@ -74,6 +76,21 @@
     }).fail(showError);
   }
 
+  // Attendance. The server decides what counts, so a failed ping just loses a
+  // minute of credit and must never disturb somebody's stream.
+  function sendPing(resume) {
+    var doc = window.document;
+    if (!doc || !cfg.restUrl || !cfg.eventId || doc.visibilityState !== 'visible') { return; }
+    if ($block().attr('data-state') !== 'live') { return; }
+    $.ajax({
+      url: cfg.restUrl + cfg.eventId + '/room/ping',
+      method: 'POST',
+      dataType: 'json',
+      data: resume === true ? { resume: 1 } : {},
+      beforeSend: function (xhr) { xhr.setRequestHeader('X-WP-Nonce', cfg.nonce); }
+    });
+  }
+
   function tick() {
     var $el = $block();
     if (!$el.length) { return; }
@@ -95,6 +112,7 @@
 
     if (timer) { window.clearInterval(timer); timer = null; }
     if (poll) { window.clearInterval(poll); poll = null; }
+    if (ping) { window.clearInterval(ping); ping = null; }
 
     var state = $el.attr('data-state');
     if (state === 'countdown' || state === 'between') {
@@ -102,9 +120,17 @@
       timer = window.setInterval(tick, 1000);
     }
     if (state === 'live') {
+      // start() also runs after every poll, so this must not restart the clock.
+      sendPing();
+      ping = window.setInterval(function () { sendPing(); }, (cfg.pingSeconds || 60) * 1000);
       // Catch `ended` / `between` without a reload (spec §5.6).
       poll = window.setInterval(refresh, (cfg.pollSeconds || 300) * 1000);
     }
+  }
+
+  // Back on the tab: the time it was hidden earns nothing.
+  if (window.document && window.document.addEventListener) {
+    window.document.addEventListener('visibilitychange', function () { sendPing(true); });
   }
 
   $(start);

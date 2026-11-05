@@ -364,6 +364,12 @@ class Occurrences {
 
         $this->flush_child_lists();
 
+        // The save_post that created or updated each child ran before its date and shared
+        // meta were written here, so its recording folders can only be right from this point on.
+        foreach ( $live_ids as $live_id ) {
+            $this->module->recording_folders->sync( (int) $live_id );
+        }
+
         return $live_ids;
     }
 

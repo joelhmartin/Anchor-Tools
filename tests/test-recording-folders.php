@@ -129,6 +129,59 @@ class Test_Recording_Folders extends Anchor_Library_TestCase {
 
 		$this->assertSame( '2031-01-01', Provisioning::available_until( $map['2030-03-01']['folder'] ) );
 		$this->assertSame( '2030-03-18', Provisioning::available_until( $map['2030-03-08']['folder'] ) );
+
+		$this->rf()->sync( $event_id );
+		$this->rf()->sync( $event_id );
+		$this->assertSame( '2031-01-01', Provisioning::available_until( $map['2030-03-01']['folder'] ), 'A date changed by hand must survive every later save, not just the next one.' );
+	}
+
+	public function test_zero_days_closes_access_and_turning_it_back_on_restores_it() {
+		$event_id = $this->event();
+		$folder   = $this->rf()->sync( $event_id );
+		$attendee = self::factory()->user->create( [ 'role' => 'customer' ] );
+		get_user_by( 'id', $attendee )->add_role( $this->module()->entitlements->role_for( $event_id ) );
+		$this->assertTrue( Permissions::can_view_folder( $folder, $attendee ) );
+
+		update_post_meta( $event_id, '_anchor_event_recording_days', 0 );
+		$this->rf()->sync( $event_id );
+		Permissions::reset_memo();
+		$this->assertFalse( Permissions::can_view_folder( $folder, $attendee ) );
+		$this->assertTrue( Provisioning::folder_exists( $folder ), 'Switching off deletes nothing.' );
+		$this->assertSame( '', $this->rf()->url( $event_id ) );
+
+		update_post_meta( $event_id, '_anchor_event_recording_days', 30 );
+		$this->assertSame( $folder, $this->rf()->sync( $event_id ) );
+		Permissions::reset_memo();
+		$this->assertTrue( Permissions::can_view_folder( $folder, $attendee ) );
+	}
+
+	public function test_a_date_of_an_offering_gets_folders_once_its_meta_has_been_written() {
+		$parent_id = $this->make_event( [
+			'type'                    => 'offering',
+			'timezone'                => 'UTC',
+			'access_role_enabled'     => true,
+			'stream_default_modality' => 'virtual',
+			'recording_days'          => 30,
+		] );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-06-01', 'start_time' => '09:00', 'end_time' => '12:00', 'label' => '' ],
+		] );
+
+		$live = $this->module()->occurrences->reconcile( $parent_id );
+
+		$this->assertCount( 1, $live );
+		$map = $this->session_folders( (int) $live[0] );
+		$this->assertArrayHasKey( '2030-06-01', $map, 'The child must be synced after its date and shared meta are written.' );
+		$this->assertSame( '2030-07-01', Provisioning::available_until( $map['2030-06-01']['folder'] ) );
+
+		update_post_meta( $parent_id, '_anchor_event_recording_days', 10 );
+		$this->module()->occurrences->reconcile( $parent_id );
+		$this->assertSame( '2030-06-11', Provisioning::available_until( $map['2030-06-01']['folder'] ), 'A new day count on the main event reaches its dates.' );
+	}
+
+	public function test_portal_page_is_found_without_woocommerce() {
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_status' => 'publish', 'post_content' => '[anchor_account_portal]' ] );
+		$this->assertSame( get_permalink( $page ), Provisioning::portal_page_url() );
 	}
 
 	public function test_a_session_off_the_schedule_loses_an_empty_folder_and_keeps_a_full_one() {

@@ -75,6 +75,28 @@ class Provisioning {
 		] );
 	}
 
+	public static function revoke_role_view( int $folder_id, string $role ): void {
+		global $wpdb;
+		$wpdb->delete( Schema::table( 'permissions' ), [
+			'entity_type'  => 'folder',
+			'entity_id'    => $folder_id,
+			'subject_type' => 'role',
+			'subject_key'  => \sanitize_key( $role ),
+			'capability'   => 'view',
+		] );
+		Permissions::reset_memo();
+	}
+
+	/** First published page carrying a portal shortcode, or ''. For sites with no WooCommerce account page. */
+	public static function portal_page_url(): string {
+		global $wpdb;
+		$id = (int) $wpdb->get_var(
+			"SELECT ID FROM {$wpdb->posts} WHERE post_type = 'page' AND post_status = 'publish'
+			AND ( post_content LIKE '%[anchor\\_account\\_portal%' OR post_content LIKE '%[anchor\\_file\\_manager%' ) ORDER BY ID ASC LIMIT 1"
+		);
+		return $id > 0 ? (string) \get_permalink( $id ) : '';
+	}
+
 	/**
 	 * Set the last day a folder is available; '' clears it. Returns false for anything that is not a real date, so a
 	 * typo can never quietly remove a deadline.

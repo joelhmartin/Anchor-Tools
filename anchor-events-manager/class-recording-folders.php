@@ -8,7 +8,8 @@
  * can only be matched to a session by a person until a real stream has run.
  *
  * Saving an event re-runs sync(), and it is safe to repeat. It never touches a date an admin changed, and it only
- * removes a folder that is empty and whose session left the schedule.
+ * removes a folder that is empty and whose session left the schedule. Setting the day count to 0 takes the role's
+ * access away and leaves the folders in place, so turning it back on restores them.
  *
  * @package AnchorTools\Events
  */
@@ -28,7 +29,7 @@ class Recording_Folders {
     /** Event meta: the event's Library folder id. */
     const META_FOLDER = '_anchor_event_recordings_folder';
 
-    /** Event meta: session date => [ 'folder' => id, 'until' => the date sync() last wrote ]. */
+    /** Event meta: session date => [ 'folder' => id, 'until' => the date sync() last generated ]. */
     const META_SESSIONS = '_anchor_event_recordings_sessions';
 
     /** @var Module */
@@ -84,7 +85,14 @@ class Recording_Folders {
     public function sync( $event_id ) {
         $event_id = (int) $event_id;
         $days     = $this->days( $event_id );
-        if ( $days <= 0 || ! $this->library_available() || ! $this->module->entitlements->enabled( $event_id ) ) {
+        if ( ! $this->library_available() ) {
+            return 0;
+        }
+        if ( $days <= 0 ) {
+            $this->close_access( $event_id );
+            return 0;
+        }
+        if ( ! $this->module->entitlements->enabled( $event_id ) ) {
             return 0;
         }
         $sessions = $this->streamable_sessions( $event_id );
@@ -121,6 +129,15 @@ class Recording_Folders {
         return $folder_id;
     }
 
+    /** Recordings were switched off: registrants lose the folder. Nothing is deleted. */
+    private function close_access( $event_id ) {
+        $folder_id = (int) \get_post_meta( $event_id, self::META_FOLDER, true );
+        $role      = $this->module->entitlements->role_for( $event_id, false );
+        if ( $folder_id > 0 && $role !== '' ) {
+            Provisioning::revoke_role_view( $folder_id, $role );
+        }
+    }
+
     /** The event's folder, reused while it exists. A name taken by another event gets the id added. */
     private function course_folder( $event_id ) {
         $stored = (int) \get_post_meta( $event_id, self::META_FOLDER, true );
@@ -143,11 +160,11 @@ class Recording_Folders {
     }
 
     /**
-     * One session's folder. The date is only rewritten when it still holds what sync() last wrote, so a deadline an
-     * admin extended by hand survives the next save of the event.
+     * One session's folder. The date is only rewritten when it still holds what sync() last generated. A deadline an
+     * admin changed differs from that, and keeps differing, so it survives every later save of the event.
      *
      * @param array|null $known What sync() recorded last time.
-     * @return array|null [ 'folder' => id, 'until' => date ]
+     * @return array|null [ 'folder' => id, 'until' => the date sync() last generated ]
      */
     private function session_folder( $parent_id, $date, $label, $days, $known ) {
         $until = self::until_date( $date, $days );
@@ -157,7 +174,7 @@ class Recording_Folders {
         $folder_id = \is_array( $known ) ? (int) ( $known['folder'] ?? 0 ) : 0;
         if ( Provisioning::folder_exists( $folder_id ) ) {
             if ( Provisioning::available_until( $folder_id ) !== (string) ( $known['until'] ?? '' ) ) {
-                return [ 'folder' => $folder_id, 'until' => Provisioning::available_until( $folder_id ) ];
+                return $known;
             }
         } else {
             // The date comes first so the sessions sort in order; "Session 10" would otherwise follow "Session 1".
@@ -189,10 +206,13 @@ class Recording_Folders {
             return '';
         }
         $portal = \function_exists( 'wc_get_page_permalink' ) ? (string) \wc_get_page_permalink( 'myaccount' ) : '';
+        if ( $portal === '' ) {
+            $portal = Provisioning::portal_page_url();
+        }
         /**
          * The page that renders the Library portal.
          *
-         * @param string $portal   Defaults to the WooCommerce account page.
+         * @param string $portal   The WooCommerce account page, else the first page with a portal shortcode.
          * @param int    $event_id
          */
         $portal = (string) \apply_filters( 'anchor_events_recordings_portal_url', $portal, $event_id );

@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.45.1
+Stable tag: 3.45.2
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,9 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.45.2 =
+* Popups: new "Row" tile style for video cards (thumbnail left, title and subtitle right), plus Card Title and Card Subtitle fields. Colours inherit from the page and can be set with the --up-row-* CSS variables.
 
 = 3.45.1 =
 * Events: the livestream room now records attendance. The event console shows each registrant's sessions and time in the room (once a minute while the room is open and visible during a session), with a CSV export. It shows presence on the page, not proof of watching.

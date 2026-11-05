@@ -595,6 +595,47 @@ html.up-scroll-lock body {
   background: #000;
 }
 
+/* Style: Row — thumbnail left, title and subtitle right. Colours come from the
+   surrounding page unless the site sets the --up-row-* variables. */
+.up-tiles-row.up-video-card {
+  display: grid;
+  grid-template-columns: var(--up-row-thumb, 40%) minmax(0, 1fr);
+  gap: var(--up-row-gap, 16px);
+  align-items: center;
+  padding: var(--up-row-padding, 0);
+  background: var(--up-row-bg, transparent);
+  border: var(--up-row-border, 0);
+  color: var(--up-row-text, inherit);
+  font-family: inherit;
+  text-align: left;
+}
+.up-tiles-row .up-video-card__play svg {
+  width: 30%;
+}
+.up-video-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.up-tiles-row .up-video-card__title {
+  color: inherit;
+  font-size: var(--up-row-title-size, 16px);
+  font-weight: 600;
+  line-height: 1.3;
+  text-shadow: none;
+  -webkit-line-clamp: 3;
+}
+.up-video-card__subtitle {
+  color: var(--up-row-muted, inherit);
+  font-size: var(--up-row-subtitle-size, 13px);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* "When the video ends" = fade out and close (frontend.js fadeOutAndClose). */
 .up-modal.up-modal--ending {
   opacity: 0;

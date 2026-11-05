@@ -78,13 +78,15 @@
 
   // Attendance. The server decides what counts, so a failed ping just loses a
   // minute of credit and must never disturb somebody's stream.
-  function sendPing() {
-    if (!cfg.restUrl || !cfg.eventId || document.visibilityState !== 'visible') { return; }
+  function sendPing(resume) {
+    var doc = window.document;
+    if (!doc || !cfg.restUrl || !cfg.eventId || doc.visibilityState !== 'visible') { return; }
     if ($block().attr('data-state') !== 'live') { return; }
     $.ajax({
       url: cfg.restUrl + cfg.eventId + '/room/ping',
       method: 'POST',
       dataType: 'json',
+      data: resume === true ? { resume: 1 } : {},
       beforeSend: function (xhr) { xhr.setRequestHeader('X-WP-Nonce', cfg.nonce); }
     });
   }
@@ -120,12 +122,15 @@
     if (state === 'live') {
       // Catch `ended` / `between` without a reload (spec §5.6).
       poll = window.setInterval(refresh, (cfg.pollSeconds || 300) * 1000);
-      sendPing();
+      sendPing(true);
       ping = window.setInterval(sendPing, (cfg.pingSeconds || 60) * 1000);
     }
   }
 
-  document.addEventListener('visibilitychange', sendPing);
+  // Back on the tab: the time it was hidden earns nothing.
+  if (window.document && window.document.addEventListener) {
+    window.document.addEventListener('visibilitychange', function () { sendPing(true); });
+  }
 
   $(start);
 })(jQuery);

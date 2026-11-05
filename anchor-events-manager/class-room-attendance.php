@@ -5,7 +5,9 @@
  * room.js pings once a minute while the room is LIVE and its tab is visible.
  * Everything that counts is decided here, on the server: the session comes from
  * Stream_State, never from the browser, and credit is the time since this
- * person's last ping, so a second tab or a forged request cannot add time.
+ * person's last ping, so a second tab or a forged request cannot add time. Rows
+ * are keyed on the session's start, not its position, because removing a session
+ * renumbers the ones after it.
  *
  * This records presence on the page, not proof of watching. Every report says so.
  *
@@ -42,7 +44,7 @@ class Room_Attendance {
         return $wpdb->prefix . self::TABLE;
     }
 
-    /** Create or upgrade the table. Cheap: one autoloaded option read once current. */
+    /** Create or upgrade the table. The version is stored only once the table really exists. */
     public function ensure_table() {
         if ( \get_option( self::DB_OPTION ) === self::DB_VERSION ) {
             return;
@@ -55,17 +57,19 @@ class Room_Attendance {
             "CREATE TABLE {$table} (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             event_id BIGINT UNSIGNED NOT NULL,
-            session_index INT UNSIGNED NOT NULL,
+            session_start DATETIME NOT NULL,
             user_id BIGINT UNSIGNED NOT NULL,
             first_seen DATETIME NOT NULL,
             last_seen DATETIME NOT NULL,
             seconds INT UNSIGNED NOT NULL DEFAULT 0,
             PRIMARY KEY  (id),
-            UNIQUE KEY person_session (event_id,session_index,user_id),
+            UNIQUE KEY person_session (event_id,session_start,user_id),
             KEY user_id (user_id)
         ) {$charset};"
         );
-        \update_option( self::DB_OPTION, self::DB_VERSION );
+        if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table ) {
+            \update_option( self::DB_OPTION, self::DB_VERSION, false );
+        }
     }
 
     public function register_routes() {
@@ -103,7 +107,7 @@ class Room_Attendance {
         if ( ! $this->module->entitlements || ! $this->module->entitlements->can_access_stream( $event_id, (int) $state['session_index'], 0 ) ) {
             return new \WP_Error( 'anchor_events_room_denied', \__( "This account isn't registered for this event.", 'anchor-schema' ), [ 'status' => 403 ] );
         }
-        $response['recorded'] = $this->record( $event_id, (int) $state['session_index'], (int) \get_current_user_id(), $now );
+        $response['recorded'] = $this->record( $event_id, (int) $state['session_index'], (int) \get_current_user_id(), $now, (bool) $request->get_param( 'resume' ) );
 
         $rest = new \WP_REST_Response( $response );
         $rest->header( 'Cache-Control', 'private, no-store, max-age=0' );
@@ -111,14 +115,17 @@ class Room_Attendance {
     }
 
     /**
-     * One ping. The first only opens the row. A later one adds the time since
-     * the previous ping, when that gap is short enough to mean they stayed and
-     * the session has actually started. The room also opens early and closes
-     * late, and that time is not session time.
+     * One ping during a session. The first only opens the row. A later one adds
+     * the time since the previous ping, when that gap is short enough to mean
+     * they stayed. The room opens early and closes late, and that time is not
+     * session time, so a ping outside the session writes nothing. That can cost
+     * up to one ping interval at each end, which is fine for this report.
      *
-     * @return bool Whether the row was written.
+     * @param bool $resume They just came back to the tab: restart the clock
+     *                     rather than crediting the time it was hidden.
+     * @return bool Whether a row was written.
      */
-    public function record( $event_id, $session_index, $user_id, $now ) {
+    public function record( $event_id, $session_index, $user_id, $now, $resume = false ) {
         if ( (int) $user_id <= 0 ) {
             return false;
         }
@@ -127,9 +134,11 @@ class Room_Attendance {
         if ( ! \is_array( $row ) ) {
             return false;
         }
-        $start     = (int) ( $row['start_ts'] ?? 0 );
-        $end       = \max( $start, (int) ( $row['end_ts'] ?? 0 ) );
-        $in_window = ( $now >= $start && $now <= $end ) ? 1 : 0;
+        $start = (int) ( $row['start_ts'] ?? 0 );
+        $end   = \max( $start, (int) ( $row['end_ts'] ?? 0 ) );
+        if ( $start <= 0 || $now < $start || $now > $end ) {
+            return false;
+        }
 
         $this->ensure_table();
         global $wpdb;
@@ -138,21 +147,21 @@ class Room_Attendance {
 
         // MySQL applies these left to right: `seconds` must read the OLD last_seen.
         $sql = $wpdb->prepare(
-            "INSERT INTO {$table} (event_id, session_index, user_id, first_seen, last_seen, seconds)
-             VALUES (%d, %d, %d, %s, %s, 0)
+            "INSERT INTO {$table} (event_id, session_start, user_id, first_seen, last_seen, seconds)
+             VALUES (%d, %s, %d, %s, %s, 0)
              ON DUPLICATE KEY UPDATE
                 seconds = seconds + IF(
-                    %d = 1 AND TIMESTAMPDIFF(SECOND, last_seen, VALUES(last_seen)) BETWEEN 0 AND %d,
+                    %d = 0 AND TIMESTAMPDIFF(SECOND, last_seen, VALUES(last_seen)) BETWEEN 0 AND %d,
                     TIMESTAMPDIFF(SECOND, last_seen, VALUES(last_seen)),
                     0
                 ),
                 last_seen = GREATEST(last_seen, VALUES(last_seen))",
             (int) $event_id,
-            (int) $session_index,
+            \gmdate( 'Y-m-d H:i:s', $start ),
             (int) $user_id,
             $stamp,
             $stamp,
-            $in_window,
+            $resume ? 1 : 0,
             self::MAX_CREDIT_SECONDS
         );
         return $wpdb->query( $sql ) !== false; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared above.
@@ -168,20 +177,69 @@ class Room_Attendance {
     }
 
     /**
+     * Personal-data export rows for the account with this email.
+     *
+     * @param string $email
+     * @return array<int,array>
+     */
+    public function privacy_items( $email ) {
+        $user = \get_user_by( 'email', (string) $email );
+        if ( ! $user || \get_option( self::DB_OPTION ) === false ) {
+            return [];
+        }
+        global $wpdb;
+        $table = self::table();
+        $rows  = $wpdb->get_results(
+            $wpdb->prepare( "SELECT id, event_id, session_start, first_seen, last_seen, seconds FROM {$table} WHERE user_id = %d", (int) $user->ID ), // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            ARRAY_A
+        );
+        $items = [];
+        foreach ( (array) $rows as $row ) {
+            $items[] = [
+                'group_id'    => 'anchor_event_room_attendance',
+                'group_label' => \__( 'Livestream Attendance', 'anchor-schema' ),
+                'item_id'     => 'anchor-event-attendance-' . (int) $row['id'],
+                'data'        => [
+                    [ 'name' => \__( 'Event', 'anchor-schema' ), 'value' => \get_the_title( (int) $row['event_id'] ) ],
+                    [ 'name' => \__( 'Session start (UTC)', 'anchor-schema' ), 'value' => $row['session_start'] ],
+                    [ 'name' => \__( 'First seen (UTC)', 'anchor-schema' ), 'value' => $row['first_seen'] ],
+                    [ 'name' => \__( 'Last seen (UTC)', 'anchor-schema' ), 'value' => $row['last_seen'] ],
+                    [ 'name' => \__( 'Seconds in room', 'anchor-schema' ), 'value' => (int) $row['seconds'] ],
+                ],
+            ];
+        }
+        return $items;
+    }
+
+    /**
+     * Personal-data erasure for the account with this email.
+     *
+     * @param string $email
+     * @return bool Whether anything was deleted.
+     */
+    public function forget_email( $email ) {
+        $user = \get_user_by( 'email', (string) $email );
+        if ( ! $user || \get_option( self::DB_OPTION ) === false ) {
+            return false;
+        }
+        global $wpdb;
+        return (bool) $wpdb->delete( self::table(), [ 'user_id' => (int) $user->ID ], [ '%d' ] );
+    }
+
+    /**
      * The sessions a person could have been in the room for.
      *
-     * @return array<int,array{index:int,label:string,date:string,start_ts:int,end_ts:int,seconds:int}>
+     * @return array<int,array{label:string,date:string,start_ts:int,end_ts:int,seconds:int}>
      */
     public function streamed_sessions( $event_id ) {
         $out = [];
-        foreach ( $this->module->resolved_sessions( (int) $event_id ) as $i => $row ) {
+        foreach ( $this->module->resolved_sessions( (int) $event_id ) as $row ) {
             if ( ! \in_array( (string) ( $row['modality'] ?? '' ), Stream_State::STREAMABLE, true ) || empty( $row['stream_embed']['src'] ) ) {
                 continue;
             }
             $start = (int) ( $row['start_ts'] ?? 0 );
             $end   = \max( $start, (int) ( $row['end_ts'] ?? 0 ) );
             $out[] = [
-                'index'    => (int) $i,
                 'label'    => (string) ( $row['label'] ?? '' ),
                 'date'     => (string) ( $row['date'] ?? '' ),
                 'start_ts' => $start,
@@ -218,25 +276,26 @@ class Room_Attendance {
                 $user    = \get_user_by( 'email', (string) $seat['email'] );
                 $user_id = $user ? (int) $user->ID : 0;
             }
-            $people[] = $this->person( (string) ( $seat['name'] ?? '' ), (string) ( $seat['email'] ?? '' ), $user_id, true, $visits );
+            $people[] = $this->person( (string) ( $seat['name'] ?? '' ), (string) ( $seat['email'] ?? '' ), $user_id, true, $visits, $sessions );
             if ( $user_id > 0 ) {
                 $seen[ $user_id ] = true;
             }
         }
         foreach ( $visits as $user_id => $rows ) {
-            if ( isset( $seen[ $user_id ] ) || \user_can( (int) $user_id, 'manage_options' ) ) {
+            if ( isset( $seen[ $user_id ] ) || \user_can( (int) $user_id, Module::events_capability() ) ) {
                 continue;
             }
             $user = \get_user_by( 'id', (int) $user_id );
             if ( $user ) {
-                $people[] = $this->person( (string) $user->display_name, (string) $user->user_email, (int) $user_id, false, $visits );
+                $people[] = $this->person( (string) $user->display_name, (string) $user->user_email, (int) $user_id, false, $visits, $sessions );
             }
         }
         return [ 'sessions' => $sessions, 'people' => $people ];
     }
 
-    private function person( $name, $email, $user_id, $seat, array $visits ) {
-        $rows = $visits[ $user_id ] ?? [];
+    private function person( $name, $email, $user_id, $seat, array $visits, array $sessions ) {
+        // A session removed from the event no longer counts towards the totals.
+        $rows = \array_intersect_key( $visits[ $user_id ] ?? [], \array_flip( \array_column( $sessions, 'start_ts' ) ) );
         return [
             'name'    => $name,
             'email'   => $email,
@@ -248,7 +307,7 @@ class Room_Attendance {
         ];
     }
 
-    /** @return array<int,array<int,array{seconds:int,first_ts:int,last_ts:int}>> user_id => session_index => visit. */
+    /** @return array<int,array<int,array{seconds:int,first_ts:int,last_ts:int}>> user_id => session start => visit. */
     private function visits_by_user( $event_id ) {
         if ( \get_option( self::DB_OPTION ) === false ) {
             return [];
@@ -256,12 +315,12 @@ class Room_Attendance {
         global $wpdb;
         $table = self::table();
         $rows  = $wpdb->get_results(
-            $wpdb->prepare( "SELECT session_index, user_id, first_seen, last_seen, seconds FROM {$table} WHERE event_id = %d", (int) $event_id ), // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $wpdb->prepare( "SELECT session_start, user_id, first_seen, last_seen, seconds FROM {$table} WHERE event_id = %d", (int) $event_id ), // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
             ARRAY_A
         );
         $out = [];
         foreach ( (array) $rows as $row ) {
-            $out[ (int) $row['user_id'] ][ (int) $row['session_index'] ] = [
+            $out[ (int) $row['user_id'] ][ (int) \strtotime( $row['session_start'] . ' UTC' ) ] = [
                 'seconds'  => (int) $row['seconds'],
                 'first_ts' => (int) \strtotime( $row['first_seen'] . ' UTC' ),
                 'last_ts'  => (int) \strtotime( $row['last_seen'] . ' UTC' ),
@@ -340,7 +399,7 @@ class Room_Attendance {
             } else {
                 $out .= '<details><summary>' . \esc_html__( 'Show', 'anchor-schema' ) . '</summary><ul>';
                 foreach ( $report['sessions'] as $session ) {
-                    $visit = $person['visits'][ $session['index'] ] ?? null;
+                    $visit = $person['visits'][ $session['start_ts'] ] ?? null;
                     if ( ! $visit ) {
                         continue;
                     }
@@ -385,7 +444,7 @@ class Room_Attendance {
         foreach ( $report['people'] as $person ) {
             $cells = [ $person['name'], $person['email'], $person['seat'] ? 'Yes' : 'No', $person['joined'], (int) \round( $person['seconds'] / 60 ) ];
             foreach ( $report['sessions'] as $session ) {
-                $visit   = $person['visits'][ $session['index'] ] ?? null;
+                $visit   = $person['visits'][ $session['start_ts'] ] ?? null;
                 $cells[] = $visit ? $this->clock( $visit['first_ts'], $event_id ) : '';
                 $cells[] = $visit ? $this->clock( $visit['last_ts'], $event_id ) : '';
                 $cells[] = $visit ? (int) \round( $visit['seconds'] / 60 ) : '';

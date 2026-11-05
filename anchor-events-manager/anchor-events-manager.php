@@ -2200,6 +2200,11 @@ class Module {
             ];
         }
 
+        // Attendance is per account and has no pages of its own: page 1 carries all of it.
+        if ( $page === 1 && $this->room_attendance ) {
+            $items = \array_merge( $items, $this->room_attendance->privacy_items( $email_address ) );
+        }
+
         return [
             'data' => $items,
             'done' => \count( $seat_ids ) < $per_page,
@@ -2225,6 +2230,8 @@ class Module {
             $this->registrations->anonymize_seat( $seat_id );
         }
 
+        $attendance_removed = $this->room_attendance ? $this->room_attendance->forget_email( $email_address ) : false;
+
         // REG-D55 — say WHAT was retained. anonymize_seat() scrubs name, email,
         // phone and the custom answers but deliberately keeps the seat's
         // customer id and order id, either of which resolves straight back to
@@ -2239,7 +2246,8 @@ class Module {
         return [
             // Seats are retained with PII scrubbed (kept for capacity + audit), not
             // physically deleted — so nothing is "removed", everything is "retained".
-            'items_removed'  => false,
+            // Attendance rows, unlike seats, are deleted outright.
+            'items_removed'  => $attendance_removed,
             'items_retained' => ! empty( $seat_ids ),
             'messages'       => $messages,
             'done'           => \count( $seat_ids ) < $per_page,

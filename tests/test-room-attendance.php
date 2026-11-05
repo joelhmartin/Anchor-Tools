@@ -73,16 +73,52 @@ class Test_Room_Attendance extends Anchor_Events_TestCase {
 		$this->assertSame( 60, $this->seconds( $event_id, $user_id ) );
 	}
 
-	public function test_time_outside_the_session_is_not_credited() {
+	public function test_pings_outside_the_session_write_nothing() {
 		$event_id = $this->event();
 		$user_id  = self::factory()->user->create();
-		$this->att()->record( $event_id, 0, $user_id, $this->start - 120 );
-		$this->att()->record( $event_id, 0, $user_id, $this->start - 60 );
+		$end      = $this->start + ( 4 * HOUR_IN_SECONDS );
+		$this->assertFalse( $this->att()->record( $event_id, 0, $user_id, $this->start - 60 ) );
+		$this->assertFalse( $this->att()->record( $event_id, 0, $user_id, $end + 60 ) );
+		$this->assertSame( [], $this->att()->report( $event_id )['people'] );
+	}
+
+	public function test_coming_back_to_the_tab_restarts_the_clock() {
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create();
+		$this->att()->record( $event_id, 0, $user_id, $this->start );
+		$this->att()->record( $event_id, 0, $user_id, $this->start + 120, true );
 		$this->assertSame( 0, $this->seconds( $event_id, $user_id ) );
-		$end = $this->start + ( 4 * HOUR_IN_SECONDS );
-		$this->att()->record( $event_id, 0, $user_id, $end + 60 );
-		$this->att()->record( $event_id, 0, $user_id, $end + 120 );
-		$this->assertSame( 0, $this->seconds( $event_id, $user_id ) );
+		$this->att()->record( $event_id, 0, $user_id, $this->start + 180 );
+		$this->assertSame( 60, $this->seconds( $event_id, $user_id ) );
+	}
+
+	public function test_removing_an_earlier_session_keeps_attendance_on_the_right_session() {
+		$event_id = $this->event();
+		$sessions = get_post_meta( $event_id, '_anchor_event_sessions', true );
+		$later    = [ 'date' => '2030-03-08', 'start_time' => '08:00', 'end_time' => '12:00', 'label' => 'Session 2', 'modality' => 'virtual' ];
+		update_post_meta( $event_id, '_anchor_event_sessions', [ $sessions[0], $later ] );
+		$user_id = self::factory()->user->create( [ 'user_email' => 'stays@example.test' ] );
+		$this->make_seat( $event_id, [ 'name' => 'Stays', 'email' => 'stays@example.test' ] );
+		$this->att()->record( $event_id, 1, $user_id, strtotime( '2030-03-08 08:30:00 UTC' ) );
+
+		update_post_meta( $event_id, '_anchor_event_sessions', [ $later ] );
+		$report = $this->att()->report( $event_id );
+		$this->assertSame( 1, $report['people'][0]['joined'] );
+		$this->assertSame( 'Session 2', $report['sessions'][0]['label'] );
+		$this->assertArrayHasKey( $report['sessions'][0]['start_ts'], $report['people'][0]['visits'] );
+	}
+
+	public function test_personal_data_tools_export_and_erase_attendance() {
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'pd@example.test' ] );
+		$this->att()->record( $event_id, 0, $user_id, $this->start );
+
+		$export = $this->module()->privacy_export( 'pd@example.test', 1 );
+		$this->assertContains( 'anchor_event_room_attendance', array_column( $export['data'], 'group_id' ) );
+
+		$erase = $this->module()->privacy_erase( 'pd@example.test', 1 );
+		$this->assertTrue( $erase['items_removed'] );
+		$this->assertSame( [], $this->att()->privacy_items( 'pd@example.test' ) );
 	}
 
 	public function test_report_lists_every_confirmed_seat_and_only_streamed_sessions() {
@@ -106,6 +142,12 @@ class Test_Room_Attendance extends Anchor_Events_TestCase {
 		$admin    = self::factory()->user->create( [ 'role' => 'administrator' ] );
 		$this->att()->record( $event_id, 0, $admin, $this->start );
 		$this->assertSame( [], $this->att()->report( $event_id )['people'] );
+
+		$granted = self::factory()->user->create( [ 'user_email' => 'granted@example.test' ] );
+		$this->att()->record( $event_id, 0, $granted, $this->start );
+		$people = $this->att()->report( $event_id )['people'];
+		$this->assertSame( [ 'granted@example.test' ], array_column( $people, 'email' ), 'A seatless non-staff visitor is still listed.' );
+		$this->assertFalse( $people[0]['seat'] );
 	}
 
 	public function test_deleting_a_user_deletes_their_attendance() {

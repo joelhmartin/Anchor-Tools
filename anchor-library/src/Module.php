@@ -11,6 +11,9 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 class Module {
 
+	/** Set once boot() has wired the module. */
+	private static bool $running = false;
+
 	/** The old plugin's class. While it exists, the plugin owns the data and the hooks. */
 	public const LEGACY_CLASS = 'Anchor_Private_File_Manager';
 
@@ -29,6 +32,14 @@ class Module {
 	}
 
 	/**
+	 * Whether the module is switched on and running on this site. Other modules must ask this rather than
+	 * class_exists(): the classes autoload whether or not the module is enabled, but its tables may not exist.
+	 */
+	public static function is_running(): bool {
+		return (bool) \apply_filters( 'anchor_library_running', self::$running );
+	}
+
+	/**
 	 * Wire every component, unless the old plugin is active: two copies of the same shortcodes, AJAX actions and
 	 * cron hooks would double everything, so the module then stays inert and says why.
 	 * Safe to call more than once: all callbacks are static, which WordPress de-duplicates.
@@ -38,6 +49,7 @@ class Module {
 			\add_action( 'admin_notices', [ self::class, 'render_legacy_notice' ] );
 			return;
 		}
+		self::$running = true;
 		self::register_hooks();
 		Schema::maybe_upgrade();
 		Schema::schedule_events();

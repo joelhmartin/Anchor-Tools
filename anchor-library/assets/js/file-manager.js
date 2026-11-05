@@ -362,7 +362,7 @@ jQuery(function ($) {
 
     function currentRows(list) {
         const rows = [];
-        (list.folders || []).forEach(f => rows.push({ kind: 'folder', id: f.id, name: f.name, isPrivate: f.isPrivate }));
+        (list.folders || []).forEach(f => rows.push({ kind: 'folder', id: f.id, name: f.name, isPrivate: f.isPrivate, availableUntil: f.availableUntil, lapsed: f.lapsed }));
         (list.videos || []).forEach(v => rows.push({ kind: 'video', id: v.id, name: v.title, vimeoId: v.vimeoId, vimeoHash: v.vimeoHash, thumbnailUrl: v.thumbnailUrl, createdAt: v.createdAt, watchPercent: v.watchPercent }));
         (list.links || []).forEach(l => rows.push({ kind: 'link', id: l.id, name: l.title, url: l.url, createdAt: l.createdAt }));
         (list.files || []).forEach(f => rows.push({ kind: 'file', id: f.id, name: f.name, mime: f.mime, size: f.size, createdAt: f.createdAt, watchPercent: f.watchPercent }));
@@ -402,6 +402,14 @@ jQuery(function ($) {
         });
     }
 
+    // Attendees see their deadline; admins also see folders that have already lapsed.
+    function availabilityTag(item) {
+        if (!item.availableUntil) return '';
+        const [y, m, d] = String(item.availableUntil).split('-').map(Number);
+        const date = new Date(y, m - 1, d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        return `<span class="afm__tag${item.lapsed ? ' afm__tag--lapsed' : ''}">${esc((item.lapsed ? 'Expired ' : 'Available until ') + date)}</span>`;
+    }
+
     function rowHtml(item, depth) {
         const pad = 12 + (depth || 0) * 20;
         const selected = (state.selectedRows.has(rowKey(item.kind, item.id)) ? ' is-selected' : '')
@@ -422,6 +430,7 @@ jQuery(function ($) {
                     ${disclosure}
                     ${rowIconHtml(item)}
                     <span class="afm__rowLabel" data-afm-row-label>${esc(item.name)}</span>
+                    ${availabilityTag(item)}
                     ${(typeof item.watchPercent === 'number') ? watchRing(item.watchPercent) : ''}
                 </div>
                 <div class="afm__rowCell afm__rowKind">${esc(kindLabel(item.kind, item.mime))}</div>
@@ -562,6 +571,27 @@ jQuery(function ($) {
         return fromXHR || fromRes || fallback;
     }
 
+    function openAvailabilityModal(folderId) {
+        // A sidebar folder may not be in the current list; the tree carries the date too, so saving never blanks it.
+        const stack = (state.tree || []).slice();
+        let node = null;
+        while (stack.length && !node) {
+            const n = stack.shift();
+            if (Number(n.id) === Number(folderId)) node = n;
+            else if (n.children && n.children.length) stack.push.apply(stack, n.children);
+        }
+        const row = node || findRow('folder', folderId);
+        openTextModal({
+            title: 'Available until',
+            primaryLabel: 'Save',
+            inputType: 'date',
+            value: row && row.availableUntil ? row.availableUntil : '',
+            help: 'Last day people can open this folder and everything in it. Admins keep access, and the files and watch history stay. Leave empty for no limit.',
+            mode: 'folder-availability',
+            payload: { folderId },
+        });
+    }
+
     function openTextModal(opts) {
         const title = opts && opts.title ? String(opts.title) : 'Edit';
         const label = opts && opts.primaryLabel ? String(opts.primaryLabel) : 'Save';
@@ -574,7 +604,7 @@ jQuery(function ($) {
         $modalBody.html(`
             <div class="afm__fieldRow">
                 <label class="afm__label">${esc(title)}</label>
-                <input type="text" class="afm__input" data-afm-modal-input placeholder="${esc(placeholder)}" value="${esc(value)}">
+                <input type="${esc(opts && opts.inputType ? opts.inputType : 'text')}" class="afm__input" data-afm-modal-input placeholder="${esc(placeholder)}" value="${esc(value)}">
                 <div class="afm__help">${esc(opts && opts.help ? opts.help : '')}</div>
             </div>
         `);
@@ -1634,6 +1664,17 @@ jQuery(function ($) {
             });
             return;
         }
+        if (state.modalMode === 'folder-availability') {
+            const available_until = String($modalBody.find('[data-afm-modal-input]').val() || '').trim();
+            const folderId = state.modalPayload && state.modalPayload.folderId ? Number(state.modalPayload.folderId) : 0;
+            if (!folderId) return;
+            api('anchor_fm_set_folder_availability', { folder_id: folderId, available_until }).done(res => {
+                if (!res || !res.success) return;
+                closeModal();
+                bootstrap({ stay: true });
+            });
+            return;
+        }
         if (state.modalMode === 'edit-link') {
             const title = String($modalBody.find('[data-afm-link-title]').val() || '').trim();
             const url = String($modalBody.find('[data-afm-link-url]').val() || '').trim();
@@ -1840,6 +1881,7 @@ jQuery(function ($) {
             if (action === 'paste-into') { if (!window.AnchorFMMove.pasteCut(vid)) copyItems(clipboardItems(), vid); return; }
             if (action === 'rename') { if (typeof startInlineRename === 'function') startInlineRename(k, vid); return; }
             if (action === 'permissions') { openPermissions(k, vid); return; }
+            if (action === 'availability') { openAvailabilityModal(vid); return; }
             if (action === 'edit-link') {
                 const link = findRow('link', vid);
                 openLinkModal({
@@ -1872,6 +1914,12 @@ jQuery(function ($) {
                 mode: 'rename-folder',
                 payload: { folderId },
             });
+            return;
+        }
+
+        if (action === 'availability-folder') {
+            const folderId = Number(ctx.folderId || 0);
+            if (folderId) openAvailabilityModal(folderId);
             return;
         }
 
@@ -1987,6 +2035,7 @@ jQuery(function ($) {
             if (kind !== 'link') items.push({ action: 'rename', icon: 'edit', label: 'Rename' });
             if (kind === 'link') items.push({ action: 'edit-link', icon: 'edit', label: 'Edit' });
             if (kind === 'folder' || kind === 'file') items.push({ action: 'permissions', icon: 'shield', label: 'Permissions' });
+            if (kind === 'folder') items.push({ action: 'availability', icon: 'calendar-alt', label: 'Available until...' });
             items.push({ action: 'delete', icon: 'trash', label: 'Delete', danger: true });
         }
         return items;
@@ -2260,7 +2309,7 @@ jQuery(function ($) {
         // Anyone who can see the folder can download it; the rest is admin-only.
         const items = [{ action: 'download-folder', label: 'Download', icon: 'download' }];
         if (AnchorFM.isAdmin) {
-            items.unshift({ action: 'rename-folder', label: 'Rename', icon: 'edit' }, { action: 'permissions-folder', label: 'Permissions', icon: 'lock' });
+            items.unshift({ action: 'rename-folder', label: 'Rename', icon: 'edit' }, { action: 'permissions-folder', label: 'Permissions', icon: 'lock' }, { action: 'availability-folder', label: 'Available until...', icon: 'calendar-alt' });
             items.push({ action: 'ungroup-folder', label: 'Move to top', icon: 'admin-site', disabled: parentId === 0 });
             items.push({ action: 'delete-folder', label: 'Delete', icon: 'trash', danger: true });
         }

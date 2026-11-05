@@ -87,6 +87,8 @@ class Repository {
 			'name'        => $f->name,
 			'isPrivate'   => 1 === (int) $f->is_private,
 			'ownerUserId' => ! empty( $f->owner_user_id ) ? (int) $f->owner_user_id : 0,
+			'availableUntil' => ! empty( $f->available_until ) ? (string) $f->available_until : '',
+			'lapsed'      => ! empty( $f->available_until ) && Permissions::doc_is_expired( $f->available_until ),
 		];
 	}
 
@@ -148,7 +150,7 @@ class Repository {
 				$out['folders'] = self::topmost_viewable( $user_id, $pd );
 			} else {
 				$rows = $wpdb->get_results( $wpdb->prepare(
-					"SELECT id, parent_id, name, owner_user_id, is_private FROM {$folders} WHERE parent_id = %d AND is_private = 0 ORDER BY name ASC",
+					"SELECT id, parent_id, name, owner_user_id, is_private, available_until FROM {$folders} WHERE parent_id = %d AND is_private = 0 ORDER BY name ASC",
 					$folder_id
 				) );
 				foreach ( (array) $rows as $f ) {
@@ -180,7 +182,7 @@ class Repository {
 	 */
 	private static function topmost_viewable( int $user_id, int $pd ): array {
 		global $wpdb;
-		$rows  = (array) $wpdb->get_results( 'SELECT id, parent_id, name, owner_user_id, is_private FROM ' . Schema::table( 'folders' ) . ' WHERE is_private = 0 ORDER BY name ASC' );
+		$rows  = (array) $wpdb->get_results( 'SELECT id, parent_id, name, owner_user_id, is_private, available_until FROM ' . Schema::table( 'folders' ) . ' WHERE is_private = 0 ORDER BY name ASC' );
 		$by_id = [];
 		foreach ( $rows as $r ) {
 			if ( (int) $r->id !== $pd ) {
@@ -385,7 +387,7 @@ class Repository {
 		return Permissions::with_memo( static function () use ( $user_id ) {
 			global $wpdb;
 			$folders = Schema::table( 'folders' );
-			$all     = $wpdb->get_results( "SELECT id, parent_id, name, owner_user_id, is_private FROM {$folders} WHERE is_private = 0 ORDER BY name ASC" );
+			$all     = $wpdb->get_results( "SELECT id, parent_id, name, owner_user_id, is_private, available_until FROM {$folders} WHERE is_private = 0 ORDER BY name ASC" );
 			if ( ! $all ) {
 				return [];
 			}
@@ -425,6 +427,7 @@ class Repository {
 						'name'          => $row->name,
 						'isPrivate'     => 1 === (int) $row->is_private,
 						'ownerUserId'   => ! empty( $row->owner_user_id ) ? (int) $row->owner_user_id : 0,
+						'availableUntil' => ! empty( $row->available_until ) ? (string) $row->available_until : '',
 						'isProductDocs' => (int) $row->id === $pd,
 						'children'      => $build( (int) $row->id ),
 					];
@@ -453,7 +456,7 @@ class Repository {
 			$map     = [ 0 => $empty ];
 
 			$shaped = [];
-			$rows   = $wpdb->get_results( 'SELECT id, parent_id, name, owner_user_id, is_private FROM ' . Schema::table( 'folders' ) . ' WHERE is_private = 0 ORDER BY name ASC' );
+			$rows   = $wpdb->get_results( 'SELECT id, parent_id, name, owner_user_id, is_private, available_until FROM ' . Schema::table( 'folders' ) . ' WHERE is_private = 0 ORDER BY name ASC' );
 			foreach ( (array) $rows as $f ) {
 				$fid = (int) $f->id;
 				if ( $fid === $pd || ! Permissions::can_view_folder( $fid, $user_id ) ) {

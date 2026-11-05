@@ -324,7 +324,7 @@ class Anchor_Library_Permissions_Test extends Anchor_Library_TestCase {
 
 		$out = Repository::children( $f, $this->member );
 		$this->assertSame( [ 'folders', 'links', 'files', 'videos' ], array_keys( $out ) );
-		$this->assertSame( [ [ 'id' => $sub, 'name' => 'Sub', 'isPrivate' => false, 'ownerUserId' => 0 ] ], $out['folders'] );
+		$this->assertSame( [ [ 'id' => $sub, 'name' => 'Sub', 'isPrivate' => false, 'ownerUserId' => 0, 'availableUntil' => '', 'lapsed' => false ] ], $out['folders'] );
 		$this->assertSame( [ 'id', 'name', 'mime', 'size', 'uploadedBy', 'createdAt' ], array_keys( $out['files'][0] ) );
 		$this->assertSame( $file, $out['files'][0]['id'] );
 		$this->assertSame( [ 'id', 'title', 'url', 'createdBy', 'createdAt' ], array_keys( $out['links'][0] ) );

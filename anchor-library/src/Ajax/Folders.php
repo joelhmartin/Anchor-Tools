@@ -15,6 +15,7 @@ use Anchor\Library\Copier;
 use Anchor\Library\Http;
 use Anchor\Library\Mover;
 use Anchor\Library\Permissions;
+use Anchor\Library\Provisioning;
 use Anchor\Library\Purger;
 use Anchor\Library\Repository;
 use Anchor\Library\Schema;
@@ -31,6 +32,7 @@ class Folders {
 		'anchor_fm_search' => 'ajax_search',
 		'anchor_fm_create_folder' => 'ajax_create_folder',
 		'anchor_fm_rename_folder' => 'ajax_rename_folder',
+		'anchor_fm_set_folder_availability' => 'ajax_set_folder_availability',
 		'anchor_fm_delete_folder' => 'ajax_delete_folder',
 		'anchor_fm_move_folder' => 'ajax_move_folder',
 		'anchor_fm_move_items' => 'ajax_move_items',
@@ -155,6 +157,23 @@ class Folders {
 		Activity::log('rename_folder', 'folder', $folder_id, ['name' => $name], $user_id);
 
 		Http::success(['folderId' => $folder_id]);
+	}
+
+	/** Set or clear a folder's "available until" date. An empty date clears it. */
+	public static function ajax_set_folder_availability() {
+		Http::auth();
+
+		$user_id = \get_current_user_id();
+		$folder_id = isset($_POST['folder_id']) ? (int) $_POST['folder_id'] : 0;
+		$until = isset($_POST['available_until']) ? \sanitize_text_field((string) $_POST['available_until']) : '';
+		if ($folder_id <= 0) Http::error('Missing fields');
+
+		if (!\user_can($user_id, 'administrator')) Http::error('Forbidden', 403);
+		if ($err = Repository::write_target_error($folder_id)) Http::error($err[0], $err[1]);
+		if (!Provisioning::set_available_until($folder_id, $until)) Http::error('Enter a real date, or leave it empty.', 400);
+		Activity::log('set_folder_availability', 'folder', $folder_id, ['available_until' => $until], $user_id);
+
+		Http::success(['folderId' => $folder_id, 'availableUntil' => $until]);
 	}
 
 	public static function ajax_delete_folder() {

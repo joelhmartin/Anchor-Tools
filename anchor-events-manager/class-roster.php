@@ -397,6 +397,7 @@ class Roster {
         echo '</form>';
 
         echo $this->module->room_attendance->render_panel( $event_id, true ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside.
+        echo $this->module->recording_folders->render_panel( $event_id, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
         $this->render_add_form( $event_id );
     }
@@ -2375,7 +2376,7 @@ class Roster {
             </p>
         </div>
         <?php
-        return (string) \ob_get_clean() . $this->module->room_attendance->render_panel( $event_id );
+        return (string) \ob_get_clean() . $this->module->room_attendance->render_panel( $event_id ) . $this->module->recording_folders->render_panel( $event_id );
     }
 
     /**

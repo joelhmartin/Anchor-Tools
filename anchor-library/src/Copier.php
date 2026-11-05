@@ -145,10 +145,12 @@ class Copier {
 			'name'          => $name,
 			'owner_user_id' => 0,
 			'is_private'    => 0,
+			// A copy keeps the deadline: duplicating a lapsed folder must not republish it.
+			'available_until' => ! empty( $folder->available_until ) ? (string) $folder->available_until : null,
 			'created_by'    => \get_current_user_id(),
 			'created_at'    => $now,
 			'updated_at'    => $now,
-		], ['%d','%s','%d','%d','%d','%s','%s']);
+		]);
 		$new_id = (int) $wpdb->insert_id;
 		$existing[] = $name;
 

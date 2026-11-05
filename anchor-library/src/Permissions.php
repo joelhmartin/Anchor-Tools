@@ -403,7 +403,7 @@ class Permissions {
 			if ( ! empty( $folder->owner_user_id ) && (int) $folder->owner_user_id === $user_id ) {
 				return 'manage';
 			}
-			return self::folder_cap_memo( $user_id, $folder );
+			return self::without_lapsed_view( self::folder_cap_memo( $user_id, $folder ), $entity_id );
 		}
 
 		if ( 'file' === $entity_type ) {
@@ -414,13 +414,49 @@ class Permissions {
 			// A file-level grant takes precedence over folder inheritance when present.
 			$cap = self::direct_cap_memo( $user_id, 'file', $entity_id );
 			if ( 'none' !== $cap ) {
-				return $cap;
+				return self::without_lapsed_view( $cap, $folder_id );
 			}
 			$folder = self::folder_node( $folder_id );
-			return $folder ? self::folder_cap_memo( $user_id, $folder ) : 'none';
+			return $folder ? self::without_lapsed_view( self::folder_cap_memo( $user_id, $folder ), $folder_id ) : 'none';
 		}
 
 		return 'none';
+	}
+
+	/**
+	 * A folder past its "available until" date takes view access away, for it and everything beneath it. Anyone who
+	 * can manage it keeps access, so the content and its watch data stay reachable. Links and videos inherit this
+	 * through can_view_folder(). A paid product's documents are a separate grant with their own expiry
+	 * (can_view_file_via_product) and are not affected.
+	 */
+	private static function without_lapsed_view( string $cap, int $folder_id ): string {
+		return self::rank( $cap ) < 3 && self::folder_lapsed( $folder_id ) ? 'none' : $cap;
+	}
+
+	/** Whether this folder or any folder above it is past its "available until" date. */
+	public static function folder_lapsed( int $folder_id ): bool {
+		return self::memoized( 'lapsed:' . $folder_id, static function () use ( $folder_id ) {
+			$seen = [];
+			$fid  = $folder_id;
+			while ( $fid > 0 && ! isset( $seen[ $fid ] ) && \count( $seen ) < self::MAX_DEPTH ) {
+				$seen[ $fid ] = true;
+				if ( self::doc_is_expired( self::folder_until( $fid ) ) ) {
+					return true;
+				}
+				$node = self::folder_ancestry( $fid );
+				$fid  = $node ? (int) $node['parent'] : 0;
+			}
+			return false;
+		} );
+	}
+
+	/** The folder's own "available until" date, or ''. An index miss is a folder created since it was built. */
+	private static function folder_until( int $folder_id ): string {
+		if ( self::$index && null !== self::$index->folder( $folder_id ) ) {
+			return self::$index->folder_until( $folder_id );
+		}
+		$row = Repository::folder_row( $folder_id );
+		return $row && ! empty( $row->available_until ) ? (string) $row->available_until : '';
 	}
 
 	private static function folder_cap_memo( int $user_id, \stdClass $folder ): string {
@@ -588,6 +624,11 @@ class Permissions {
 		}
 		foreach ( (array) $rows as $r ) {
 			$index->add_folder( (int) $r->id, (int) $r->parent_id, (int) $r->owner_user_id );
+		}
+
+		// Tolerant: this fails only when the column is missing, in which case no folder has a date. The upgrade retries it.
+		foreach ( (array) $wpdb->get_results( 'SELECT id, available_until FROM ' . Schema::table( 'folders' ) . ' WHERE available_until IS NOT NULL' ) as $r ) {
+			$index->add_folder_until( (int) $r->id, (string) $r->available_until );
 		}
 
 		$rows = $wpdb->get_results( 'SELECT entity_type, entity_id, subject_type, subject_key, capability FROM ' . Schema::table( 'permissions' ) );

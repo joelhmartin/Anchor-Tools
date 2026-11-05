@@ -182,6 +182,7 @@ class Occurrences {
         'in_person_includes_stream',
         'stream_open_before_minutes',
         'stream_close_after_minutes',
+        'recording_days',
         'required_roles',
         'required_roles_mode',
         'registration_open',
@@ -362,6 +363,12 @@ class Occurrences {
         $this->sync_parent_span( $parent_id, $live_ids );
 
         $this->flush_child_lists();
+
+        // The save_post that created or updated each child ran before its date and shared
+        // meta were written here, so its recording folders can only be right from this point on.
+        foreach ( $live_ids as $live_id ) {
+            $this->module->recording_folders->sync( (int) $live_id );
+        }
 
         return $live_ids;
     }

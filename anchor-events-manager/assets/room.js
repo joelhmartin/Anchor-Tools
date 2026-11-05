@@ -122,8 +122,9 @@
     if (state === 'live') {
       // Catch `ended` / `between` without a reload (spec §5.6).
       poll = window.setInterval(refresh, (cfg.pollSeconds || 300) * 1000);
-      sendPing(true);
-      ping = window.setInterval(sendPing, (cfg.pingSeconds || 60) * 1000);
+      // start() also runs after every poll, so this must not restart the clock.
+      sendPing();
+      ping = window.setInterval(function () { sendPing(); }, (cfg.pingSeconds || 60) * 1000);
     }
   }
 

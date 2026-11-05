@@ -67,7 +67,11 @@ class Room_Attendance {
             KEY user_id (user_id)
         ) {$charset};"
         );
-        if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table ) {
+        // dbDelta() does not report a failed CREATE, so ask the table itself.
+        $suppress = $wpdb->suppress_errors( true );
+        $exists   = $wpdb->query( "SELECT 1 FROM {$table} LIMIT 1" ) !== false; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+        $wpdb->suppress_errors( $suppress );
+        if ( $exists ) {
             \update_option( self::DB_OPTION, self::DB_VERSION, false );
         }
     }

@@ -324,43 +324,6 @@
 
   // Any control carrying data-confirm asks first — the event delete link, the
   // roster cancel link, and anything added later.
-  // Attendee-question repeater. Mirrors the labels repeater: clone the template,
-  // rewrite __INDEX__, and renumber name attributes after a removal so the posted
-  // array has no gaps.
-  function initQuestionsRepeater(){
-    var wrap = $('.anchor-event-questions');
-    if(!wrap.length){ return; }
-    var rows = wrap.find('.anchor-event-questions-rows');
-    var tpl  = $('#anchor-event-question-template');
-
-    wrap.on('click', '.anchor-event-question-add', function(e){
-      e.preventDefault();
-      var i = rows.find('.anchor-event-question-row').length;
-      rows.append(tpl.html().replace(/__INDEX__/g, i));
-      toggleChoices(rows.find('.anchor-event-question-row').last());
-    });
-
-    wrap.on('click', '.anchor-event-question-remove', function(e){
-      e.preventDefault();
-      $(this).closest('.anchor-event-question-row').remove();
-      rows.find('.anchor-event-question-row').each(function(i){
-        $(this).find('input, select, textarea').each(function(){
-          var n = $(this).attr('name');
-          if(n){ $(this).attr('name', n.replace(/anchor_event_questions\[\d+\]/, 'anchor_event_questions[' + i + ']')); }
-        });
-      });
-    });
-
-    // "Choices" only means anything for a select.
-    function toggleChoices(row){
-      var qtype = row.find('.anchor-question-type').val();
-      var isSelect = qtype === 'select' || qtype === 'multiselect';
-      row.find('textarea[name*="[options]"]').prop('disabled', !isSelect).toggle(isSelect);
-    }
-    wrap.on('change', '.anchor-question-type', function(){ toggleChoices($(this).closest('.anchor-event-question-row')); });
-    rows.find('.anchor-event-question-row').each(function(){ toggleChoices($(this)); });
-  }
-
   // Arm-then-confirm, never a native dialog: the first click relabels the
   // control "Click again to confirm" for 4 seconds; a second click inside that
   // window goes through. Returns true when this click should proceed.
@@ -402,7 +365,6 @@
     initSessionsRepeater();
     initLabelsRepeater();
     initOfferingRepeater();
-    initQuestionsRepeater();
     initConfirms();
     applyConditionalVisibility();
 

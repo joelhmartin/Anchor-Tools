@@ -78,6 +78,7 @@ See `ADDING-MODULES.md` for the full module development guide.
 - `Anchor_Reviews_Manager` — Google Reviews fetching/caching, `[anchor_reviews]` shortcode.
 - `Anchor_Schema_Logger` — Debug logging to PHP `error_log` (enabled in settings).
 - `includes/email/`: the shared email kit (tokens, sanitizer, shell, builder UI); Announcements uses it, events will.
+- `includes/questions/`: the shared question kit (model/sanitizer/controls, row editor, New-order-email renderer); Events uses it, Checkout Questions will.
 
 ### Constants
 

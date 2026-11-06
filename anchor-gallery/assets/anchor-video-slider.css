@@ -772,8 +772,12 @@
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   scroll-snap-type: x mandatory;
-  scrollbar-width: thin;
+  scrollbar-width: none; /* the strip has its own arrows */
   padding: 4px 0 8px;
+}
+
+.avg-gallery-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .avg-gallery-thumb {
@@ -819,51 +823,94 @@
   padding: 1px 5px;
 }
 
-/* Nav arrows sit inside strip-wrapper */
-.avg-gallery-strip-wrapper .avg-nav {
+/* Arrows: plain chevrons (no disc) with a drop shadow so they read over any
+   image. Shown on hover; always shown on touch screens, which cannot hover.
+   Two sets share the look:
+   - .avg-nav inside the strip-wrapper scrolls the strip (disabled = hidden,
+     so a strip that fits shows none);
+   - .avg-feat-nav over the featured item steps to the previous/next item. */
+.avg-gallery-strip-wrapper .avg-nav,
+.avg-feat-nav {
   position: absolute;
   top: 50%;
-  transform: translateY(-50%);
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 50%;
-  background: var(--avg-play-bg);
-  color: var(--avg-play-color);
-  cursor: pointer;
-  z-index: 10;
+  z-index: 3;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-  transition: transform 0.15s, opacity 0.15s;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--avg-nav-color, #fff);
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.6));
+  cursor: pointer;
   opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--avg-transition, 200ms), transform 0.15s;
 }
 
-.avg-gallery-strip-wrapper:hover .avg-nav {
+.avg-gallery-strip-wrapper .avg-nav svg,
+.avg-feat-nav svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.avg-gallery-strip-wrapper:hover .avg-nav:not(:disabled),
+.avg-gallery-strip-wrapper .avg-nav:focus-visible,
+.avg-gallery-featured:hover .avg-feat-nav,
+.avg-feat-nav:focus-visible {
   opacity: 1;
 }
 
-.avg-gallery-strip-wrapper .avg-nav:hover {
+.avg-gallery-strip-wrapper .avg-nav:hover,
+.avg-feat-nav:hover {
   transform: translateY(-50%) scale(1.1);
 }
 
 .avg-gallery-strip-wrapper .avg-nav:disabled {
-  opacity: 0.25;
-  cursor: default;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.avg-gallery-strip-wrapper .avg-nav svg {
-  width: 18px;
-  height: 18px;
+.avg-gallery-strip-wrapper .avg-nav-prev { left: 0; }
+.avg-gallery-strip-wrapper .avg-nav-next { right: 0; }
+.avg-feat-nav--prev { left: 12px; }
+.avg-feat-nav--next { right: 12px; }
+
+@media (hover: none) {
+  .avg-gallery-strip-wrapper .avg-nav:not(:disabled),
+  .avg-feat-nav {
+    opacity: 1;
+  }
 }
 
-.avg-gallery-strip-wrapper .avg-nav-prev {
-  left: 0;
+/* Featured item playing in place (popup_style "inline"). */
+.avg-gallery-featured .avg-feat-player {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  border: 0;
 }
 
-.avg-gallery-strip-wrapper .avg-nav-next {
-  right: 0;
+.avg-gallery-featured.is-playing .avg-play,
+.avg-gallery-featured.is-playing .avg-duration {
+  display: none;
+}
+
+/* Thumbnail Strip Size "Fill Width (3 Across)": three thumbs fill the strip. */
+.avg-thumbs-thirds .avg-gallery-thumb {
+  width: calc((100% - 2 * var(--avg-gap)) / 3);
 }
 
 /* ==========================================================================

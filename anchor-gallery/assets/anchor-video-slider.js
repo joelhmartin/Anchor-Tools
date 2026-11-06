@@ -595,7 +595,40 @@
   // Tile Click Handler
   // ============================================================================
 
+  // Gallery layout: play the featured item in place, over its poster.
+  // Used when popup_style is 'inline' (the generic inline player needs an
+  // .avg-track, which this layout does not render). Class names match the
+  // ones site themes already style (.avg-feat-player / .is-playing).
+  function stopFeatured(featured) {
+    if (!featured) return;
+    var frame = featured.querySelector('.avg-feat-player');
+    if (frame) frame.remove();
+    featured.classList.remove('is-playing');
+  }
+
+  function playFeatured(featured) {
+    var poster = featured.querySelector('.avg-thumb');
+    if (!poster || featured.getAttribute('data-type') === 'image') return;
+    // A click is a user gesture, so the in-place player always autoplays;
+    // otherwise the visitor would have to click play a second time.
+    var src = getVideoSrc(featured.getAttribute('data-provider'), featured.getAttribute('data-video-id'), true);
+    if (!src) return;
+    stopFeatured(featured);
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: null } }));
+    var frame = document.createElement('iframe');
+    frame.className = 'avg-feat-player';
+    frame.src = src;
+    frame.title = featured.getAttribute('data-label') || 'Video player';
+    frame.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media');
+    frame.setAttribute('allowfullscreen', '');
+    frame.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    poster.appendChild(frame);
+    featured.classList.add('is-playing');
+  }
+
   function handleTileClick(e) {
+    // Controls inside a tile (the featured prev/next arrows) are not tile clicks.
+    if (e.target.closest('.avg-feat-nav')) return;
     var tile = e.target.closest('.avg-tile');
     if (!tile) return;
 
@@ -620,6 +653,11 @@
     if (itemType === 'html') return;
 
     e.preventDefault();
+
+    if (popupStyle === 'inline' && tile.classList.contains('avg-gallery-featured')) {
+      playFeatured(tile);
+      return;
+    }
 
     if (popupStyle === 'lightbox') {
       var seq = collectSequence(gallery, tile);
@@ -677,6 +715,7 @@
     if (!e.target || !e.target.closest) return;
     var tile = e.target.closest('.avg-tile[role="button"]');
     if (!tile) return;
+    if (e.target !== tile && e.target.closest('button, a')) return;
     e.preventDefault();
     tile.click();
   });
@@ -965,8 +1004,12 @@
       var duration  = thumb.getAttribute('data-duration') || '';
       var type      = thumb.getAttribute('data-type') || 'video';
 
+      // A new item replaces whatever was playing in place.
+      stopFeatured(featured);
+
       // Update featured data attrs (used by handleTileClick for popup)
       featured.setAttribute('data-index', index);
+      featured.setAttribute('data-label', label);
       featured.setAttribute('data-type', type);
       featured.setAttribute('data-provider', provider);
       featured.setAttribute('data-video-id', videoId);
@@ -1027,17 +1070,41 @@
       });
     });
 
-    // Strip nav arrows scroll the strip
+    // Featured prev/next arrows step through the items, wrapping at the ends.
+    featured.querySelectorAll('.avg-feat-nav').forEach(function(btn) {
+      var step = btn.classList.contains('avg-feat-nav--prev') ? -1 : 1;
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var current = parseInt(featured.getAttribute('data-index'), 10) || 0;
+        setFeatured((current + step + thumbs.length) % thumbs.length);
+      });
+    });
+
+    // Strip nav arrows scroll the strip by one thumbnail, and are disabled
+    // (hidden by CSS) at either end, so they never show on a strip that fits.
+    function stripStep() {
+      var gap = parseFloat(getComputedStyle(strip).columnGap) || 0;
+      return (thumbs[0].offsetWidth + gap) || 200;
+    }
+    function updateStripNav() {
+      var max = strip.scrollWidth - strip.clientWidth;
+      if (prevBtn) prevBtn.disabled = strip.scrollLeft <= 1;
+      if (nextBtn) nextBtn.disabled = strip.scrollLeft >= max - 1;
+    }
     if (prevBtn) {
       prevBtn.addEventListener('click', function() {
-        strip.scrollBy({ left: -200, behavior: 'smooth' });
+        strip.scrollBy({ left: -stripStep(), behavior: 'smooth' });
       });
     }
     if (nextBtn) {
       nextBtn.addEventListener('click', function() {
-        strip.scrollBy({ left: 200, behavior: 'smooth' });
+        strip.scrollBy({ left: stripStep(), behavior: 'smooth' });
       });
     }
+    strip.addEventListener('scroll', updateStripNav, { passive: true });
+    window.addEventListener('resize', updateStripNav);
+    updateStripNav();
 
     // Lazy-preload video embeds: when gallery nears the viewport, issue
     // preconnect + prefetch hints so browsers start the handshake before

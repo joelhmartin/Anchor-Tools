@@ -46,14 +46,14 @@ class Test_Room_View extends Anchor_Events_TestCase {
 		return $event_id;
 	}
 
-	private function at( $when ) {
+	private function freeze_clock_at( $when ) {
 		$now = strtotime( $when . ' UTC' );
 		add_filter( 'anchor_events_stream_now', function () use ( $now ) { return $now; } );
 	}
 
 	public function test_between_sessions_marks_done_and_next() {
 		$event_id = $this->course();
-		$this->at( '2027-02-12 09:00:00' );
+		$this->freeze_clock_at( '2027-02-12 09:00:00' );
 		$html = $this->module()->render_room( $event_id );
 
 		$this->assertStringContainsString( 'data-state="between"', $html );
@@ -68,7 +68,7 @@ class Test_Room_View extends Anchor_Events_TestCase {
 	/** A session with no start time is a date, never midnight. */
 	public function test_untimed_in_person_day_prints_no_time() {
 		$event_id = $this->course();
-		$this->at( '2027-02-01 09:00:00' );
+		$this->freeze_clock_at( '2027-02-01 09:00:00' );
 		$html = $this->module()->render_room( $event_id );
 
 		$this->assertMatchesRegularExpression( '/Bootcamp<\/span><span class="anchor-room-session-meta">In person · Cleveland<\/span>/', $html );
@@ -77,7 +77,7 @@ class Test_Room_View extends Anchor_Events_TestCase {
 
 	public function test_live_without_chat_has_one_column_player() {
 		$event_id = $this->course();
-		$this->at( '2027-02-05 09:00:00' );
+		$this->freeze_clock_at( '2027-02-05 09:00:00' );
 		$html = $this->module()->render_room( $event_id );
 
 		$this->assertStringContainsString( 'data-state="live"', $html );
@@ -88,7 +88,7 @@ class Test_Room_View extends Anchor_Events_TestCase {
 
 	public function test_live_with_chat_renders_both_iframes() {
 		$event_id = $this->course( [ 'stream_chat' => Embed::normalize_chat( 'https://vimeo.com/event/9/embed/interaction' ) ] );
-		$this->at( '2027-02-05 09:00:00' );
+		$this->freeze_clock_at( '2027-02-05 09:00:00' );
 		$html = $this->module()->render_room( $event_id );
 
 		$this->assertStringContainsString( 'anchor-room-live has-chat', $html );
@@ -98,7 +98,7 @@ class Test_Room_View extends Anchor_Events_TestCase {
 
 	public function test_chat_is_hidden_before_the_session() {
 		$event_id = $this->course( [ 'stream_chat' => Embed::normalize_chat( 'https://vimeo.com/event/9/chat/' ) ] );
-		$this->at( '2027-02-01 09:00:00' );
+		$this->freeze_clock_at( '2027-02-01 09:00:00' );
 		$this->assertStringNotContainsString( 'interaction_tools', $this->module()->render_room( $event_id ) );
 	}
 

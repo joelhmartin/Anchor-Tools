@@ -2,7 +2,9 @@
 /**
  * The room. Theme-overridable at events/live-event.php (or live-event.php)
  * through Module::locate_template(). Deliberately theme-agnostic: header,
- * one <main>, footer, and the body delegated to the module.
+ * one <main>, footer, and the body delegated to the module. <main> is full
+ * width so the header band can bleed; .anchor-room-wrap caps the content at
+ * --anchor-room-max (a theme sets it to its own container width).
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 

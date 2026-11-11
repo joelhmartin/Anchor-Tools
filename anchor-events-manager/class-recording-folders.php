@@ -200,8 +200,32 @@ class Recording_Folders {
 
     /** Where an attendee opens the recordings: the account portal, on the event's folder. */
     public function url( $event_id ) {
+        return $this->folder_url( (int) $event_id, (int) \get_post_meta( (int) $event_id, self::META_FOLDER, true ) );
+    }
+
+    /**
+     * One online session's recording folder: its portal link and the date it stays open until. Empty when the
+     * session has no folder, or its date has passed (the Library would refuse the viewer anyway).
+     *
+     * @return array{url:string,until:string}
+     */
+    public function session_link( $event_id, $date ) {
+        $map   = \get_post_meta( (int) $event_id, self::META_SESSIONS, true );
+        $entry = \is_array( $map ) ? ( $map[ (string) $date ] ?? null ) : null;
+        if ( ! \is_array( $entry ) || empty( $entry['folder'] ) ) {
+            return [ 'url' => '', 'until' => '' ];
+        }
+        $folder = (int) $entry['folder'];
+        $until  = Provisioning::available_until( $folder );
+        if ( $until !== '' && $until < \wp_date( 'Y-m-d' ) ) {
+            return [ 'url' => '', 'until' => $until ];
+        }
+        return [ 'url' => $this->folder_url( (int) $event_id, $folder ), 'until' => $until ];
+    }
+
+    private function folder_url( $event_id, $folder_id ) {
         $event_id  = (int) $event_id;
-        $folder_id = (int) \get_post_meta( $event_id, self::META_FOLDER, true );
+        $folder_id = (int) $folder_id;
         if ( $this->days( $event_id ) <= 0 || ! $this->library_available() || ! Provisioning::folder_exists( $folder_id ) ) {
             return '';
         }

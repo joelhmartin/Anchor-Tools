@@ -178,6 +178,7 @@ class Occurrences {
         // (spec §4.1) — inheriting the switch is not sharing the role.
         'access_role_enabled',
         'stream_embed',
+        'stream_chat',
         'stream_default_modality',
         'in_person_includes_stream',
         'stream_open_before_minutes',

@@ -342,6 +342,9 @@ class Module {
     /** @var Recording_Folders|null Session recordings as Library folders. */
     public $recording_folders = null;
 
+    /** @var Room_View|null The entitled room's markup. */
+    public $room_view = null;
+
     /** @var App_Auth|null Application Passwords hardening for the member app. */
     public $app_auth;
 
@@ -466,6 +469,7 @@ class Module {
         require_once $dir . 'class-room-attendance.php';
         // Session recordings as Library folders, per event and per session.
         require_once $dir . 'class-recording-folders.php';
+        require_once $dir . 'class-room-view.php';
         require_once $dir . 'class-feed.php';
         require_once $dir . 'class-app-auth.php';
         require_once $dir . 'class-app-connect.php';
@@ -495,6 +499,7 @@ class Module {
         $this->entitlements = new Entitlements( $this );
         $this->room_attendance = new Room_Attendance( $this );
         $this->recording_folders = new Recording_Folders( $this );
+        $this->room_view = new Room_View( $this );
 
         // Member-app feed: selection + row mapping over the above (no hooks yet).
         $this->feed = new Feed( $this );
@@ -3005,6 +3010,7 @@ class Module {
             // behaviour.
             'access_role_enabled' => [ 'type' => 'boolean', 'show_in_rest' => false ],
             'stream_embed' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'stream_chat' => [ 'type' => 'array', 'show_in_rest' => false ],
             'stream_default_modality' => [ 'type' => 'string', 'show_in_rest' => false ],
             'in_person_includes_stream' => [ 'type' => 'boolean', 'show_in_rest' => false ],
             'stream_open_before_minutes' => [ 'type' => 'integer', 'show_in_rest' => false ],
@@ -3080,6 +3086,7 @@ class Module {
             'recurrence' => [],
             'access_role_enabled' => true,
             'stream_embed' => [],
+            'stream_chat' => [],
             'stream_default_modality' => 'in_person',
             'in_person_includes_stream' => true,
             'stream_open_before_minutes' => 15,
@@ -3376,6 +3383,15 @@ class Module {
                     <label for="anchor_event_stream_embed"><?php echo esc_html__( 'Stream link or embed code', 'anchor-schema' ); ?></label>
                     <textarea id="anchor_event_stream_embed" name="anchor_event_stream_embed" rows="3" class="widefat"><?php echo esc_textarea( $raw ); ?></textarea>
                     <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Paste a Vimeo, YouTube or Zoom link, or the provider\'s iframe embed code. Vimeo domain privacy is set on Vimeo — allow this site\'s domain there.', 'anchor-schema' ); ?></p>
+                </div>
+                <?php
+                $chat     = \is_array( $meta['stream_chat'] ?? null ) ? $meta['stream_chat'] : [];
+                $chat_raw = (string) ( $chat['raw'] ?? ( $chat['src'] ?? '' ) );
+                ?>
+                <div class="anchor-event-field" style="grid-column:1/-1;">
+                    <label for="anchor_event_stream_chat"><?php echo esc_html__( 'Chat embed code (optional)', 'anchor-schema' ); ?></label>
+                    <textarea id="anchor_event_stream_chat" name="anchor_event_stream_chat" rows="2" class="widefat"><?php echo esc_textarea( $chat_raw ); ?></textarea>
+                    <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Vimeo event chat or YouTube live chat. It shows beside the player only while a session is live.', 'anchor-schema' ); ?></p>
                 </div>
                 <div class="anchor-event-field">
                     <label for="anchor_event_stream_default_modality"><?php echo esc_html__( 'Default attendance', 'anchor-schema' ); ?></label>
@@ -6672,6 +6688,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'native_registration_mode' => $mode === 'external' ? $native : $mode,
             'sessions' => $sessions,
             'stream_embed' => $stream_embed,
+            'stream_chat' => $this->stream_chat_input( $src, (int) $post_id ),
             'required_roles' => $this->sanitize_role_slugs( \wp_unslash( $src['anchor_event_required_roles'] ?? [] ) ),
             'external_url' => esc_url_raw( \wp_unslash( $src['anchor_event_external_url'] ?? '' ) ),
             'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
@@ -6742,6 +6759,33 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param string $where    '' for the event field, else the session's name.
      * @return array
      */
+    /**
+     * The posted chat embed. A form that never carried the field keeps what is stored (so a save path without
+     * the Livestream section cannot wipe it); an empty field clears it; a refused value keeps the stored one
+     * and queues the same notice a refused stream does.
+     *
+     * @param array $src     Raw $_POST-shaped input (still slashed).
+     * @param int   $post_id
+     * @return array {provider,kind,src,raw} or [].
+     */
+    private function stream_chat_input( array $src, $post_id ) {
+        $stored = ( $post_id > 0 ) ? \get_post_meta( $post_id, $this->meta_key( 'stream_chat' ), true ) : [];
+        $stored = \is_array( $stored ) ? $stored : [];
+        if ( ! \array_key_exists( 'anchor_event_stream_chat', $src ) ) {
+            return $stored;
+        }
+        $raw = \trim( (string) \wp_unslash( $src['anchor_event_stream_chat'] ) );
+        if ( $raw === '' ) {
+            return [];
+        }
+        $chat = Embed::normalize_chat( $raw );
+        if ( \is_wp_error( $chat ) ) {
+            $this->queue_group_notice( 'stream_embed_invalid', (int) $post_id, \__( 'Chat', 'anchor-schema' ) . ': ' . $chat->get_error_message() );
+            return $stored;
+        }
+        return $chat;
+    }
+
     private function normalize_one_embed( $raw, array $previous, $post_id, $where ) {
         $raw = \trim( (string) $raw );
         if ( $raw === '' ) {
@@ -8255,6 +8299,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'i18n'        => [
                 'refresh' => \__( 'Something went wrong. Refresh the page.', 'anchor-schema' ),
                 'now'     => \__( 'now', 'anchor-schema' ),
+                'units'   => [
+                    'd' => \__( 'days', 'anchor-schema' ),
+                    'h' => \__( 'hrs', 'anchor-schema' ),
+                    'm' => \__( 'min', 'anchor-schema' ),
+                    's' => \__( 'sec', 'anchor-schema' ),
+                ],
             ],
         ] );
     }
@@ -11080,16 +11130,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $login_notice = (string) \apply_filters( 'anchor_events_room_login_notice', $this->room_login_notice, $event_id );
             $notice_html  = $login_notice === '' ? '' : '<p class="anchor-room-notice" role="status">' . \esc_html( $login_notice ) . '</p>';
 
-            \ob_start();
-            \wp_login_form( [ 'redirect' => $this->room_url( $event_id ), 'echo' => true ] );
-            $form = (string) \ob_get_clean();
-            return '<div class="anchor-room anchor-room--locked">'
-                . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
-                . '<p class="anchor-room-lede">' . \esc_html__( 'Sign in to join', 'anchor-schema' ) . '</p>'
+            /**
+             * The sign-in form in the locked room. A theme with its own login renderer returns it here so the
+             * room matches every other sign-in page; '' (the default) prints wp_login_form().
+             *
+             * @param string $html     '' to use wp_login_form().
+             * @param int    $event_id
+             * @param string $redirect Where a successful sign-in should land (the room).
+             */
+            $form = (string) \apply_filters( 'anchor_events_room_login_form', '', $event_id, $this->room_url( $event_id ) );
+            if ( $form === '' ) {
+                \ob_start();
+                \wp_login_form( [ 'redirect' => $this->room_url( $event_id ), 'echo' => true ] );
+                $form = (string) \ob_get_clean();
+            }
+            return '<div class="anchor-room anchor-room--locked"><div class="anchor-room-card">'
+                . '<p class="anchor-room-eyebrow">' . \esc_html( $title ) . '</p>'
+                . '<h1 class="anchor-room-title">' . \esc_html__( 'Sign in to join', 'anchor-schema' ) . '</h1>'
                 . $notice_html
                 . $form
                 . '<p class="anchor-room-hint">' . \esc_html__( 'Registered but no account? Use the link in your confirmation email.', 'anchor-schema' ) . '</p>'
-                . '</div>';
+                . '</div></div>';
         }
 
         $state = Stream_State::for_event( $event_id );
@@ -11105,30 +11166,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // wp_kses_post(), not esc_html(): a filter is free to hand back a
             // short HTML fragment (e.g. a link), and esc_html() would also
             // entity-encode a plain apostrophe in the default copy above.
-            return '<div class="anchor-room anchor-room--denied">'
-                . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
-                . '<p class="anchor-room-lede">' . \wp_kses_post( $message ) . '</p>'
+            return '<div class="anchor-room anchor-room--denied"><div class="anchor-room-card">'
+                . '<p class="anchor-room-eyebrow">' . \esc_html( $title ) . '</p>'
+                . '<h1 class="anchor-room-title">' . \wp_kses_post( $message ) . '</h1>'
                 . '<p>' . $this->event_page_link( $event_id ) . '</p>'
                 . '<p class="anchor-room-hint">' . \esc_html__( 'Registered under a different email? Contact us.', 'anchor-schema' ) . '</p>'
-                . '</div>';
+                . '</div></div>';
         }
 
         $staff = '';
         if ( Roster::current_user_can_manage() ) {
             $staff = '<p class="anchor-room-staff">'
-                . '<a href="' . \esc_url( \add_query_arg( 'anchor_room_preview', '1', $this->room_url( $event_id ) ) ) . '">'
-                . \esc_html__( 'Preview as attendee', 'anchor-schema' ) . '</a> · '
                 . '<a href="' . \esc_url( $this->roster->roster_url( $event_id ) ) . '">'
                 . \esc_html__( 'Open event console', 'anchor-schema' ) . '</a></p>';
         }
 
-        return '<div class="anchor-room anchor-room--open">'
-            . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
-            . $this->room_state_block( $event_id, $state )
-            . $this->render_room_schedule( $event_id, $state )
-            . $this->recording_folders->render_room_link( $event_id )
-            . $staff
-            . '</div>';
+        return $this->room_view->render( $event_id, $state, $staff );
     }
 
     /**
@@ -11152,9 +11205,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $body = '';
         if ( $state_key === Stream_State::LIVE && ! empty( $state['embed'] ) ) {
-            $body = Embed::render( (array) $state['embed'], (string) \get_the_title( $event_id ) );
+            $player = Embed::render( (array) $state['embed'], (string) \get_the_title( $event_id ) );
+            $chat   = Embed::render_chat( (array) ( $this->get_meta( $event_id )['stream_chat'] ?? [] ), (string) \get_the_title( $event_id ) );
+            $body   = '<div class="anchor-room-live' . ( $chat !== '' ? ' has-chat' : '' ) . '">' . $player . $chat . '</div>';
         } elseif ( \in_array( $state_key, [ Stream_State::COUNTDOWN, Stream_State::BETWEEN ], true ) ) {
-            $body = '<p class="anchor-room-countdown" role="timer" aria-live="polite"></p>';
+            // role=timer is aria-live off by default: a clock read aloud every second helps no one.
+            $body = '<p class="anchor-room-countdown" role="timer" data-format="segments"></p>';
         } elseif ( $state_key === Stream_State::UNAVAILABLE ) {
             $meta = $this->get_meta( $event_id );
             $body = $meta['venue'] !== ''
@@ -11165,7 +11221,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $body = '<p>' . $this->event_page_link( $event_id ) . '</p>';
         }
 
-        return '<div class="anchor-room-state" data-state="' . \esc_attr( $state_key ) . '"'
+        return '<div class="anchor-room-state anchor-room-state--' . \esc_attr( $state_key ) . '" data-state="' . \esc_attr( $state_key ) . '"'
             . ' data-event-id="' . (int) $event_id . '"'
             . ' data-session-index="' . (int) $state['session_index'] . '"'
             . ' data-target-ts="' . (int) $state['target_ts'] . '"'

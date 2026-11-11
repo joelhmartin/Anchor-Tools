@@ -94,6 +94,22 @@ class Test_Recording_Folders extends Anchor_Library_TestCase {
 		$this->assertFalse( Permissions::can_view_folder( $map['2030-03-01']['folder'], $stranger ) );
 	}
 
+	public function test_session_link_opens_until_its_date_then_closes() {
+		$event_id = $this->event();
+		$this->rf()->sync( $event_id );
+		$map = $this->session_folders( $event_id );
+
+		$open = $this->rf()->session_link( $event_id, '2030-03-01' );
+		$this->assertSame( '2030-03-31', $open['until'] );
+		$this->assertNotSame( '', $open['url'], 'An open session folder must link to the portal.' );
+
+		Provisioning::set_available_until( $map['2030-03-08']['folder'], '2000-01-01' );
+		$closed = $this->rf()->session_link( $event_id, '2030-03-08' );
+		$this->assertSame( [ 'url' => '', 'until' => '2000-01-01' ], $closed );
+
+		$this->assertSame( [ 'url' => '', 'until' => '' ], $this->rf()->session_link( $event_id, '2030-04-01' ), 'The in-person day has no folder.' );
+	}
+
 	public function test_running_it_again_creates_nothing_new() {
 		$event_id = $this->event();
 		$this->rf()->sync( $event_id );

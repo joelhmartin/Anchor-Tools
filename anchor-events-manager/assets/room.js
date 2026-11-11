@@ -33,6 +33,22 @@
     return (d > 0 ? d + 'd ' : '') + pad(h) + ':' + pad(m) + ':' + pad(s);
   }
 
+  // Days / hrs / min / sec as separate figures. Days drop out on the last day. Built with text nodes only.
+  function renderSegments($out, seconds) {
+    var t = Math.max(0, seconds);
+    var l = (cfg.i18n && cfg.i18n.units) || { d: 'days', h: 'hrs', m: 'min', s: 'sec' };
+    var parts = [
+      ['d', Math.floor(t / 86400)], ['h', Math.floor((t % 86400) / 3600)],
+      ['m', Math.floor((t % 3600) / 60)], ['s', t % 60]
+    ];
+    if (parts[0][1] === 0) { parts.shift(); }
+    $out.empty();
+    $.each(parts, function (i, p) {
+      var v = (p[0] === 'd' || p[1] > 9) ? String(p[1]) : '0' + p[1];
+      $('<span></span>').append($('<b></b>').text(v), $('<small></small>').text(l[p[0]])).appendTo($out);
+    });
+  }
+
   function showError() {
     // A failure here means the room is no longer trustworthy — stop BOTH
     // loops so a dead REST call isn't retried every pollSeconds forever
@@ -97,7 +113,9 @@
     var target = parseInt($el.attr('data-target-ts'), 10) || 0;
     var remaining = target - now();
     var $out = $el.find('.anchor-room-countdown');
-    if ($out.length) { $out.text(format(remaining)); }
+    if ($out.length) {
+      if ($out.attr('data-format') === 'segments') { renderSegments($out, remaining); } else { $out.text(format(remaining)); }
+    }
     if (target && remaining <= 0) {
       window.clearInterval(timer);
       timer = null;

@@ -24,7 +24,7 @@ class Test_Embed extends Anchor_Events_TestCase {
 			'The unlisted-video hash must survive normalisation.'
 		);
 		$this->assertSame(
-			'https://player.vimeo.com/event/456/embed',
+			'https://vimeo.com/event/456/embed',
 			Embed::normalize( 'https://vimeo.com/event/456' )['src']
 		);
 	}

@@ -216,7 +216,7 @@ class Recording_Folders {
             return [ 'url' => '', 'until' => '' ];
         }
         $folder = (int) $entry['folder'];
-        $until  = Provisioning::folder_available_until( $folder );
+        $until  = Provisioning::available_until( $folder );
         if ( $until !== '' && $until < \wp_date( 'Y-m-d' ) ) {
             return [ 'url' => '', 'until' => $until ];
         }

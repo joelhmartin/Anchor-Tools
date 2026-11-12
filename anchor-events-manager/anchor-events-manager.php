@@ -345,6 +345,9 @@ class Module {
     /** @var Room_View|null The entitled room's markup. */
     public $room_view = null;
 
+    /** @var Watch_Report|null Organizer e-mail of the room attendance once streaming ends. */
+    public $watch_report = null;
+
     /** @var App_Auth|null Application Passwords hardening for the member app. */
     public $app_auth;
 
@@ -470,6 +473,7 @@ class Module {
         // Session recordings as Library folders, per event and per session.
         require_once $dir . 'class-recording-folders.php';
         require_once $dir . 'class-room-view.php';
+        require_once $dir . 'class-watch-report.php';
         require_once $dir . 'class-feed.php';
         require_once $dir . 'class-app-auth.php';
         require_once $dir . 'class-app-connect.php';
@@ -500,6 +504,7 @@ class Module {
         $this->room_attendance = new Room_Attendance( $this );
         $this->recording_folders = new Recording_Folders( $this );
         $this->room_view = new Room_View( $this );
+        $this->watch_report = new Watch_Report( $this );
 
         // Member-app feed: selection + row mapping over the above (no hooks yet).
         $this->feed = new Feed( $this );
@@ -1948,9 +1953,10 @@ class Module {
      *              BEFORE the identity is computed (see error_identity()), so
      *              two attendees on the same email domain were previously
      *              indistinguishable to the dedupe window.
+     * @param array  $attachments File paths handed to wp_mail().
      * @return bool True on success.
      */
-    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0, array $identity = [], array $log = [] ) {
+    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0, array $identity = [], array $log = [], array $attachments = [] ) {
         if ( empty( $headers ) ) {
             // Apply the sender identity: the event's own where it sets one,
             // the site-wide setting otherwise (From / Reply-To / Cc / Bcc).
@@ -1985,7 +1991,7 @@ class Module {
         $armed                 = Email_Log::begin_for_send( $log, $event_id, $identity );
         $sent                  = false;
         try {
-            $sent = \wp_mail( $to, $subject, $html, $headers );
+            $sent = \wp_mail( $to, $subject, $html, $headers, $attachments );
         } finally {
             if ( $armed ) {
                 // Always disarm, even if wp_mail threw, so the context cannot leak.
@@ -12643,6 +12649,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php
         }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
 
+        \add_settings_field( 'watch_report_email', __( 'Livestream watch report', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <label>
+                <input type="checkbox" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[watch_report_email]" value="1" <?php checked( $opts['watch_report_email'] ); ?> />
+                <?php echo esc_html__( 'Email the organizer who was recorded in the livestream room', 'anchor-schema' ); ?>
+            </label>
+            <p>
+                <select name="<?php echo esc_attr( self::OPTION_KEY ); ?>[watch_report_timing]">
+                    <option value="end" <?php selected( $opts['watch_report_timing'], 'end' ); ?>><?php echo esc_html__( 'Once, after the last streamed session', 'anchor-schema' ); ?></option>
+                    <option value="each" <?php selected( $opts['watch_report_timing'], 'each' ); ?>><?php echo esc_html__( 'After every streamed session (attendance so far)', 'anchor-schema' ); ?></option>
+                </select>
+            </p>
+            <p class="description"><?php echo esc_html__( 'Sent about an hour after the session ends, to the event\'s organizer email, with the full attendance table attached as a CSV.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
         \add_settings_field( 'roster_auto_offset', __( 'Roster digest offset (days)', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
             ?>
@@ -12773,6 +12796,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output['refund_subject']       = \sanitize_text_field( $input['refund_subject'] ?? '' ) ?: $defaults['refund_subject'];
         $output['refund_intro']         = \sanitize_textarea_field( $input['refund_intro'] ?? '' ) ?: $defaults['refund_intro'];
         $output['organizer_roster_email'] = ! empty( $input['organizer_roster_email'] );
+        $output['watch_report_email']     = ! empty( $input['watch_report_email'] );
+        $output['watch_report_timing']    = \in_array( $input['watch_report_timing'] ?? '', Watch_Report::TIMINGS, true ) ? $input['watch_report_timing'] : 'end';
         $output['roster_auto_offset']   = max( 0, (int) ( $input['roster_auto_offset'] ?? 1 ) );
         $output['roster_subject']       = \sanitize_text_field( $input['roster_subject'] ?? '' ) ?: $defaults['roster_subject'];
         $output['roster_intro']         = \sanitize_textarea_field( $input['roster_intro'] ?? '' ) ?: $defaults['roster_intro'];
@@ -17368,6 +17393,9 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'refund_subject'         => __( 'Your registration for {event_title} has been refunded', 'anchor-schema' ),
             'refund_intro'           => __( 'Your registration for {event_title} has been refunded. If this is unexpected, please contact us.', 'anchor-schema' ),
             'organizer_roster_email' => false,
+            // Watch report: the room attendance to the organizer list once streaming ends.
+            'watch_report_email'     => true,
+            'watch_report_timing'    => 'end',
             'roster_auto_offset'     => 1,
             'roster_subject'         => __( 'Final roster for {event_title}', 'anchor-schema' ),
             'roster_intro'           => __( 'Here is the current confirmed roster for {event_title} on {event_date}.', 'anchor-schema' ),

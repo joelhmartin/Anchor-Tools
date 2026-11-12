@@ -16291,6 +16291,31 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $this->entitlements->room_url_for( $user_id, $event_id );
     }
 
+    /**
+     * The start time an e-mail quotes, or '' when the event has none.
+     *
+     * An event saved with a date but no start time gets a start_ts at
+     * midnight (calculate_timestamps() falls back to 00:00), so formatting that
+     * timestamp printed "12:00 am" in every reminder and confirmation. A
+     * blank time means "not set", the same as all-day, and the Time row is
+     * left out. email_tokens() and build_registration_email_html() both read
+     * this, so the two token sets cannot disagree.
+     *
+     * @param array $meta     get_meta() result.
+     * @param int   $start_ts The event's start timestamp.
+     * @return string
+     */
+    public function email_event_time( array $meta, $start_ts ) {
+        $start_ts = (int) $start_ts;
+        if ( ! $start_ts || ! empty( $meta['all_day'] ) ) {
+            return '';
+        }
+        if ( ! empty( $meta['start_date'] ) && trim( (string) ( $meta['start_time'] ?? '' ) ) === '' ) {
+            return '';
+        }
+        return \wp_date( \get_option( 'time_format' ), $start_ts, $this->event_timezone( $meta ) );
+    }
+
     /** Documented token set for all event emails (spec §9). */
     public function email_tokens( array $ctx ) {
         $event_id = (int) ( $ctx['event_id'] ?? 0 );
@@ -16336,7 +16361,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'event_title'  => $event_id ? \get_the_title( $event_id ) : \get_bloginfo( 'name' ),
             'event_url'    => $event_id ? \get_permalink( $event_id ) : \home_url(),
             'event_date'   => $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts, $tz ) : '',
-            'event_time'   => ( $start_ts && empty( $meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts, $tz ) : '',
+            'event_time'   => $this->email_event_time( $meta, $start_ts ),
             'venue'        => $venue,
             'days_until'   => $days_until,
             'attendee_name'=> (string) ( $seat['name'] ?? '' ),
@@ -17222,7 +17247,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'room_link'     => esc_url( $room_link ),
             'event_url'     => esc_url( $event_id ? \get_permalink( $event_id ) : \home_url() ),
             'event_date'    => esc_html( $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts, $event_tz ) : '' ),
-            'event_time'    => esc_html( ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts, $event_tz ) : '' ),
+            'event_time'    => esc_html( $this->email_event_time( $event_meta, $start_ts ) ),
             'venue'         => esc_html( $venue ),
             'days_until'    => esc_html( ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '' ),
 

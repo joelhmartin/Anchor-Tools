@@ -425,8 +425,23 @@ class Room_Attendance {
         }
         $out .= '</tbody></table></div>';
         $out .= '<p class="anchor-roster-fe-tools"><a class="' . ( $admin ? 'button' : 'anchor-event-button-secondary' ) . '" href="' . \esc_url( $export ) . '">'
-            . \esc_html__( 'Export attendance (CSV)', 'anchor-schema' ) . '</a></p></div>';
+            . \esc_html__( 'Export attendance (CSV)', 'anchor-schema' ) . '</a> '
+            . '<a class="' . ( $admin ? 'button' : 'anchor-event-button-secondary' ) . '" href="' . \esc_url( $this->module->watch_report->send_now_url( $event_id ) ) . '">'
+            . \esc_html__( 'Email this report to the organizer', 'anchor-schema' ) . '</a></p>'
+            . $this->send_notice() . '</div>';
         return $out;
+    }
+
+    /** The result of "Email this report to the organizer", after its redirect. */
+    private function send_notice() {
+        $state = isset( $_GET['anchor_watch_report'] ) ? \sanitize_key( \wp_unslash( $_GET['anchor_watch_report'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification -- display only.
+        if ( $state === 'sent' ) {
+            return '<p class="anchor-roster-fe-notice">' . \esc_html__( 'Watch report sent to the organizer email.', 'anchor-schema' ) . '</p>';
+        }
+        if ( $state === 'failed' ) {
+            return '<p class="anchor-roster-fe-notice is-error">' . \esc_html__( 'The watch report was not sent: check the organizer email for this event.', 'anchor-schema' ) . '</p>';
+        }
+        return '';
     }
 
     /**

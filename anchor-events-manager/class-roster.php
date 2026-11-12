@@ -1686,12 +1686,25 @@ class Roster {
         header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
 
         $out = fopen( 'php://output', 'w' );
-        fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $table['header'] ) );
-        foreach ( $table['rows'] as $cells ) {
-            fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $cells ) );
-        }
+        $this->write_csv( $out, $table );
         fclose( $out );
         exit;
+    }
+
+    /**
+     * Write a header + rows table to an open handle, every cell through
+     * csv_safe(). The one CSV writer: the download above and the watch report's
+     * e-mail attachment both use it.
+     *
+     * @param resource                                      $handle
+     * @param array{header:string[],rows:array<int,array>} $table
+     */
+    public function write_csv( $handle, array $table ) {
+        // The escape argument is spelled out: PHP 8.4 deprecates relying on its default.
+        fputcsv( $handle, \array_map( [ $this, 'csv_safe' ], $table['header'] ), ',', '"', '\\' );
+        foreach ( $table['rows'] as $cells ) {
+            fputcsv( $handle, \array_map( [ $this, 'csv_safe' ], $cells ), ',', '"', '\\' );
+        }
     }
 
     /**

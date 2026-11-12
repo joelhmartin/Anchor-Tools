@@ -100,6 +100,19 @@ Limits: an order line added in the admin (no checkout snapshot) has no answers t
 
 **Behavior:** The organizer can manually send the roster at any time via the "Send roster to organizer" button on the Roster screen. If auto-send is enabled, the roster is sent automatically once at the configured offset before the event. The roster includes a confirmed-attendee list with names, emails, and phone numbers, plus summary counts (confirmed, pending, waitlist, remaining).
 
+### Livestream Watch Report
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| **Livestream watch report** (`watch_report_email`) | `true` | E-mails the organizer list who was recorded in the `/live/` room. Only events with a room (a stream saved and `access_role_enabled` on) and at least one streamed session qualify. |
+| **When** (`watch_report_timing`) | `end` | `end`: once, after the last streamed session. `each`: after every streamed session, with the attendance so far. |
+
+**Behavior:** `Watch_Report::run_due()` runs on the hourly `anchor_events_reminder_sweep`, one hour (`GRACE_SECONDS`) after a streamed session ends, and never about a session that ended more than three days earlier (`LOOKBACK_SECONDS`), so switching it on does not mail about old events. Recipients are `resolve_organizer_email()` (the event's organizer email, else the site default). Each report is sent once: post meta `_anchor_event_watch_report_sent` maps the session it covered to when it went out. An event with no registrants and nobody in the room sends nothing.
+
+The body reuses the organizer digest look (`type` `roster`): a count of who was in the room at least once, one row per covered session ("12 of 15 registered"), and one line per person ("2 of 4 sessions, 3h 10m in the room" or "not recorded in the room"). The full `Room_Attendance::export_table()` CSV is attached (written to the temp dir, deleted after sending). Wording says **recorded in the room**, never "watched": room time is presence on the page, not proof of watching.
+
+The attendance panel (wp-admin roster and the front-end console) has **Email this report to the organizer**, which sends the report for every session started so far. It does not use up the scheduled send. Filter: `anchor_events_watch_report_subject`.
+
 ---
 
 ## Editable Email Templates

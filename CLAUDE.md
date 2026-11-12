@@ -67,6 +67,7 @@ See `ADDING-MODULES.md` for the full module development guide.
 | `ctm_forms` | `Anchor_CTM_Forms_Module` | CPT |
 | `code_snippets` | `Anchor_Code_Snippets_Module` | CPT |
 | `blocks` | `Anchor_Blocks_Module` | CPT |
+| `page_editor` | `Anchor_Page_Editor_Module` | Replaces editor on pages/posts; Settings → AI Page Assistant |
 | `courses` | `\Anchor\Courses\Module` | CPT (namespaced, PSR-4) |
 | `announcements` | `\Anchor\Announcements\Module` | CPT (namespaced, PSR-4) |
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, schema, galleries, forms, and content utilities.
- * Version: 3.46.0
+ * Version: 3.47.0
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -279,6 +279,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Reusable HTML/CSS/JS content blocks placed via shortcode. From a button to a full-width section.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-blocks/anchor-blocks.php',
                 'class'       => 'Anchor_Blocks_Module',
+            ],
+            'page_editor' => [
+                'label'       => __( 'Anchor Page Editor', 'anchor-schema' ),
+                'description' => __( 'Monaco raw-HTML page editor with per-page CSS/JS and an AI assistant (the Anchor Framework editor, for any theme). Replaces the block editor on pages and posts.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-page-editor/anchor-page-editor.php',
+                'class'       => 'Anchor_Page_Editor_Module',
             ],
             'optimize' => [
                 'label'       => __( 'Anchor Optimize', 'anchor-schema' ),

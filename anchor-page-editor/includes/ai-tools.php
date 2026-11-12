@@ -69,7 +69,7 @@ function anchor_pe_ai_tools() {
 }
 
 /**
- * read_theme_file implementation. Realpath-confined to the theme directory.
+ * read_theme_file implementation. Looks in the child theme, then the parent; realpath-confined to each.
  *
  * @param array $args { path: string }.
  * @return string File contents or an error message.
@@ -79,15 +79,18 @@ function anchor_pe_ai_tool_read_theme_file( $args ) {
 	if ( '' === $rel ) {
 		return 'ERROR: no path provided.';
 	}
-	$theme_dir = realpath( get_template_directory() );
-	$target    = realpath( $theme_dir . '/' . ltrim( $rel, '/' ) );
-
-	if ( false === $target || false === $theme_dir ) {
-		return 'ERROR: file not found: ' . $rel;
+	// Child theme first, then parent; each realpath-confined to its own directory (no traversal).
+	$target = false;
+	foreach ( array_unique( array( get_stylesheet_directory(), get_template_directory() ) ) as $dir ) {
+		$theme_dir = realpath( $dir );
+		$candidate = $theme_dir ? realpath( $theme_dir . '/' . ltrim( $rel, '/' ) ) : false;
+		if ( false !== $candidate && 0 === strpos( $candidate, $theme_dir . DIRECTORY_SEPARATOR ) ) {
+			$target = $candidate;
+			break;
+		}
 	}
-	// Confine to theme dir (prevent traversal).
-	if ( 0 !== strpos( $target, $theme_dir . DIRECTORY_SEPARATOR ) ) {
-		return 'ERROR: access denied (outside theme): ' . $rel;
+	if ( false === $target ) {
+		return 'ERROR: file not found in the theme: ' . $rel;
 	}
 	$ext     = strtolower( pathinfo( $target, PATHINFO_EXTENSION ) );
 	$allowed = array( 'css', 'js', 'php', 'html', 'txt' );

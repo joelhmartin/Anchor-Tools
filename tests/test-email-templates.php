@@ -1233,4 +1233,38 @@ EXPECTED_CANCELLATION;
         
 EXPECTED_ROSTER;
 	}
+
+	/**
+	 * An event with a date but no start time has a midnight start_ts. The
+	 * Toronto reminders (Nov 2026) printed "Time: 12:00 am" from it; the
+	 * Time row must be left out instead.
+	 */
+	public function test_an_event_without_a_start_time_quotes_no_time() {
+		$start_ts = strtotime( '2030-11-13 05:00:00 UTC' ); // Midnight Eastern.
+		$event_id = $this->make_event( [
+			'registration_mode' => 'free',
+			'timezone'          => 'America/Toronto',
+			'start_date'        => '2030-11-13',
+			'start_time'        => '',
+			'end_date'          => '2030-11-16',
+			'start_ts'          => $start_ts,
+			'end_ts'            => $start_ts + 4 * DAY_IN_SECONDS,
+		] );
+
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id ] );
+		$this->assertSame( '', $tokens['event_time'] );
+		$this->assertNotSame( '', $tokens['event_date'], 'The date still shows.' );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Dr Test',
+			'status'   => 'confirmed',
+			'type'     => 'reminder',
+		] );
+		$this->assertStringNotContainsString( '12:00', $html );
+
+		update_post_meta( $event_id, '_anchor_event_start_time', '08:00' );
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id ] );
+		$this->assertNotSame( '', $tokens['event_time'], 'A set start time is quoted.' );
+	}
 }

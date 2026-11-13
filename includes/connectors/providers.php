@@ -20,6 +20,7 @@ if ( ! function_exists( 'anchor_oauth_providers' ) ) {
                 'token_scope'    => false, // Google token requests omit scope.
                 'account_url'    => 'https://openidconnect.googleapis.com/v1/userinfo',
                 'account_fields' => array( 'email' ),
+                'secret_optional' => false,
             ),
             'microsoft' => array(
                 'label'          => 'Microsoft',
@@ -30,6 +31,8 @@ if ( ! function_exists( 'anchor_oauth_providers' ) ) {
                 'token_scope'    => true, // Microsoft token requests include scope.
                 'account_url'    => 'https://graph.microsoft.com/v1.0/me',
                 'account_fields' => array( 'mail', 'userPrincipalName' ),
+                // A shared Entra app registered as a public client (PKCE) needs no secret.
+                'secret_optional' => true,
             ),
         );
     }

@@ -235,4 +235,21 @@ class Test_Connectors_Admin extends WP_UnitTestCase {
         $this->assertStringContainsString( 'invalid_clientscript', $html );
         $this->assertStringNotContainsString( '<script>', $html );
     }
+
+    public function test_shared_app_card_hides_credential_form_and_offers_sign_in() {
+        add_filter( 'anchor_connector_shared_credential', $f = function ( $v, $provider, $part ) {
+            return 'google' === $provider ? ( 'ID' === $part ? 'shared-id' : 'shared-secret' ) : $v;
+        }, 10, 3 );
+        wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+        ob_start();
+        $this->admin->render_tab();
+        $html = ob_get_clean();
+        remove_filter( 'anchor_connector_shared_credential', $f, 10 );
+        $google = substr( $html, strpos( $html, '<h2>Google</h2>' ), strpos( $html, '<h2>Microsoft</h2>' ) - strpos( $html, '<h2>Google</h2>' ) );
+        $this->assertStringContainsString( 'Sign in with Google', $google );
+        $this->assertStringContainsString( "Anchor&#039;s shared Google app", $google );
+        $this->assertStringNotContainsString( 'name="client_secret"', $google );
+        $this->assertStringNotContainsString( 'shared-secret', $html );
+        $this->assertStringContainsString( esc_attr( Anchor_OAuth_Connector::get( 'google' )->callback_url() ), $google );
+    }
 }

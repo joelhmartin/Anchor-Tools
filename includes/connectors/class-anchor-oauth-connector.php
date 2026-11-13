@@ -101,14 +101,41 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             $this->save_opt( $o );
         }
 
+        /**
+         * Anchor's shared app: wp-config.php constants ANCHOR_{PROVIDER}_CLIENT_ID and
+         * ANCHOR_{PROVIDER}_CLIENT_SECRET. Kept out of the plugin because the repo and
+         * release ZIP are public; bin/push-connector-credentials.sh writes them to sites.
+         */
+        private function shared( $part ) {
+            $name = 'ANCHOR_' . strtoupper( $this->provider ) . '_CLIENT_' . $part;
+            $value = defined( $name ) ? (string) constant( $name ) : '';
+            /** Filters a shared-app credential ($part is 'ID' or 'SECRET'); also the test seam. */
+            return trim( (string) apply_filters( 'anchor_connector_shared_credential', $value, $this->provider, $part ) );
+        }
+
+        /** True when wp-config.php supplies the app, so the site needs no credentials of its own. */
+        public function uses_shared_app() {
+            return '' !== $this->shared( 'ID' );
+        }
+
+        public function client_id() {
+            if ( $this->uses_shared_app() ) {
+                return $this->shared( 'ID' );
+            }
+            $o = $this->opt();
+            return isset( $o['client_id'] ) ? (string) $o['client_id'] : '';
+        }
+
         private function client_secret() {
+            if ( $this->uses_shared_app() ) {
+                return $this->shared( 'SECRET' );
+            }
             $o = $this->opt();
             return empty( $o['client_secret'] ) ? '' : (string) Anchor_Secret_Box::open( $o['client_secret'] );
         }
 
         public function has_app_credentials() {
-            $o = $this->opt();
-            return ! empty( $o['client_id'] ) && '' !== $this->client_secret();
+            return '' !== $this->client_id() && ( '' !== $this->client_secret() || ! empty( $this->def['secret_optional'] ) );
         }
 
         public function is_connected() {
@@ -147,14 +174,13 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
         public function begin_authorize( $user_id ) {
             $state    = bin2hex( random_bytes( 32 ) );
             $verifier = rtrim( strtr( base64_encode( random_bytes( 48 ) ), '+/', '-_' ), '=' );
-            $o        = $this->opt();
             set_transient( 'anchor_oauth_state_' . $state, array(
                 'provider' => $this->provider,
                 'verifier' => $verifier,
                 'user_id'  => (int) $user_id,
             ), 600 );
             $params = array_merge( array(
-                'client_id'             => $o['client_id'] ?? '',
+                'client_id'             => $this->client_id(),
                 'redirect_uri'          => $this->callback_url(),
                 'response_type'         => 'code',
                 'scope'                 => $this->def['scopes'],
@@ -226,11 +252,12 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
 
         /** POST to the provider's (hard-coded) token endpoint. @return array|WP_Error */
         private function token_request( array $body ) {
-            $o    = $this->opt();
-            $body = array_merge( array(
-                'client_id'     => $o['client_id'] ?? '',
-                'client_secret' => $this->client_secret(),
-            ), $body );
+            $creds  = array( 'client_id' => $this->client_id() );
+            $secret = $this->client_secret();
+            if ( '' !== $secret ) {
+                $creds['client_secret'] = $secret; // Omitted for a public client; PKCE proves the caller.
+            }
+            $body = array_merge( $creds, $body );
             if ( $this->def['token_scope'] ) {
                 $body['scope'] = $this->def['scopes'];
             }

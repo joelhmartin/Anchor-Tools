@@ -429,6 +429,66 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
         $this->assertTrue( $c->has_app_credentials() );
     }
 
+    private function share_app( array $creds ) {
+        add_filter( 'anchor_connector_shared_credential', $f = function ( $v, $provider, $part ) use ( $creds ) {
+            return $creds[ $provider ][ $part ] ?? $v;
+        }, 10, 3 );
+        return $f;
+    }
+
+    public function test_shared_app_overrides_site_credentials_and_signs_in() {
+        $f   = $this->share_app( array( 'google' => array( 'ID' => 'shared-id', 'SECRET' => 'shared-secret' ) ) );
+        $uid = $this->admin();
+        $c   = Anchor_OAuth_Connector::get( 'google' );
+        $c->save_app_credentials( 'site-id', 'site-secret' );
+        $this->assertTrue( $c->uses_shared_app() );
+        $this->assertTrue( $c->has_app_credentials() );
+        $this->assertSame( 'shared-id', $c->client_id() );
+        parse_str( wp_parse_url( $c->begin_authorize( $uid ), PHP_URL_QUERY ), $q );
+        $this->assertSame( 'shared-id', $q['client_id'] );
+        $this->token_responder();
+        $req = new WP_REST_Request( 'GET', '/anchor-tools/v1/connectors/callback' );
+        $req->set_param( 'state', $q['state'] );
+        $req->set_param( 'code', 'the-code' );
+        Anchor_OAuth_Connector::handle_callback( $req );
+        $post = $this->token_posts()[0];
+        $this->assertSame( 'shared-id', $post['body']['client_id'] );
+        $this->assertSame( 'shared-secret', $post['body']['client_secret'] );
+        $this->assertTrue( $c->is_connected() );
+        remove_filter( 'anchor_connector_shared_credential', $f, 10 );
+        $this->assertFalse( $c->uses_shared_app() );
+        $this->assertSame( 'site-id', $c->client_id() );
+    }
+
+    public function test_microsoft_public_client_needs_no_secret_and_sends_none() {
+        $f   = $this->share_app( array( 'microsoft' => array( 'ID' => 'ms-public-id' ) ) );
+        $uid = $this->admin();
+        $c   = Anchor_OAuth_Connector::get( 'microsoft' );
+        $this->assertTrue( $c->has_app_credentials() );
+        parse_str( wp_parse_url( $c->begin_authorize( $uid ), PHP_URL_QUERY ), $q );
+        $this->responder = function ( $url ) {
+            if ( false !== strpos( $url, '/token' ) ) {
+                return array( 200, array( 'access_token' => 'AT', 'refresh_token' => 'RT', 'expires_in' => 3600, 'scope' => 'Files.ReadWrite.All User.Read' ) );
+            }
+            return array( 200, array( 'mail' => 'me@example.com' ) );
+        };
+        $req = new WP_REST_Request( 'GET', '/anchor-tools/v1/connectors/callback' );
+        $req->set_param( 'state', $q['state'] );
+        $req->set_param( 'code', 'c' );
+        Anchor_OAuth_Connector::handle_callback( $req );
+        $post = $this->token_posts()[0];
+        $this->assertSame( 'ms-public-id', $post['body']['client_id'] );
+        $this->assertArrayNotHasKey( 'client_secret', $post['body'] );
+        $this->assertTrue( $c->is_connected() );
+        remove_filter( 'anchor_connector_shared_credential', $f, 10 );
+    }
+
+    public function test_google_without_secret_is_not_ready() {
+        $f = $this->share_app( array( 'google' => array( 'ID' => 'shared-id' ) ) );
+        $this->assertFalse( Anchor_OAuth_Connector::get( 'google' )->has_app_credentials() );
+        remove_filter( 'anchor_connector_shared_credential', $f, 10 );
+    }
+
     public function test_blank_secret_keeps_existing() {
         $c = $this->google();
         $c->save_app_credentials( 'new-id', '' );

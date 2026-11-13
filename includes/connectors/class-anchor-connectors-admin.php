@@ -206,7 +206,7 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
             }
             return array(
                 __( 'In Microsoft Entra, register an app with "Accounts in any organizational directory and personal Microsoft accounts".', 'anchor-schema' ),
-                __( 'Add a "Web" platform with the callback URL above as a redirect URI, and create a client secret.', 'anchor-schema' ),
+                __( 'Add a "Web" platform with the callback URL above as a redirect URI, and create a client secret (or register a public client with PKCE and leave the secret blank).', 'anchor-schema' ),
                 __( 'Add the delegated Microsoft Graph permissions Files.ReadWrite.All, User.Read and offline_access. If a client tenant blocks user consent, its admin must approve once.', 'anchor-schema' ),
                 __( 'Paste the Application (client) ID and the secret value here, save, then click Connect.', 'anchor-schema' ),
             );
@@ -222,25 +222,31 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
         }
 
         private function render_card( $provider, Anchor_OAuth_Connector $c ) {
-            $o   = (array) get_option( 'anchor_connector_' . $provider, array() );
-            $cid = isset( $o['client_id'] ) ? (string) $o['client_id'] : '';
-            $has = $c->has_app_credentials();
+            $shared = $c->uses_shared_app();
+            $cid    = $c->client_id();
+            $has    = $c->has_app_credentials();
+            $copy   = '<input type="text" readonly class="regular-text code anchor-connector-callback" value="' . esc_attr( $c->callback_url() ) . '" /> '
+                . '<button type="button" class="button anchor-connector-copy">' . esc_html__( 'Copy', 'anchor-schema' ) . '</button>';
             echo '<div class="card anchor-connector-card" style="max-width:720px;margin-top:16px;padding:12px 20px;">';
             echo '<h2>' . esc_html( $c->label() ) . '</h2>';
             echo '<p><strong>' . esc_html( $this->status( $c ) ) . '</strong></p>';
 
-            $inner  = '<table class="form-table" role="presentation"><tbody>';
-            $inner .= '<tr><th><label>' . esc_html__( 'Client ID', 'anchor-schema' ) . '</label></th><td><input type="text" name="client_id" class="regular-text" value="' . esc_attr( $cid ) . '" autocomplete="off" /></td></tr>';
-            $inner .= '<tr><th><label>' . esc_html__( 'Client Secret', 'anchor-schema' ) . '</label></th><td><input type="password" name="client_secret" class="regular-text" value="" autocomplete="new-password" placeholder="' . ( $has ? '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' : '' ) . '" />'
-                . ( $has ? '<p class="description">' . esc_html__( 'Leave blank to keep the saved secret.', 'anchor-schema' ) . '</p>' : '' ) . '</td></tr>';
-            $inner .= '<tr><th><label>' . esc_html__( 'Callback URL', 'anchor-schema' ) . '</label></th><td><input type="text" readonly class="regular-text code anchor-connector-callback" value="' . esc_attr( $c->callback_url() ) . '" /> '
-                . '<button type="button" class="button anchor-connector-copy">' . esc_html__( 'Copy', 'anchor-schema' ) . '</button></td></tr>';
-            $inner .= '</tbody></table><p><button type="submit" class="button button-primary">' . esc_html__( 'Save credentials', 'anchor-schema' ) . '</button></p>';
-            $this->post_form( 'save', $provider, $inner );
+            if ( $shared ) {
+                /* translators: %s provider */
+                echo '<p>' . esc_html( sprintf( __( "This site uses Anchor's shared %s app. If sign-in says the redirect URI doesn't match, add this callback URL to that app:", 'anchor-schema' ), $c->label() ) ) . '</p>';
+                echo '<p>' . $copy . '</p>'; // phpcs:ignore WordPress.Security.EscapeOutput -- escaped above.
+            } else {
+                $this->render_credentials_form( $provider, $c, $cid, $has, $copy );
+            }
 
             echo '<p style="display:flex;gap:8px;align-items:center;">';
             if ( $has ) {
-                $label = ( $c->is_connected() || $c->needs_reconnect() ) ? __( 'Reconnect', 'anchor-schema' ) : __( 'Connect', 'anchor-schema' );
+                if ( $c->is_connected() || $c->needs_reconnect() ) {
+                    $label = __( 'Reconnect', 'anchor-schema' );
+                } else {
+                    /* translators: %s provider */
+                    $label = sprintf( __( 'Sign in with %s', 'anchor-schema' ), $c->label() );
+                }
                 $this->post_form( 'connect', $provider, '<button type="submit" class="button button-primary">' . esc_html( $label ) . '</button>' );
             }
             if ( $c->is_connected() ) {
@@ -253,16 +259,30 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
             do_action( 'anchor_connector_card_settings', $provider, $c );
             echo '</div>';
 
-            echo '<details style="margin:8px 0 12px;"><summary>' . esc_html__( 'How to set this up', 'anchor-schema' ) . '</summary><ol>';
-            foreach ( $this->setup_steps( $provider ) as $step ) {
-                echo '<li>' . esc_html( $step ) . '</li>';
+            if ( ! $shared ) {
+                echo '<details style="margin:8px 0 12px;"><summary>' . esc_html__( 'How to set this up', 'anchor-schema' ) . '</summary><ol>';
+                foreach ( $this->setup_steps( $provider ) as $step ) {
+                    echo '<li>' . esc_html( $step ) . '</li>';
+                }
+                echo '</ol></details>';
             }
-            echo '</ol></details></div>';
+            echo '</div>';
+        }
+
+        /** Per-site app credentials, used only when wp-config.php has no shared app. */
+        private function render_credentials_form( $provider, Anchor_OAuth_Connector $c, $cid, $has, $copy ) {
+            $inner  = '<table class="form-table" role="presentation"><tbody>';
+            $inner .= '<tr><th><label>' . esc_html__( 'Client ID', 'anchor-schema' ) . '</label></th><td><input type="text" name="client_id" class="regular-text" value="' . esc_attr( $cid ) . '" autocomplete="off" /></td></tr>';
+            $inner .= '<tr><th><label>' . esc_html__( 'Client Secret', 'anchor-schema' ) . '</label></th><td><input type="password" name="client_secret" class="regular-text" value="" autocomplete="new-password" placeholder="' . ( $has ? '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' : '' ) . '" />'
+                . ( $has ? '<p class="description">' . esc_html__( 'Leave blank to keep the saved secret.', 'anchor-schema' ) . '</p>' : '' ) . '</td></tr>';
+            $inner .= '<tr><th><label>' . esc_html__( 'Callback URL', 'anchor-schema' ) . '</label></th><td>' . $copy . '</td></tr>';
+            $inner .= '</tbody></table><p><button type="submit" class="button button-primary">' . esc_html__( 'Save credentials', 'anchor-schema' ) . '</button></p>';
+            $this->post_form( 'save', $provider, $inner );
         }
 
         public function render_tab() {
             $this->notices();
-            echo '<p>' . esc_html__( 'Connect this site to Google or Microsoft so Anchor Tools features can write to spreadsheets on your behalf. Each site uses its own OAuth app credentials.', 'anchor-schema' ) . '</p>';
+            echo '<p>' . esc_html__( 'Connect this site to Google or Microsoft so Anchor Tools features can write to spreadsheets on your behalf. Click Sign in, approve access, and you are done.', 'anchor-schema' ) . '</p>';
             if ( '' === (string) get_option( 'permalink_structure' ) ) {
                 echo '<div class="notice notice-warning inline"><p>' . esc_html__( 'This site uses plain permalinks. Switch to pretty permalinks (Settings > Permalinks) so the callback URL is a clean path; providers may reject the ?rest_route= form.', 'anchor-schema' ) . '</p></div>';
             }

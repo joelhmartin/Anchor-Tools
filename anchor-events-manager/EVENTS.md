@@ -457,8 +457,24 @@ OAuth Connectors (`includes/connectors/`); the events glue is
 `Sheets_Sync` (`class-sheets-sync.php`), the event metabox is `Sheets_Sync_Admin`, and
 the row diff is the pure `Sheets_Reconciler`.
 
-### One-time setup (per site)
-Each site brings its own OAuth app, so credentials never leave the site.
+### Shared app (the normal setup)
+Anchor runs one Google OAuth client and one Microsoft Entra app for all sites. Their
+credentials live in each site's `wp-config.php` as `ANCHOR_GOOGLE_CLIENT_ID`,
+`ANCHOR_GOOGLE_CLIENT_SECRET` and `ANCHOR_MICROSOFT_CLIENT_ID`, never in this public
+repo or the release ZIP. `bin/push-connector-credentials.sh SITES_FILE` writes them over
+ssh and prints each site's callback URL; add every printed URL to the Google client's
+Authorized redirect URIs and the Entra app's redirect URIs. With the constants set,
+the card shows only **Sign in with Google / Microsoft**.
+
+- **Google client:** type "Web application", **Internal** consent screen, Sheets API and
+  Drive API enabled.
+- **Entra app:** "Any org directory + personal accounts", redirect URIs under the
+  **Mobile and desktop applications** platform, **Allow public client flows** on, no
+  secret (PKCE). Delegated Graph permissions `Files.ReadWrite.All`, `User.Read`,
+  `offline_access`.
+
+### Per-site app (fallback when no constants are set)
+The site can instead bring its own OAuth app; the card then shows credential fields.
 1. **Settings > Anchor Tools > Connectors.** Each provider card shows this site's
    **Callback URL** (a REST path, `anchor-tools/v1/connectors/callback`). Sites on plain
    permalinks get a warning: switch to pretty permalinks first.

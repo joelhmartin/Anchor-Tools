@@ -1,41 +1,48 @@
-# Events → Google Sheets mirror — design
+# Events → spreadsheet mirror (Google Sheets + Microsoft Excel) — design
 
-**Date:** 2026-11-13 · **Branch:** `feat/events-google-sheets` · **Size:** small project
+**Date:** 2026-11-13 · **Branch:** `feat/events-google-sheets` · **Size:** project
 
 ## Intent
 
-An admin pastes a Google Sheet ID (or URL) into an event, and that sheet mirrors the event's
-registrant list: every roster field and every registration-question answer. New registrations
-add rows. Changes (cancel, refund, waitlist promotion, edited details) update the existing row in
-place. Cancelled people stay in the sheet with Status = `cancelled`; rows are never deleted.
+An admin pastes a Google Sheet URL or an Excel (OneDrive/SharePoint) URL into an event, and that
+spreadsheet mirrors the event's registrant list: every roster field and every
+registration-question answer. New registrations add rows. Changes (cancel, refund, waitlist
+promotion, edited details) update the existing row in place. Cancelled people stay, with Status =
+`cancelled`; rows are never deleted.
+
+Access works the way FunnelKit's connector does: each site has a **Connectors** screen where an
+admin signs in with Google and/or Microsoft once (OAuth). After that, pasting a URL is all that's
+needed. Everything lives in Anchor Tools, with no external service or relay.
 
 It hangs off the **events module**, not WooCommerce, because free and external-path events never
 touch Woo. Paid registrations are still covered, because every seat, free or paid, goes through
-`Registrations::create_seat()` / the status-transition path.
+`Registrations::create_seat()` / the status-transition path, which fire
+`anchor_events_seat_created` and `anchor_events_seat_status_changed`.
 
 ## Goals / non-goals / anti-goals
 
-- **Goals:** "just the ID" setup per event; full-field mirror; update-in-place keyed on Seat ID;
-  backfills registrants who existed before the sheet was connected; a visible sync status and a
-  "Sync now" button on the event.
-- **Non-goals:** two-way sync (edits made in the sheet never flow back); sheets for anything
-  other than events; deleting rows.
-- **Anti-goals:** a slow or down Google must never slow or break a registration or checkout;
-  the sheet's columns must never disagree with the roster CSV export; the integration must not
-  clobber columns the admin added to the sheet by hand.
+- **Goals:** a one-time "Connect Google" / "Connect Microsoft" sign-in per site; per event, paste a
+  URL; full-field mirror; update-in-place keyed on Seat ID; backfill of registrants who existed
+  before the sheet was connected; a visible sync status and a "Sync now" button on the event.
+- **Non-goals:** two-way sync (sheet edits never flow back); deleting rows; a hosted relay or
+  broker; connectors for anything other than Google and Microsoft.
+- **Anti-goals:** a slow or down Google/Microsoft must never slow or break a registration or
+  checkout; the sheet's columns must never disagree with the roster CSV export; the sync must
+  never clobber columns the admin added by hand; tokens and client secrets must never be shown
+  back or stored in plaintext.
 
 ## Approaches considered
 
-1. **Google service account (picked by the owner).** The admin pastes one service-account JSON
-   key into settings once, then shares each sheet with the robot's email. The site writes via the
-   Sheets API itself, so it can read the sheet, match rows by Seat ID, update or append, and
-   backfill.
-2. **Apps Script web app per sheet** (the TMJ opt-in pattern). No Google Cloud setup, but every
-   sheet needs a script deployed, so it's not "just the ID", and row matching would live in
-   per-sheet script code. Rejected.
-3. **Per-site OAuth ("Sign in with Google").** Needs a Google-verified OAuth app for a sensitive
-   scope, and the refresh tokens expire and need reconnecting. Too much overhead for an internal
-   tool. Rejected.
+1. **Service account** (robot email you share each sheet with). Rejected by the owner: they want
+   the FunnelKit-style experience with no per-sheet sharing step. It also has no Microsoft
+   equivalent for personal or business OneDrive files.
+2. **OAuth relayed through a hosted Anchor service.** Rejected by the owner: Anchor Tools must
+   stand alone.
+3. **Self-contained OAuth in Anchor Tools (picked).** Each site holds the OAuth app's client ID
+   and secret (pasted on the Connectors screen) and runs the authorization-code flow itself. The
+   cost of not having a relay: each site's callback URL must be added once to the Google OAuth
+   client and the Microsoft app registration. The Connectors screen shows that URL with a copy
+   button and the steps.
 
 ## Design
 
@@ -43,90 +50,113 @@ touch Woo. Paid registrations are still covered, because every seat, free or pai
 
 | Part | Where | Role |
 |---|---|---|
-| `Anchor_Google_Service_Account` | `includes/google/class-anchor-google-service-account.php` | **Generic primitive.** Stores the SA JSON key (option `anchor_google_service_account`, `autoload=false`, write-only in the UI). Mints an OAuth access token from a self-signed RS256 JWT (`openssl_sign`, no Composer dependency), caches it in a transient until shortly before expiry, and exposes `client_email()`, `access_token( $scopes )`, and `request( $method, $url, $body )` returning decoded JSON or `WP_Error`. No events knowledge, so a later Locations/GSC consumer reuses it. |
-| `Anchor_Google_Sheets` | `includes/google/class-anchor-google-sheets.php` | Thin Sheets v4 client on top of the SA: `get_values( $sheet_id, $range )`, `batch_update_values( $sheet_id, $data )`, `append_values( $sheet_id, $range, $rows )`, `first_tab_title( $sheet_id )`. |
-| `Sheets_Reconciler` | `anchor-events-manager/class-sheets-reconciler.php` | **Pure function, no I/O.** Takes (existing sheet values, roster table `{header, rows}`) and returns the minimal write set: header cells to add, row updates by sheet row number, rows to append. This is where the correctness lives, and it's unit-tested without HTTP. |
-| `Sheets_Sync` | `anchor-events-manager/class-sheets-sync.php` | Events glue: per-event settings field + side metabox, save handler, hooks, debounced scheduling, the sync run, status meta, "Sync now" admin-post action, the settings section that hosts the key field. |
+| `Anchor_Secret_Box` | `includes/connectors/class-anchor-secret-box.php` | Encrypts/decrypts small secrets at rest (`openssl` AES-256-GCM, key derived from `wp_salt('auth')`). Used for client secrets and refresh tokens. If the salts change, the stored values fail to decrypt and the connector shows "Reconnect". |
+| `Anchor_OAuth_Connector` | `includes/connectors/class-anchor-oauth-connector.php` | **Generic primitive**, one instance per provider. Stores `{client_id, client_secret*, refresh_token*, account, connected_at}` in option `anchor_connector_{provider}` (`autoload=false`, * = Secret Box). Builds the authorize URL (authorization code + PKCE S256 + random `state`), handles the callback, exchanges/refreshes tokens, caches the access token in a transient until 2 min before expiry, stores a rotated refresh token when the provider returns one, and supports disconnect. `request( $method, $url, $body = null )` returns decoded JSON or `WP_Error` (`status` in data). A 401/`invalid_grant` marks the connector `needs_reconnect`. |
+| Provider definitions | `includes/connectors/providers.php` | **Google:** auth `https://accounts.google.com/o/oauth2/v2/auth`, token `https://oauth2.googleapis.com/token`, scopes `openid email https://www.googleapis.com/auth/spreadsheets`, extra `access_type=offline&prompt=consent`. **Microsoft:** tenant `common`, auth `https://login.microsoftonline.com/common/oauth2/v2.0/authorize`, token `…/common/oauth2/v2.0/token`, scopes `offline_access openid email User.Read Files.ReadWrite.All`. Account label from the id_token / `userinfo` (Google) or `GET /me` (Microsoft). |
+| `Anchor_Connectors_Admin` | `includes/connectors/class-anchor-connectors-admin.php` | A **Connectors** tab on Settings → Anchor Tools (`anchor_settings_tabs`, priority 15). Per provider: Client ID, Client Secret (write-only), the callback URL to register (copy button), a short setup guide, Connect / Disconnect, the connected account, and the reconnect state. |
+| Spreadsheet adapters | `includes/connectors/class-anchor-sheet-google.php`, `…/class-anchor-sheet-excel.php`, both implementing `Anchor_Sheet_Adapter` | Provider-agnostic surface: `resolve( $url ): array\|WP_Error` (URL → stored ref), `read( $ref ): string[][]\|WP_Error` (whole used range of the tab, row 1 = header), `write_cells( $ref, $cells ): true\|WP_Error` (`[row, col, value]`, 1-based row, 0-based col), `append_rows( $ref, $rows ): true\|WP_Error`. Google uses Sheets v4 `values.batchUpdate` / `values.append` (`valueInputOption=RAW`, `insertDataOption=INSERT_ROWS`), and grows the grid with `appendDimension` when the header needs more columns than the tab has. Excel uses Graph: `GET /shares/u!{base64url(url)}/driveItem` to resolve, then `/drives/{d}/items/{i}/workbook/worksheets/{ws}/usedRange(valuesOnly=true)` and `range(address='…')` PATCH. Excel values are written with the number format set to text (`@`) so nothing becomes a formula. |
+| `Sheets_Reconciler` | `anchor-events-manager/class-sheets-reconciler.php` | **Pure, no I/O.** Takes (existing values, roster table `{header, rows}`, key header) and returns `{ header_append: string[], header_start_col: int, cells: [row,col,value][], appends: string[][] }`. Where the correctness lives; unit-tested without WordPress. |
+| `Sheets_Sync` | `anchor-events-manager/class-sheets-sync.php` | Events glue: the event's spreadsheet metabox and its save handler, hooks, debounced scheduling, the sync run, status meta, and the "Sync now" action. |
 
 The 16.9k-line `anchor-events-manager.php` only gets the `require_once` + `new Sheets_Sync( $this )`
 wiring.
 
-### Data model
+### OAuth callback
 
-- Event post meta `_anchor_event_sheet_id`: the bare spreadsheet ID. The save handler accepts a
-  full `docs.google.com/spreadsheets/d/<id>/…` URL and extracts the ID.
-- Event post meta `_anchor_event_sheet_tab`: optional tab name; blank = the spreadsheet's first tab.
-- Event post meta `_anchor_event_sheet_state`: `{ last_sync: ts, ok: bool, message: string, rows: int }`,
-  shown in the metabox.
+The callback URL is the REST route `/wp-json/anchor-tools/v1/connectors/callback`, a path with no
+query string, because Microsoft restricts query strings in redirect URIs (they aren't allowed for
+apps that accept personal accounts) and Google requires an exact match. The site needs pretty
+permalinks for this path. With plain permalinks the screen shows a warning and the
+`?rest_route=` URL instead. The connector's REST callback URL is what the screen shows.
+
+- The Connect button (admin-post, nonce, `manage_options`) creates `state` (32 random bytes) and a
+  PKCE verifier, and stores `{provider, verifier, user_id}` in a 10-minute transient keyed by
+  `state`. Then it redirects to the provider.
+- The callback (REST, `permission_callback` open, because the browser's redirect carries no REST
+  nonce) accepts only a `state` that exists in a transient, deletes it immediately (single use),
+  and checks that the stored user still has `manage_options`. It then exchanges the code with the
+  verifier, stores the tokens, and redirects to the Connectors tab with a success or error
+  notice. An unknown or expired state stops with a plain error page and no exchange.
+
+### Data model (events)
+
+- `_anchor_event_sheet_url`: the URL as pasted.
+- `_anchor_event_sheet_ref`: the resolved ref, e.g. `{provider:'google', id, tab}` or
+  `{provider:'microsoft', drive_id, item_id, worksheet}`. Resolved on save. The tab/worksheet
+  comes from the URL (`gid=` for Google), else the first tab. A resolve failure is shown in the
+  metabox and nothing is saved over the old ref.
+- `_anchor_event_sheet_state`: `{ last_sync, ok, message, rows }`.
 
 ### What a row is
 
-The rows come from `Roster::export_table_public( $event_id, 'all' )`, the same builder the
-roster CSV export uses, so the sheet and the CSV cannot drift. `all` scope includes
-cancelled/refunded seats, which is how "mark cancelled" falls out naturally: Status changes,
-and the row stays. For a **group parent** ("pick-one" dates) with a sheet ID, rows come from the
-all-dates table instead (extra leading Date column), via a new public seam
-`export_table_all_dates_public()`. Seat IDs are unique across children, so keying still works.
+`Roster::export_table_public( $event_id, 'all' )`, the same builder the CSV export uses, so the
+sheet and the CSV cannot drift. `all` scope includes cancelled/refunded seats, so "mark cancelled"
+falls out naturally. A **group parent** with a sheet uses the all-dates table (leading Date
+column) through a new public seam `export_table_all_dates_public()`. Group children without their
+own sheet roll up to their parent's.
 
 ### Reconcile rules
 
-- **Header row (row 1):** columns are matched **by header text**, not position. A roster column
-  missing from the sheet is appended to the right end of row 1. Columns the admin added by hand
-  are left alone, and their cells are never written.
-- **Rows:** matched on the `Seat ID` column. A seat already in the sheet is rewritten only in our
-  columns and only if a value changed. A seat not in the sheet is appended. A sheet row whose seat
-  isn't in the roster is left untouched.
-- An empty sheet gets the header plus all rows (this is the backfill).
-- Values are written with `valueInputOption=RAW`, so a name like `=HYPERLINK(...)` or `+1 555…`
-  is stored as text and never evaluated as a formula.
+- **Header (row 1):** columns are matched **by header text**. Roster columns missing from the sheet
+  are appended at the right end. Hand-added columns are left alone and never written.
+- **Rows:** keyed on `Seat ID`. Only changed cells in our columns are rewritten. Unknown seats are
+  appended **oldest first**. Sheet rows whose seat isn't in the roster are untouched. Duplicate
+  Seat IDs in the sheet: only the first is maintained.
+- An empty sheet gets the header plus all rows (the backfill).
+- Cells are compared as strings, so a missing trailing cell counts as `''`.
+- Values are written raw/text and never evaluated (formula-injection guard).
 
 ### When it runs
 
 - Triggers: `anchor_events_seat_created`, `anchor_events_seat_status_changed`, and
-  `updated_post_meta`/`added_post_meta` on an `anchor_event_reg` post (edited name/email/answers).
-  Also saving the event with a new or changed sheet ID, and the "Sync now" button (which runs
-  inline and reports the result).
-- Each trigger resolves the seat → its event → the **target** (the event itself if it has a sheet
-  ID, else its group parent if the parent has one), then schedules
-  `wp_schedule_single_event( time() + 30, 'anchor_events_sheet_sync', [ $target ] )` unless one
-  is already queued. Bursts (a 5-seat order) collapse into one sync, and the request that
-  registered the person never waits on Google.
-- Because the sync is a full idempotent reconcile, a missed trigger or a failed run self-heals on
-  the next change or "Sync now". A failed run records the error in `_anchor_event_sheet_state`
-  and logs through `Events_Log`. It does not retry in a loop.
-- A transient lock per target stops two cron runs from interleaving writes.
+  `added_post_meta`/`updated_post_meta` on an `anchor_event_reg` post. Also saving an event with a
+  new or changed URL, and "Sync now" (runs inline, then redirects back with the result).
+- Each trigger resolves seat → event → **target** (the event if it has a ref, else its group parent
+  if that has one), and schedules `anchor_events_sheet_sync( $target )` 30s out unless one is
+  already queued. Bursts collapse into one sync, and the request that registered someone never
+  waits on Google or Microsoft.
+- The sync is a full idempotent reconcile, so a missed trigger or failed run heals on the next run.
+  Failures are recorded in `_anchor_event_sheet_state` and `Events_Log::error()`, with no retry
+  loop. A transient lock per target (120s) prevents interleaved runs.
+- External-signup events have no roster, so the metabox says so and no sync runs.
 
-### Settings
+### Errors the admin sees (event metabox)
 
-A **Google Sheets** section on the Events settings tab holds the write-only service-account key
-field (paste JSON; validated for `client_email` + `private_key` on save), shows the robot's email
-("Share each sheet with this address as Editor"), and gives a one-line setup guide. The key lives
-in the generic primitive's option, not `anchor_events_settings`, so other modules can reuse it.
-
-### Errors the admin sees (in the event's metabox)
-
-- No key configured: "Add a Google service-account key under Settings → Anchor Tools → Events."
-- 403/404 from Sheets: "The sheet isn't shared with `<robot email>`, or the ID is wrong."
-- Anything else: the Google error message.
+- Provider not connected: "Connect Google (or Microsoft) under Settings → Anchor Tools → Connectors."
+- Connector needs reconnect: same, with "Reconnect".
+- 403/404: "The connected account (`<account>`) can't open this spreadsheet. Check the URL, or share it with that account."
+- Anything else: the provider's error message.
 
 ### Security / privacy
 
-- Only users who can manage events can set the sheet ID or press Sync now (the existing roster
-  capability, `Roster::current_user_can_manage()`), with a nonce on both.
-- The key is never echoed back after it's saved.
+- Connectors screen: `manage_options`. Event spreadsheet field and Sync now: the roster capability
+  `Roster::current_user_can_manage()`, plus `edit_post`, with nonces.
+- Client secrets and refresh tokens are encrypted at rest and never echoed.
+- The callback accepts single-use, short-lived, user-bound `state` only, with PKCE on the exchange.
 - **PHI caution:** the owner asked for all fields. Registration answers on medical/dental client
-  sites may be health-related, and they will land in Google Sheets. The metabox carries a short
-  note saying so. Filtering which columns go over is a possible later addition, not built now.
+  sites may be health-related and will land in Google or Microsoft. The metabox carries a one-line
+  note. Column filtering is a possible later addition, not built.
+
+### One-time setup outside the code (for the owner; the Connectors screen repeats it)
+
+- **Google:** an OAuth client of type "Web application" in a GCP project whose consent screen
+  allows the accounts that will connect. Internal = anchorcorps.com accounts only, with no Google
+  review. Add each site's callback URL under Authorized redirect URIs. Enable the Google Sheets
+  API on the project.
+- **Microsoft:** an Entra app registration, "Accounts in any organizational directory and personal
+  Microsoft accounts", Web platform, each site's callback URL as a redirect URI, a client secret,
+  and the delegated Graph permissions `Files.ReadWrite.All`, `User.Read`, `offline_access`. A
+  client tenant that blocks user consent needs its admin to approve once.
 
 ## Left to the builder
 
-- Exact transient TTLs, lock duration, and the scheduling delay (30s suggested).
-- Column-letter math (A1 notation for columns past Z).
-- How the metabox's status line is worded beyond the error cases above.
+- TTL details beyond those stated, and the metabox wording beyond the error cases above.
+- Column-letter math (A1 notation past Z).
 
 ## Builder's calls (made without asking)
 
-- Scope `all` (not confirmed-only), so cancellations remain visible as rows.
-- Sheet ID set per event, with group children inheriting their parent's sheet.
-- Key stored in a generic option, with its UI hosted on the Events tab, since Events is the only
-  consumer today.
+- Scope `all` (not confirmed-only), so cancellations remain visible.
+- One spreadsheet per event; group children roll up to the parent's.
+- Connectors live under `includes/connectors/` as a site-wide primitive with its own settings tab,
+  not inside events, so other modules can use it later.
+- Microsoft tenant `common` (work, school, and personal accounts).

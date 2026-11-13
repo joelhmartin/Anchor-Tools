@@ -1,0 +1,215 @@
+<?php
+/**
+ * Sheets_Sync_Admin: metabox, save handler and Sync now (no network).
+ *
+ * @package Anchor\Events\Tests
+ */
+
+use Anchor\Events\Sheets_Sync;
+use Anchor\Events\Sheets_Sync_Admin;
+
+class Anchor_Sheet_Admin_Redirect_Signal extends \Exception {}
+
+/** In-memory sheet for the Sync now run. */
+class Anchor_Sheet_Admin_Memory implements Anchor_Sheet_Adapter {
+	public $grid = array();
+	public function resolve( $url ) {
+		return array( 'provider' => 'google', 'id' => 'x', 'tab' => 't' );
+	}
+	public function read( array $ref ) {
+		return $this->grid;
+	}
+	public function write_cells( array $ref, array $cells ) {
+		foreach ( $cells as $c ) {
+			list( $r, $col, $v ) = $c;
+			while ( count( $this->grid ) < $r ) {
+				$this->grid[] = array();
+			}
+			while ( count( $this->grid[ $r - 1 ] ) <= $col ) {
+				$this->grid[ $r - 1 ][] = '';
+			}
+			$this->grid[ $r - 1 ][ $col ] = (string) $v;
+		}
+		return true;
+	}
+	public function append_rows( array $ref, array $rows ) {
+		foreach ( $rows as $row ) {
+			$this->grid[] = array_map( 'strval', $row );
+		}
+		return true;
+	}
+	public function ensure_columns( array $ref, $count ) {
+		return true;
+	}
+}
+
+/** Adapter whose resolve() is scripted. */
+class Anchor_Fake_Resolve_Google extends Anchor_Sheet_Google {
+	public static $result;
+	public function resolve( $url ) {
+		return self::$result;
+	}
+}
+
+/**
+ * @group sheets
+ */
+class Test_Events_Sheets_Sync_Admin extends Anchor_Events_TestCase {
+
+	const URL = 'https://docs.google.com/spreadsheets/d/abc/edit';
+
+	private $fake;
+
+	public function set_up() {
+		parent::set_up();
+		Anchor_Fake_Resolve_Google::$result = array( 'provider' => 'google', 'id' => 'abc', 'tab' => 'T' );
+		add_filter( 'anchor_events_sheet_adapter_for_url', array( $this, 'adapter' ), 10, 2 );
+		$this->fake = new Anchor_Sheet_Admin_Memory();
+		add_filter( 'anchor_sheet_adapter_for_ref', array( $this, 'inject' ), 10, 2 );
+		add_filter( 'pre_http_request', array( $this, 'block' ), 10, 3 );
+		delete_option( 'anchor_connector_google' );
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+	}
+
+	public function tear_down() {
+		remove_filter( 'anchor_events_sheet_adapter_for_url', array( $this, 'adapter' ), 10 );
+		remove_filter( 'anchor_sheet_adapter_for_ref', array( $this, 'inject' ), 10 );
+		remove_filter( 'pre_http_request', array( $this, 'block' ), 10 );
+		delete_option( 'anchor_connector_google' );
+		_set_cron_array( array() );
+		$_POST = $_REQUEST = array();
+		parent::tear_down();
+	}
+
+	public function adapter( $a, $url ) {
+		return false !== strpos( $url, 'docs.google.com' ) ? new Anchor_Fake_Resolve_Google() : $a;
+	}
+	public function inject( $o, $ref ) {
+		return $this->fake;
+	}
+	public function block() {
+		return new WP_Error( 'blocked', 'no network' );
+	}
+
+	private function admin() {
+		return $this->module()->sheets_sync_admin;
+	}
+
+	private function connect() {
+		update_option( 'anchor_connector_google', array( 'refresh_token' => 'x', 'account' => 'me@example.test' ), false );
+	}
+
+	private function save( $event_id, $url, $nonce = true ) {
+		$_POST = array( Sheets_Sync_Admin::URL_FIELD => $url );
+		if ( $nonce ) {
+			$_POST[ Sheets_Sync_Admin::NONCE_FIELD ] = wp_create_nonce( Sheets_Sync_Admin::NONCE_ACTION );
+		}
+		$this->admin()->save( $event_id );
+		$_POST = array();
+	}
+
+	private function render( $event_id ) {
+		ob_start();
+		$this->admin()->render( get_post( $event_id ) );
+		return ob_get_clean();
+	}
+
+	public function test_save_resolves_url_and_schedules_sync() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		$this->assertSame( self::URL, get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertSame( 'abc', get_post_meta( $e, Sheets_Sync::META_REF, true )['id'] );
+		$this->assertNotFalse( wp_next_scheduled( Sheets_Sync::HOOK, array( $e ) ) );
+	}
+
+	public function test_save_with_unconnected_provider_keeps_url_and_shows_connect_message() {
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		$this->assertSame( self::URL, get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertEmpty( get_post_meta( $e, Sheets_Sync::META_REF, true ) );
+		$html = $this->render( $e );
+		$this->assertStringContainsString( 'Connect Google', $html );
+		$this->assertStringContainsString( 'Connectors', $html );
+	}
+
+	public function test_resolve_failure_keeps_previous_ref() {
+		$this->connect();
+		$e   = $this->make_event();
+		$old = array( 'provider' => 'google', 'id' => 'old', 'tab' => 'T' );
+		update_post_meta( $e, Sheets_Sync::META_URL, 'https://docs.google.com/spreadsheets/d/old/edit' );
+		update_post_meta( $e, Sheets_Sync::META_REF, $old );
+		Anchor_Fake_Resolve_Google::$result = new WP_Error( 'anchor_sheet_forbidden', 'nope' );
+		$this->save( $e, self::URL );
+		$this->assertSame( $old, get_post_meta( $e, Sheets_Sync::META_REF, true ) );
+		$html = $this->render( $e );
+		$this->assertStringContainsString( "can&#039;t open this spreadsheet", str_replace( '&#8217;', '&#039;', $html ) );
+		$this->assertStringContainsString( 'me@example.test', $html );
+	}
+
+	public function test_clearing_url_removes_ref_and_unschedules() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		$this->assertNotFalse( wp_next_scheduled( Sheets_Sync::HOOK, array( $e ) ) );
+		$this->save( $e, '' );
+		$this->assertSame( '', get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertSame( '', get_post_meta( $e, Sheets_Sync::META_REF, true ) );
+		$this->assertFalse( wp_next_scheduled( Sheets_Sync::HOOK, array( $e ) ) );
+	}
+
+	public function test_save_requires_nonce_and_capability() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL, false );
+		$this->assertSame( '', get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		$this->save( $e, self::URL );
+		$this->assertSame( '', get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+	}
+
+	public function test_sync_now_runs_inline_and_redirects_with_state() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		$this->make_seat( $e );
+		$_REQUEST = array( 'event_id' => $e, '_wpnonce' => wp_create_nonce( 'anchor_events_sheet_sync_now_' . $e ) );
+		$trap     = function ( $location ) {
+			throw new Anchor_Sheet_Admin_Redirect_Signal( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		$location = '';
+		try {
+			$this->admin()->handle_sync_now();
+			$this->fail( 'No redirect.' );
+		} catch ( Anchor_Sheet_Admin_Redirect_Signal $s ) {
+			$location = $s->getMessage();
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
+		$this->assertStringContainsString( 'post.php', $location );
+		$state = $this->module()->sheets_sync->get_state( $e );
+		$this->assertTrue( $state['ok'] );
+		$this->assertSame( 1, $state['rows'] );
+		$this->assertGreaterThan( 1, count( $this->fake->grid ) );
+	}
+
+	public function test_metabox_shows_phi_note_and_last_sync_state() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		update_post_meta( $e, Sheets_Sync::META_STATE, array( 'last_sync' => time(), 'ok' => true, 'message' => '', 'rows' => 7 ) );
+		$html = $this->render( $e );
+		$this->assertStringContainsString( 'Every registration field and answer is copied to this spreadsheet.', $html );
+		$this->assertStringContainsString( '7 rows', $html );
+		$this->assertStringContainsString( 'me@example.test', $html );
+		$this->assertStringContainsString( 'Sync now', $html );
+
+		update_post_meta( $e, Sheets_Sync::META_STATE, array( 'last_sync' => time(), 'ok' => false, 'message' => 'Boom', 'rows' => 0 ) );
+		$this->assertStringContainsString( 'Boom', $this->render( $e ) );
+
+		$x = $this->make_event( array( 'registration_mode' => 'external' ) );
+		$this->assertStringContainsString( 'nothing to sync', $this->render( $x ) );
+	}
+}

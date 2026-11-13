@@ -112,6 +112,12 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/providers.php';
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-oauth-connector.php';
 }
+if ( ! class_exists( 'Anchor_Sheet_Adapters' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/interface-anchor-sheet-adapter.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-sheet-adapters.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-sheet-google.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-sheet-excel.php';
+}
 if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-connectors-admin.php';
 }

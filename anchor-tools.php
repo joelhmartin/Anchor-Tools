@@ -112,6 +112,9 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/providers.php';
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-oauth-connector.php';
 }
+if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-connectors-admin.php';
+}
 
 if ( class_exists( PucFactory::class ) ) {
     $anchor_tools_update = PucFactory::buildUpdateChecker(
@@ -179,6 +182,9 @@ add_action(
         }
         if ( is_admin() && class_exists( 'Anchor_Schema_Admin' ) ) {
             new Anchor_Schema_Admin();
+        }
+        if ( is_admin() && class_exists( 'Anchor_Connectors_Admin' ) ) {
+            new Anchor_Connectors_Admin();
         }
         if ( is_admin() && class_exists( 'Anchor_Preview_CSS' ) ) {
             new Anchor_Preview_CSS();

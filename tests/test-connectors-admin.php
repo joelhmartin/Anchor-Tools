@@ -11,6 +11,7 @@ class Test_Connectors_Admin extends WP_UnitTestCase {
         foreach ( array( 'google', 'microsoft' ) as $p ) {
             delete_option( 'anchor_connector_' . $p );
         }
+        delete_option( Anchor_Sheet_Google::SETTINGS_OPTION );
         $this->admin = new Anchor_Connectors_Admin();
         $id          = self::factory()->user->create( array( 'role' => 'administrator' ) );
         wp_set_current_user( $id );
@@ -157,12 +158,12 @@ class Test_Connectors_Admin extends WP_UnitTestCase {
         ) );
         $r = $this->run_handler( 'handle_share_save' );
         $this->assertStringContainsString( 'anchor_share_dropped=2', $r );
-        $o = get_option( 'anchor_connector_google' );
+        $this->assertSame( array( 'client_id' => 'keep' ), get_option( 'anchor_connector_google' ), 'token option is never rewritten' );
+        $o = get_option( Anchor_Sheet_Google::SETTINGS_OPTION );
         $this->assertSame( array( 'good@example.test', 'other@example.test' ), $o['share_emails'] );
         $this->assertSame( 'reader', $o['share_role'] );
         $this->assertFalse( $o['share_managers'] );
         $this->assertFalse( $o['share_notify'] );
-        $this->assertSame( 'keep', $o['client_id'] );
         $_GET['anchor_share_saved'] = 'google';
         $_GET['anchor_share_dropped'] = '2';
         $this->assertStringContainsString( '2 invalid', $this->render() );
@@ -180,7 +181,7 @@ class Test_Connectors_Admin extends WP_UnitTestCase {
             'autocreate_folder' => 'https://drive.google.com/drive/folders/Fold_er-1?usp=sharing',
         ) );
         $this->assertStringContainsString( 'anchor_share_saved=google', $this->run_handler( 'handle_share_save' ) );
-        $o = get_option( 'anchor_connector_google' );
+        $o = get_option( Anchor_Sheet_Google::SETTINGS_OPTION );
         $this->assertTrue( $o['autocreate'] );
         $this->assertSame( 'Fold_er-1', $o['autocreate_folder_id'] );
         $html = $this->render_share();
@@ -189,7 +190,7 @@ class Test_Connectors_Admin extends WP_UnitTestCase {
 
         $this->post( 'share_save', 'google', array( 'autocreate_folder' => 'not a folder link' ) );
         $this->run_handler( 'handle_share_save' );
-        $o = get_option( 'anchor_connector_google' );
+        $o = get_option( Anchor_Sheet_Google::SETTINGS_OPTION );
         $this->assertFalse( $o['autocreate'] );
         $this->assertSame( '', $o['autocreate_folder_id'] );
     }
@@ -198,5 +199,40 @@ class Test_Connectors_Admin extends WP_UnitTestCase {
         ob_start();
         $this->admin->render_share_settings( 'google', Anchor_OAuth_Connector::get( 'google' ) );
         return ob_get_clean();
+    }
+
+    public function test_settings_save_survives_a_concurrent_token_save() {
+        update_option( 'anchor_connector_google', array( 'client_id' => 'a', 'refresh_token' => 'OLD' ), false );
+        // A token refresh lands mid-request: settings must not overwrite it with a stale copy.
+        $race = function ( $value, $option ) {
+            update_option( 'anchor_connector_google', array( 'client_id' => 'a', 'refresh_token' => 'ROTATED' ), false );
+            return $value;
+        };
+        add_filter( 'pre_update_option_' . Anchor_Sheet_Google::SETTINGS_OPTION, $race, 10, 2 );
+        $this->post( 'share_save', 'google', array( 'share_emails' => 'x@example.test' ) );
+        $this->run_handler( 'handle_share_save' );
+        remove_filter( 'pre_update_option_' . Anchor_Sheet_Google::SETTINGS_OPTION, $race, 10 );
+        $this->assertSame( 'ROTATED', get_option( 'anchor_connector_google' )['refresh_token'] );
+        $this->assertSame( array( 'x@example.test' ), Anchor_Sheet_Google::share_settings()['emails'] );
+        $this->assertFalse( wp_load_alloptions()[ Anchor_Sheet_Google::SETTINGS_OPTION ] ?? false, 'autoload off' );
+    }
+
+    public function test_settings_fall_back_to_legacy_keys_until_saved() {
+        update_option( 'anchor_connector_google', array( 'share_emails' => array( 'old@example.test' ), 'autocreate' => true, 'autocreate_folder_id' => 'F1' ), false );
+        $this->assertSame( array( 'old@example.test' ), Anchor_Sheet_Google::share_settings()['emails'] );
+        $this->assertTrue( Anchor_Sheet_Google::autocreate_settings()['enabled'] );
+        $this->assertSame( 'F1', Anchor_Sheet_Google::autocreate_settings()['folder_id'] );
+        update_option( Anchor_Sheet_Google::SETTINGS_OPTION, array( 'share_emails' => array(), 'autocreate' => false ), false );
+        $this->assertSame( array(), Anchor_Sheet_Google::share_settings()['emails'] );
+        $this->assertFalse( Anchor_Sheet_Google::autocreate_settings()['enabled'] );
+    }
+
+    public function test_connect_error_notice_shows_the_oauth_error_code() {
+        $_GET['anchor_connect_error']      = 'google';
+        $_GET['anchor_connect_error_code'] = 'invalid_client<script>';
+        $html = $this->render();
+        unset( $_GET['anchor_connect_error'], $_GET['anchor_connect_error_code'] );
+        $this->assertStringContainsString( 'invalid_clientscript', $html );
+        $this->assertStringNotContainsString( '<script>', $html );
     }
 }

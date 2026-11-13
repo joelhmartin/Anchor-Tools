@@ -183,6 +183,23 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
         $this->assertCount( 0, $this->calls );
     }
 
+    public function test_token_exchange_failure_passes_sanitized_oauth_error_code() {
+        $uid = $this->admin();
+        $c   = $this->google();
+        parse_str( wp_parse_url( $c->begin_authorize( $uid ), PHP_URL_QUERY ), $q );
+        $this->responder = function () {
+            return array( 401, array( 'error' => 'invalid_client', 'error_description' => 'The OAuth client was not found. SECRET-VALUE-XYZ' ) );
+        };
+        $res = Anchor_OAuth_Connector::handle_callback( $this->callback_req( $q['state'], 'the-code' ) );
+        $this->assertSame( 302, $res->get_status() );
+        $loc = $res->get_headers()['Location'];
+        $this->assertStringContainsString( 'anchor_connect_error=google', $loc );
+        $this->assertStringContainsString( 'anchor_connect_error_code=invalid_client', $loc );
+        $this->assertStringNotContainsString( 'SECRET', $loc );
+        $this->assertStringNotContainsString( 'not%20found', $loc );
+        $this->assertFalse( $c->is_connected() );
+    }
+
     public function test_401_refreshes_and_retries_once() {
         $c = $this->connect();
         $n = 0;

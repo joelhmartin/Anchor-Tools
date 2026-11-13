@@ -165,8 +165,13 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             return $this->def['auth_url'] . '?' . http_build_query( $params, '', '&', PHP_QUERY_RFC3986 );
         }
 
-        private static function redirect( $provider, $arg ) {
-            $url = admin_url( 'options-general.php?page=anchor-schema&tab=connectors&' . $arg . '=' . rawurlencode( $provider ) );
+        /** @param string $error_code OAuth error code (e.g. invalid_client); only ever sanitize_key()'d, never a description. */
+        private static function redirect( $provider, $arg, $error_code = '' ) {
+            $url  = admin_url( 'options-general.php?page=anchor-schema&tab=connectors&' . $arg . '=' . rawurlencode( $provider ) );
+            $code = substr( sanitize_key( (string) $error_code ), 0, 64 );
+            if ( '' !== $code ) {
+                $url .= '&anchor_connect_error_code=' . rawurlencode( $code );
+            }
             $res = new WP_REST_Response( null, 302 );
             $res->header( 'Location', $url );
             return $res;
@@ -185,7 +190,7 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             }
             $code = (string) $req->get_param( 'code' );
             if ( $req->get_param( 'error' ) || '' === $code ) {
-                return self::redirect( $conn->provider, 'anchor_connect_error' );
+                return self::redirect( $conn->provider, 'anchor_connect_error', (string) $req->get_param( 'error' ) );
             }
             $tok = $conn->token_request( array(
                 'grant_type'    => 'authorization_code',
@@ -193,8 +198,12 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
                 'redirect_uri'  => $conn->callback_url(),
                 'code_verifier' => (string) $st['verifier'],
             ) );
-            if ( is_wp_error( $tok ) || empty( $tok['refresh_token'] ) ) {
-                return self::redirect( $conn->provider, 'anchor_connect_error' );
+            if ( is_wp_error( $tok ) ) {
+                $d = $tok->get_error_data();
+                return self::redirect( $conn->provider, 'anchor_connect_error', is_array( $d ) && ! empty( $d['oauth_error'] ) ? $d['oauth_error'] : $tok->get_error_code() );
+            }
+            if ( empty( $tok['refresh_token'] ) ) {
+                return self::redirect( $conn->provider, 'anchor_connect_error', 'no_refresh_token' );
             }
             $o                    = $conn->opt();
             $o['refresh_token']   = Anchor_Secret_Box::seal( $tok['refresh_token'] );

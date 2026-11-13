@@ -104,14 +104,15 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
                     $emails[ strtolower( $e ) ] = strtolower( $e );
                 }
             }
-            $o                   = (array) get_option( 'anchor_connector_google', array() );
-            $o['share_managers'] = ! empty( $_POST['share_managers'] );
-            $o['share_emails']   = array_values( $emails );
-            $o['share_role']     = 'reader' === ( $_POST['share_role'] ?? '' ) ? 'reader' : 'writer';
-            $o['share_notify']   = ! empty( $_POST['share_notify'] );
-            $o['autocreate']            = ! empty( $_POST['autocreate'] );
-            $o['autocreate_folder_id']  = Anchor_Sheet_Google::parse_folder_id( wp_unslash( $_POST['autocreate_folder'] ?? '' ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-            update_option( 'anchor_connector_google', $o, false );
+            // Written whole to its own option: never a read-modify-write of the token option.
+            update_option( Anchor_Sheet_Google::SETTINGS_OPTION, array(
+                'share_managers'       => ! empty( $_POST['share_managers'] ),
+                'share_emails'         => array_values( $emails ),
+                'share_role'           => 'reader' === ( $_POST['share_role'] ?? '' ) ? 'reader' : 'writer',
+                'share_notify'         => ! empty( $_POST['share_notify'] ),
+                'autocreate'           => ! empty( $_POST['autocreate'] ),
+                'autocreate_folder_id' => Anchor_Sheet_Google::parse_folder_id( wp_unslash( $_POST['autocreate_folder'] ?? '' ) ), // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            ), false );
             wp_safe_redirect( $this->tab_url( array( 'anchor_share_saved' => 'google', 'anchor_share_dropped' => $dropped ) ) );
             exit;
         }
@@ -171,7 +172,13 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
                 }
                 $c = Anchor_OAuth_Connector::get( sanitize_key( wp_unslash( $_GET[ $arg ] ) ) );
                 if ( $c ) {
-                    printf( '<div class="notice notice-%s is-dismissible"><p>%s</p></div>', esc_attr( $def[0] ), esc_html( sprintf( $def[1], $c->label() ) ) );
+                    $msg  = sprintf( $def[1], $c->label() );
+                    $code = 'anchor_connect_error' === $arg && isset( $_GET['anchor_connect_error_code'] ) ? sanitize_key( wp_unslash( $_GET['anchor_connect_error_code'] ) ) : '';
+                    if ( '' !== $code ) {
+                        /* translators: %s: OAuth error code such as invalid_client */
+                        $msg .= ' ' . sprintf( __( '(Error: %s)', 'anchor-schema' ), $code );
+                    }
+                    printf( '<div class="notice notice-%s is-dismissible"><p>%s</p></div>', esc_attr( $def[0] ), esc_html( $msg ) );
                 }
             }
         }

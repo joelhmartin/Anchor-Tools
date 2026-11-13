@@ -13,9 +13,22 @@ if ( ! class_exists( 'Anchor_Sheet_Google' ) ) {
         const DRIVE       = 'https://www.googleapis.com/drive/v3/files/';
         const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
-        /** Normalised auto-share settings from the Google connector option. */
+        /** Auto-share / auto-create settings. Own option: the connector option holds tokens a refresh rewrites. */
+        const SETTINGS_OPTION = 'anchor_connector_google_settings';
+
+        /** Raw settings; falls back to the keys older versions kept in the connector option until first saved. */
+        public static function settings() {
+            $s = get_option( self::SETTINGS_OPTION );
+            if ( is_array( $s ) ) {
+                return $s;
+            }
+            $legacy = (array) get_option( 'anchor_connector_google', array() );
+            return array_intersect_key( $legacy, array_flip( array( 'share_managers', 'share_emails', 'share_role', 'share_notify', 'autocreate', 'autocreate_folder_id' ) ) );
+        }
+
+        /** Normalised auto-share settings. */
         public static function share_settings() {
-            $o      = (array) get_option( 'anchor_connector_google', array() );
+            $o      = self::settings();
             $emails = array();
             foreach ( (array) ( $o['share_emails'] ?? array() ) as $e ) {
                 $e = sanitize_email( (string) $e );
@@ -31,9 +44,9 @@ if ( ! class_exists( 'Anchor_Sheet_Google' ) ) {
             );
         }
 
-        /** Auto-create settings from the Google connector option. */
+        /** Auto-create settings. */
         public static function autocreate_settings() {
-            $o = (array) get_option( 'anchor_connector_google', array() );
+            $o = self::settings();
             return array(
                 'enabled'   => ! empty( $o['autocreate'] ),
                 'folder_id' => preg_replace( '/[^A-Za-z0-9_-]/', '', (string) ( $o['autocreate_folder_id'] ?? '' ) ),

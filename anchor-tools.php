@@ -107,6 +107,11 @@ if ( ! class_exists( 'Anchor_Builder_Shell' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/class-anchor-builder-preset-picker.php';
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/class-anchor-builder-shell.php';
 }
+if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-secret-box.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/providers.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-oauth-connector.php';
+}
 
 if ( class_exists( PucFactory::class ) ) {
     $anchor_tools_update = PucFactory::buildUpdateChecker(

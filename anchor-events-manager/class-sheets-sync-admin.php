@@ -113,7 +113,7 @@ class Sheets_Sync_Admin {
 		$old_url = (string) \get_post_meta( $event_id, Sheets_Sync::META_URL, true );
 		$old_ref = \get_post_meta( $event_id, Sheets_Sync::META_REF, true );
 		$has_ref = \is_array( $old_ref ) && ! empty( $old_ref['provider'] );
-		if ( $url === $old_url && $has_ref ) {
+		if ( $url === $old_url && $has_ref && $this->provider_for_url( $url ) === (string) $old_ref['provider'] ) {
 			return; // Unchanged and already resolved.
 		}
 
@@ -125,8 +125,12 @@ class Sheets_Sync_Admin {
 		$provider = $this->provider_of( $adapter );
 		$conn     = $this->connector( $provider );
 		if ( ! $conn || ! $conn->is_connected() || $conn->needs_reconnect() ) {
-			// Keep what was pasted; the metabox shows the Connect message.
+			// Keep what was pasted; the metabox shows the Connect message. The
+			// old ref belongs to a different sheet, so stop syncing to it.
 			\update_post_meta( $event_id, Sheets_Sync::META_URL, $url );
+			\delete_post_meta( $event_id, Sheets_Sync::META_REF );
+			\delete_post_meta( $event_id, Sheets_Sync::META_STATE );
+			\wp_clear_scheduled_hook( Sheets_Sync::HOOK, array( $event_id ) );
 			return;
 		}
 
@@ -180,8 +184,10 @@ class Sheets_Sync_Admin {
 		$target = $this->sync->target_for_event( $event_id );
 		if ( $target > 0 ) {
 			$this->sync->run( $target );
+		} else {
+			$this->fail( $event_id, \__( 'Nothing to sync: this event has no connected spreadsheet, or takes sign-ups on an external form.', 'anchor-schema' ) );
 		}
-		\wp_safe_redirect( \add_query_arg( 'anchor_sheet_synced', 1, \get_edit_post_link( $event_id, 'url' ) ) );
+		\wp_safe_redirect( (string) \get_edit_post_link( $event_id, 'url' ) );
 		exit;
 	}
 

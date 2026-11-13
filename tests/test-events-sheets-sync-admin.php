@@ -51,6 +51,12 @@ class Anchor_Fake_Resolve_Google extends Anchor_Sheet_Google {
 	}
 }
 
+class Anchor_Fake_Resolve_Excel extends Anchor_Sheet_Excel {
+	public function resolve( $url ) {
+		return array( 'provider' => 'microsoft', 'drive_id' => 'd', 'item_id' => 'i', 'worksheet' => 'w' );
+	}
+}
+
 /**
  * @group sheets
  */
@@ -76,12 +82,16 @@ class Test_Events_Sheets_Sync_Admin extends Anchor_Events_TestCase {
 		remove_filter( 'anchor_sheet_adapter_for_ref', array( $this, 'inject' ), 10 );
 		remove_filter( 'pre_http_request', array( $this, 'block' ), 10 );
 		delete_option( 'anchor_connector_google' );
+		delete_option( 'anchor_connector_microsoft' );
 		_set_cron_array( array() );
 		$_POST = $_REQUEST = array();
 		parent::tear_down();
 	}
 
 	public function adapter( $a, $url ) {
+		if ( false !== strpos( $url, 'onedrive.live.com' ) ) {
+			return new Anchor_Fake_Resolve_Excel();
+		}
 		return false !== strpos( $url, 'docs.google.com' ) ? new Anchor_Fake_Resolve_Google() : $a;
 	}
 	public function inject( $o, $ref ) {
@@ -211,5 +221,73 @@ class Test_Events_Sheets_Sync_Admin extends Anchor_Events_TestCase {
 
 		$x = $this->make_event( array( 'registration_mode' => 'external' ) );
 		$this->assertStringContainsString( 'nothing to sync', $this->render( $x ) );
+	}
+
+	public function test_switching_to_unconnected_provider_drops_old_ref_then_resolves_after_connect() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		$this->assertNotFalse( wp_next_scheduled( Sheets_Sync::HOOK, array( $e ) ) );
+		update_post_meta( $e, Sheets_Sync::META_STATE, array( 'last_sync' => time(), 'ok' => true, 'message' => '', 'rows' => 1 ) );
+
+		$ms = 'https://onedrive.live.com/edit?resid=1';
+		$this->save( $e, $ms );
+		$this->assertSame( $ms, get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertEmpty( get_post_meta( $e, Sheets_Sync::META_REF, true ) );
+		$this->assertEmpty( get_post_meta( $e, Sheets_Sync::META_STATE, true ) );
+		$this->assertFalse( wp_next_scheduled( Sheets_Sync::HOOK, array( $e ) ) );
+		$html = $this->render( $e );
+		$this->assertStringContainsString( 'Connect Microsoft', $html );
+		$this->assertStringNotContainsString( 'Connected', $html );
+
+		update_option( 'anchor_connector_microsoft', array( 'refresh_token' => 'x', 'account' => 'ms@example.test' ), false );
+		$this->save( $e, $ms );
+		$this->assertSame( 'microsoft', get_post_meta( $e, Sheets_Sync::META_REF, true )['provider'] );
+	}
+
+	private function press_sync_now( $event_id, $nonce ) {
+		$_REQUEST = array( 'event_id' => $event_id, '_wpnonce' => $nonce );
+		$trap     = function ( $location ) {
+			throw new Anchor_Sheet_Admin_Redirect_Signal( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		add_filter( 'wp_die_handler', array( $this, 'die_handler' ) );
+		try {
+			$this->admin()->handle_sync_now();
+			return 'none';
+		} catch ( Anchor_Sheet_Admin_Redirect_Signal $s ) {
+			return 'redirect';
+		} catch ( \WPDieException $d ) {
+			return 'die';
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+			remove_filter( 'wp_die_handler', array( $this, 'die_handler' ) );
+		}
+	}
+
+	public function die_handler() {
+		return function ( $m ) {
+			throw new \WPDieException( is_string( $m ) ? $m : 'die' );
+		};
+	}
+
+	public function test_sync_now_rejects_bad_nonce_and_missing_capability() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		$this->assertSame( 'die', $this->press_sync_now( $e, 'bogus' ) );
+		$this->assertSame( array(), $this->module()->sheets_sync->get_state( $e ) );
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		$this->assertSame( 'die', $this->press_sync_now( $e, wp_create_nonce( 'anchor_events_sheet_sync_now_' . $e ) ) );
+		$this->assertSame( array(), $this->module()->sheets_sync->get_state( $e ) );
+	}
+
+	public function test_sync_now_with_nothing_to_sync_sets_notice() {
+		$e = $this->make_event();
+		$this->assertSame( 'redirect', $this->press_sync_now( $e, wp_create_nonce( 'anchor_events_sheet_sync_now_' . $e ) ) );
+		update_post_meta( $e, Sheets_Sync::META_URL, self::URL );
+		update_post_meta( $e, Sheets_Sync::META_REF, array( 'provider' => 'google', 'id' => 'abc', 'tab' => 'T' ) );
+		$this->assertStringContainsString( 'Nothing to sync', (string) get_transient( 'anchor_ev_sheet_notice_' . $e . '_' . get_current_user_id() ) );
 	}
 }

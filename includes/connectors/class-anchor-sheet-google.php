@@ -10,6 +10,70 @@ if ( ! class_exists( 'Anchor_Sheet_Google' ) ) {
     class Anchor_Sheet_Google implements Anchor_Sheet_Adapter {
         const API = 'https://sheets.googleapis.com/v4/spreadsheets/';
 
+        const DRIVE       = 'https://www.googleapis.com/drive/v3/files/';
+        const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+
+        /** Normalised auto-share settings from the Google connector option. */
+        public static function share_settings() {
+            $o      = (array) get_option( 'anchor_connector_google', array() );
+            $emails = array();
+            foreach ( (array) ( $o['share_emails'] ?? array() ) as $e ) {
+                $e = sanitize_email( (string) $e );
+                if ( '' !== $e ) {
+                    $emails[] = strtolower( $e );
+                }
+            }
+            return array(
+                'managers' => ! isset( $o['share_managers'] ) || (bool) $o['share_managers'],
+                'emails'   => array_values( array_unique( $emails ) ),
+                'role'     => 'reader' === ( $o['share_role'] ?? '' ) ? 'reader' : 'writer',
+                'notify'   => ! isset( $o['share_notify'] ) || (bool) $o['share_notify'],
+            );
+        }
+
+        /**
+         * Adds Drive permissions for any of $emails the file does not already have. Never removes access.
+         *
+         * @param string[] $emails
+         * @return string[]|WP_Error Emails newly added (lowercased).
+         */
+        public function share( array $ref, array $emails, $role, $notify ) {
+            $id   = rawurlencode( (string) ( $ref['id'] ?? '' ) );
+            $role = 'reader' === $role ? 'reader' : 'writer';
+            $have = array();
+            $page = '';
+            do {
+                $url = self::DRIVE . $id . '/permissions?fields=' . rawurlencode( 'nextPageToken,permissions(emailAddress,role,type)' ) . '&supportsAllDrives=true'
+                    . ( '' !== $page ? '&pageToken=' . rawurlencode( $page ) : '' );
+                $res = $this->call( 'GET', $url );
+                if ( is_wp_error( $res ) ) {
+                    return $res;
+                }
+                foreach ( (array) ( $res['permissions'] ?? array() ) as $perm ) {
+                    if ( ! empty( $perm['emailAddress'] ) ) {
+                        $have[ strtolower( (string) $perm['emailAddress'] ) ] = true;
+                    }
+                }
+                $page = (string) ( $res['nextPageToken'] ?? '' );
+            } while ( '' !== $page );
+
+            $added = array();
+            foreach ( $emails as $email ) {
+                $email = strtolower( trim( (string) $email ) );
+                if ( '' === $email || isset( $have[ $email ] ) ) {
+                    continue;
+                }
+                $url = self::DRIVE . $id . '/permissions?sendNotificationEmail=' . ( $notify ? 'true' : 'false' ) . '&supportsAllDrives=true';
+                $res = $this->call( 'POST', $url, array( 'type' => 'user', 'role' => $role, 'emailAddress' => $email ) );
+                if ( is_wp_error( $res ) ) {
+                    return $res;
+                }
+                $have[ $email ] = true;
+                $added[]        = $email;
+            }
+            return $added;
+        }
+
         /** A1 notation tab reference: 'Bob''s List' */
         private static function q( $tab ) {
             return "'" . str_replace( "'", "''", (string) $tab ) . "'";

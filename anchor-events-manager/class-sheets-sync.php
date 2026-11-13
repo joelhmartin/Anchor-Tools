@@ -19,6 +19,7 @@ class Sheets_Sync {
 	const META_URL   = '_anchor_event_sheet_url';
 	const META_REF   = '_anchor_event_sheet_ref';
 	const META_STATE = '_anchor_event_sheet_state';
+	const META_SHARED = '_anchor_event_sheet_shared';
 	const HOOK       = 'anchor_events_sheet_sync';
 	const DELAY      = 30;
 	const LOCK_TTL   = 120;
@@ -124,7 +125,7 @@ class Sheets_Sync {
 			$state = array( 'last_sync' => \time(), 'ok' => false, 'message' => $result->get_error_message(), 'rows' => 0 );
 			Events_Log::error( 'sheet_sync_failed', array( 'event_id' => $target, 'code' => $result->get_error_code() ) );
 		} else {
-			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => '', 'rows' => (int) $result );
+			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => $this->share_step( $target, $ref ), 'rows' => (int) $result );
 		}
 		\update_post_meta( $target, self::META_STATE, $state );
 		return $state;
@@ -172,5 +173,55 @@ class Sheets_Sync {
 			}
 		}
 		return \count( $table['rows'] );
+	}
+
+	/**
+	 * Share the spreadsheet with event managers / extra emails (Google only).
+	 * Runs after the row writes; any failure is returned as a warning string and never fails the sync.
+	 *
+	 * @return string Warning message, '' when nothing to report.
+	 */
+	private function share_step( int $target, array $ref ): string {
+		$adapter = \Anchor_Sheet_Adapters::for_ref( $ref );
+		if ( ! $adapter || ! \method_exists( $adapter, 'share' ) ) {
+			return '';
+		}
+		$cfg = \Anchor_Sheet_Google::share_settings();
+		if ( ! $cfg['managers'] && ! $cfg['emails'] ) {
+			return '';
+		}
+		$conn = \Anchor_OAuth_Connector::get( 'google' );
+		if ( ! $conn || ! $conn->has_scope( \Anchor_Sheet_Google::DRIVE_SCOPE ) ) {
+			return \__( 'Reconnect to enable auto-share', 'anchor-schema' );
+		}
+		$emails = $cfg['emails'];
+		if ( $cfg['managers'] ) {
+			$emails = \array_merge( $emails, $this->manager_emails() );
+		}
+		$emails = \array_values( \array_unique( \array_map( 'strtolower', $emails ) ) );
+		\sort( $emails );
+		$hash = \sha1( \implode( ',', $emails ) . '|' . $cfg['role'] );
+		if ( ! $emails || \get_post_meta( $target, self::META_SHARED, true ) === $hash ) {
+			return '';
+		}
+		$res = $adapter->share( $ref, $emails, $cfg['role'], $cfg['notify'] );
+		if ( \is_wp_error( $res ) ) {
+			Events_Log::error( 'sheet_share_failed', array( 'event_id' => $target, 'code' => $res->get_error_code() ) );
+			/* translators: %s error message */
+			return \sprintf( \__( 'Rows synced, but sharing failed: %s', 'anchor-schema' ), $res->get_error_message() );
+		}
+		\update_post_meta( $target, self::META_SHARED, $hash );
+		return '';
+	}
+
+	/** @return string[] Account emails of every user holding the events capability. */
+	private function manager_emails(): array {
+		$out = array();
+		foreach ( \get_users( array( 'capability' => Module::events_capability() ) ) as $u ) {
+			if ( \is_email( $u->user_email ) ) {
+				$out[] = $u->user_email;
+			}
+		}
+		return $out;
 	}
 }

@@ -17,6 +17,8 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
             add_action( 'admin_post_anchor_connector_save', array( $this, 'handle_save' ) );
             add_action( 'admin_post_anchor_connector_connect', array( $this, 'handle_connect' ) );
             add_action( 'admin_post_anchor_connector_disconnect', array( $this, 'handle_disconnect' ) );
+            add_action( 'admin_post_anchor_connector_share_save', array( $this, 'handle_share_save' ) );
+            add_action( 'anchor_connector_card_settings', array( $this, 'render_share_settings' ), 10, 2 );
         }
 
         public function register_tab( $tabs ) {
@@ -82,6 +84,62 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
             exit;
         }
 
+        /** Saves the Google auto-share settings (validated emails; invalid lines are dropped and counted). */
+        public function handle_share_save() {
+            $this->authorize( 'share_save' );
+            if ( 'google' !== sanitize_key( $_POST['provider'] ?? '' ) ) {
+                wp_die( esc_html__( 'Unknown connector.', 'anchor-schema' ), 400 );
+            }
+            $emails  = array();
+            $dropped = 0;
+            foreach ( preg_split( '/\R/', (string) wp_unslash( $_POST['share_emails'] ?? '' ) ) as $line ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+                $line = trim( $line );
+                if ( '' === $line ) {
+                    continue;
+                }
+                $e = is_email( $line ) ? sanitize_email( $line ) : '';
+                if ( '' === $e ) {
+                    ++$dropped;
+                } else {
+                    $emails[ strtolower( $e ) ] = strtolower( $e );
+                }
+            }
+            $o                   = (array) get_option( 'anchor_connector_google', array() );
+            $o['share_managers'] = ! empty( $_POST['share_managers'] );
+            $o['share_emails']   = array_values( $emails );
+            $o['share_role']     = 'reader' === ( $_POST['share_role'] ?? '' ) ? 'reader' : 'writer';
+            $o['share_notify']   = ! empty( $_POST['share_notify'] );
+            update_option( 'anchor_connector_google', $o, false );
+            wp_safe_redirect( $this->tab_url( array( 'anchor_share_saved' => 'google', 'anchor_share_dropped' => $dropped ) ) );
+            exit;
+        }
+
+        /** Google card section: who spreadsheets are auto-shared with. */
+        public function render_share_settings( $provider, $c ) {
+            if ( 'google' !== $provider ) {
+                return;
+            }
+            $s = Anchor_Sheet_Google::share_settings();
+            echo '<h3>' . esc_html__( 'Auto-share spreadsheets with', 'anchor-schema' ) . '</h3>';
+            if ( $c->is_connected() && ! $c->has_scope( Anchor_Sheet_Google::DRIVE_SCOPE ) ) {
+                echo '<div class="notice notice-warning inline"><p>' . esc_html__( 'Reconnect to enable auto-share', 'anchor-schema' ) . ' &mdash; '
+                    . esc_html__( 'this connection was made before Drive access was requested.', 'anchor-schema' ) . '</p></div>';
+            }
+            $inner  = '<table class="form-table" role="presentation"><tbody>';
+            $inner .= '<tr><th>' . esc_html__( 'Share with event managers', 'anchor-schema' ) . '</th><td><label><input type="checkbox" name="share_managers" value="1"' . checked( $s['managers'], true, false ) . ' /> '
+                . esc_html__( 'Everyone who can manage events, by their account email', 'anchor-schema' ) . '</label></td></tr>';
+            $inner .= '<tr><th><label for="anchor-share-emails">' . esc_html__( 'Also share with', 'anchor-schema' ) . '</label></th><td><textarea id="anchor-share-emails" name="share_emails" rows="4" class="large-text code">' . esc_textarea( implode( "\n", $s['emails'] ) ) . '</textarea>'
+                . '<p class="description">' . esc_html__( 'One email per line.', 'anchor-schema' ) . '</p></td></tr>';
+            $inner .= '<tr><th><label for="anchor-share-role">' . esc_html__( 'Access', 'anchor-schema' ) . '</label></th><td><select id="anchor-share-role" name="share_role">'
+                . '<option value="writer"' . selected( $s['role'], 'writer', false ) . '>' . esc_html__( 'Editor', 'anchor-schema' ) . '</option>'
+                . '<option value="reader"' . selected( $s['role'], 'reader', false ) . '>' . esc_html__( 'Viewer', 'anchor-schema' ) . '</option></select></td></tr>';
+            $inner .= '<tr><th>' . esc_html__( 'Notify people by email', 'anchor-schema' ) . '</th><td><label><input type="checkbox" name="share_notify" value="1"' . checked( $s['notify'], true, false ) . ' /> '
+                . esc_html__( 'Send Google\'s own share notification', 'anchor-schema' ) . '</label></td></tr>';
+            $inner .= '</tbody></table><p class="description">' . esc_html__( 'Access is only ever added; remove people in Google.', 'anchor-schema' ) . '</p>'
+                . '<p><button type="submit" class="button">' . esc_html__( 'Save auto-share', 'anchor-schema' ) . '</button></p>';
+            $this->post_form( 'share_save', $provider, $inner );
+        }
+
         /* ---------- rendering ---------- */
 
         private function notices() {
@@ -91,6 +149,14 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
                 'anchor_saved'        => array( 'success', __( '%s credentials saved.', 'anchor-schema' ) ),
                 'anchor_disconnected' => array( 'success', __( '%s disconnected.', 'anchor-schema' ) ),
             );
+            if ( ! empty( $_GET['anchor_share_saved'] ) ) {
+                $n = isset( $_GET['anchor_share_dropped'] ) ? absint( $_GET['anchor_share_dropped'] ) : 0;
+                echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Auto-share settings saved.', 'anchor-schema' ) . '</p></div>';
+                if ( $n > 0 ) {
+                    /* translators: %d number of lines */
+                    echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html( sprintf( _n( '%d invalid email was dropped.', '%d invalid emails were dropped.', $n, 'anchor-schema' ), $n ) ) . '</p></div>';
+                }
+            }
             foreach ( $map as $arg => $def ) {
                 if ( empty( $_GET[ $arg ] ) ) {
                     continue;

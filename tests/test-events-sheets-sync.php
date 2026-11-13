@@ -46,6 +46,16 @@ class Anchor_Fake_Sheet_Adapter implements Anchor_Sheet_Adapter {
 	}
 }
 
+/** In-memory spreadsheet that also records share() calls. */
+class Anchor_Fake_Shareable_Adapter extends Anchor_Fake_Sheet_Adapter {
+	public $shares = array();
+	public $share_result = null;
+	public function share( array $ref, array $emails, $role, $notify ) {
+		$this->shares[] = array( 'emails' => $emails, 'role' => $role, 'notify' => $notify );
+		return $this->share_result ? $this->share_result : $emails;
+	}
+}
+
 /**
  * @group sheets
  */
@@ -224,5 +234,90 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 		$this->assertFalse( $this->queued( $e ) );
 		$this->sync()->run( $e );
 		$this->assertSame( 0, $this->fake->reads );
+	}
+
+	private function shareable( $scope = true ) {
+		$this->fake = new Anchor_Fake_Shareable_Adapter();
+		update_option( 'anchor_connector_google', array( 'scope' => $scope ? 'openid https://www.googleapis.com/auth/drive' : 'openid https://www.googleapis.com/auth/spreadsheets' ), false );
+		foreach ( get_users( array( 'capability' => \Anchor\Events\Module::events_capability() ) ) as $u ) {
+			wp_delete_user( $u->ID );
+		}
+	}
+
+	public function test_run_shares_with_events_capability_holders_plus_extra_emails() {
+		$this->shareable();
+		$mgr = self::factory()->user->create( array( 'role' => 'shop_manager', 'user_email' => 'Mgr@example.test' ) );
+		self::factory()->user->create( array( 'role' => 'subscriber', 'user_email' => 'sub@example.test' ) );
+		$o = get_option( 'anchor_connector_google' );
+		$o['share_emails'] = array( 'extra@example.test' );
+		update_option( 'anchor_connector_google', $o, false );
+		$e = $this->with_sheet( $this->make_event() );
+		$state = $this->sync()->run( $e );
+		$this->assertTrue( $state['ok'] );
+		$this->assertSame( '', $state['message'] );
+		$this->assertCount( 1, $this->fake->shares );
+		$this->assertSame( array( 'extra@example.test', 'mgr@example.test' ), $this->fake->shares[0]['emails'] );
+		$this->assertSame( 'writer', $this->fake->shares[0]['role'] );
+		$this->assertTrue( $this->fake->shares[0]['notify'] );
+		delete_option( 'anchor_connector_google' );
+	}
+
+	public function test_run_skips_share_when_set_unchanged() {
+		$this->shareable();
+		self::factory()->user->create( array( 'role' => 'shop_manager', 'user_email' => 'm@example.test' ) );
+		$e = $this->with_sheet( $this->make_event() );
+		$this->sync()->run( $e );
+		$this->sync()->run( $e );
+		$this->assertCount( 1, $this->fake->shares );
+		delete_option( 'anchor_connector_google' );
+	}
+
+	public function test_new_manager_triggers_share_on_next_run() {
+		$this->shareable();
+		self::factory()->user->create( array( 'role' => 'shop_manager', 'user_email' => 'm@example.test' ) );
+		$e = $this->with_sheet( $this->make_event() );
+		$this->sync()->run( $e );
+		self::factory()->user->create( array( 'role' => 'shop_manager', 'user_email' => 'new@example.test' ) );
+		$this->sync()->run( $e );
+		$this->assertCount( 2, $this->fake->shares );
+		$this->assertSame( array( 'm@example.test', 'new@example.test' ), $this->fake->shares[1]['emails'] );
+		delete_option( 'anchor_connector_google' );
+	}
+
+	public function test_share_failure_is_a_warning_not_a_failed_sync() {
+		$this->shareable();
+		self::factory()->user->create( array( 'role' => 'shop_manager', 'user_email' => 'm@example.test' ) );
+		$this->fake->share_result = new WP_Error( 'boom', 'Drive said no' );
+		$e = $this->with_sheet( $this->make_event() );
+		$this->make_seat( $e );
+		$state = $this->sync()->run( $e );
+		$this->assertTrue( $state['ok'] );
+		$this->assertStringContainsString( 'Drive said no', $state['message'] );
+		$this->assertCount( 2, $this->fake->grid, 'rows still written' );
+		$this->assertSame( '', (string) get_post_meta( $e, Sheets_Sync::META_SHARED, true ), 'retried next run' );
+		delete_option( 'anchor_connector_google' );
+	}
+
+	public function test_missing_drive_scope_warns_and_does_not_share() {
+		$this->shareable( false );
+		self::factory()->user->create( array( 'role' => 'shop_manager', 'user_email' => 'm@example.test' ) );
+		$e = $this->with_sheet( $this->make_event() );
+		$state = $this->sync()->run( $e );
+		$this->assertTrue( $state['ok'] );
+		$this->assertSame( 'Reconnect to enable auto-share', $state['message'] );
+		$this->assertCount( 0, $this->fake->shares );
+		delete_option( 'anchor_connector_google' );
+	}
+
+	public function test_share_disabled_does_nothing() {
+		$this->shareable();
+		$o = get_option( 'anchor_connector_google' );
+		$o['share_managers'] = false;
+		update_option( 'anchor_connector_google', $o, false );
+		$e = $this->with_sheet( $this->make_event() );
+		$state = $this->sync()->run( $e );
+		$this->assertSame( '', $state['message'] );
+		$this->assertCount( 0, $this->fake->shares );
+		delete_option( 'anchor_connector_google' );
 	}
 }

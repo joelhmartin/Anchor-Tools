@@ -238,4 +238,47 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         $patch = array_values( array_filter( $this->calls, function ( $c ) { return 'PATCH' === $c['method']; } ) );
         $this->assertStringContainsString( "range(address='A1:B1')", $patch[0]['url'] );
     }
+
+    public function test_share_adds_only_missing_permissions() {
+        $this->connect( 'google' );
+        $this->responder = function ( $u, $args ) {
+            return 'GET' === $args['method'] ? array( 200, array( 'permissions' => array( array( 'emailAddress' => 'a@x.test', 'role' => 'writer', 'type' => 'user' ) ) ) ) : array( 200, array( 'id' => 'p1' ) );
+        };
+        $added = ( new Anchor_Sheet_Google() )->share( array( 'provider' => 'google', 'id' => 'F1' ), array( 'a@x.test', 'b@x.test' ), 'writer', false );
+        $this->assertSame( array( 'b@x.test' ), $added );
+        $posts = array_values( array_filter( $this->calls, function ( $c ) { return 'POST' === $c['method']; } ) );
+        $this->assertCount( 1, $posts );
+        $this->assertStringContainsString( '/drive/v3/files/F1/permissions', $posts[0]['url'] );
+        $this->assertStringContainsString( 'sendNotificationEmail=false', $posts[0]['url'] );
+        $this->assertStringContainsString( 'supportsAllDrives=true', $posts[0]['url'] );
+        $this->assertSame( array( 'type' => 'user', 'role' => 'writer', 'emailAddress' => 'b@x.test' ), $posts[0]['body'] );
+        $get = $this->calls[0];
+        $this->assertStringContainsString( 'supportsAllDrives=true', $get['url'] );
+    }
+
+    public function test_share_emails_are_case_insensitive() {
+        $this->connect( 'google' );
+        $this->responder = function ( $u, $args ) {
+            return 'GET' === $args['method'] ? array( 200, array( 'permissions' => array( array( 'emailAddress' => 'Alice@X.test' ) ) ) ) : array( 200, array() );
+        };
+        $added = ( new Anchor_Sheet_Google() )->share( array( 'id' => 'F1' ), array( 'ALICE@x.test', 'Bob@x.test' ), 'reader', true );
+        $this->assertSame( array( 'bob@x.test' ), $added );
+        $posts = array_values( array_filter( $this->calls, function ( $c ) { return 'POST' === $c['method']; } ) );
+        $this->assertStringContainsString( 'sendNotificationEmail=true', $posts[0]['url'] );
+        $this->assertSame( 'reader', $posts[0]['body']['role'] );
+    }
+
+    public function test_share_follows_list_pagination() {
+        $this->connect( 'google' );
+        $this->responder = function ( $u, $args ) {
+            if ( 'GET' !== $args['method'] ) {
+                return array( 200, array() );
+            }
+            return false === strpos( $u, 'pageToken=T2' )
+                ? array( 200, array( 'permissions' => array( array( 'emailAddress' => 'a@x.test' ) ), 'nextPageToken' => 'T2' ) )
+                : array( 200, array( 'permissions' => array( array( 'emailAddress' => 'b@x.test' ) ) ) );
+        };
+        $added = ( new Anchor_Sheet_Google() )->share( array( 'id' => 'F1' ), array( 'a@x.test', 'b@x.test' ), 'writer', true );
+        $this->assertSame( array(), $added );
+    }
 }

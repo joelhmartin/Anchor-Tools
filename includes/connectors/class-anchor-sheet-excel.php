@@ -89,37 +89,124 @@ if ( ! class_exists( 'Anchor_Sheet_Excel' ) ) {
             return is_wp_error( $res ) ? $res : true;
         }
 
-        public function write_cells( array $ref, array $cells ) {
+        const BATCH_MAX = 20; // Graph JSON batching limit per $batch request.
+
+        /**
+         * Rectangular blocks covering the cells: each row's contiguous column runs,
+         * merged down consecutive rows that share the same column span (a new
+         * column over 300 rows is one block, not 300).
+         *
+         * @return array[] Each ['top' => int, 'first' => int, 'last' => int, 'values' => string[][]].
+         */
+        private static function blocks( array $cells ) {
             $by_row = array();
             foreach ( $cells as $c ) {
                 $by_row[ (int) $c[0] ][ (int) $c[1] ] = (string) $c[2];
             }
             ksort( $by_row );
+            $done = array();
+            $open = array(); // "first:last" => block still growing downwards.
             foreach ( $by_row as $row => $cols ) {
                 ksort( $cols );
-                $run = array();
-                $prev = null;
                 $runs = array();
+                $prev = null;
                 foreach ( $cols as $col => $val ) {
-                    if ( null !== $prev && $col !== $prev + 1 ) {
-                        $runs[] = $run;
-                        $run    = array();
+                    if ( null === $prev || $col !== $prev + 1 ) {
+                        $runs[] = array();
                     }
-                    $run[ $col ] = $val;
-                    $prev        = $col;
+                    $runs[ count( $runs ) - 1 ][ $col ] = $val;
+                    $prev                               = $col;
                 }
-                $runs[] = $run;
-                foreach ( $runs as $r ) {
-                    $first = array_key_first( $r );
-                    $last  = array_key_last( $r );
-                    $addr  = Anchor_Sheet_Adapters::col_letter( $first ) . $row . ':' . Anchor_Sheet_Adapters::col_letter( $last ) . $row;
-                    $res   = $this->patch( $ref, $addr, array( array_values( $r ) ) );
-                    if ( is_wp_error( $res ) ) {
-                        return $res;
+                foreach ( $runs as $run ) {
+                    $first = array_key_first( $run );
+                    $last  = array_key_last( $run );
+                    $key   = $first . ':' . $last;
+                    if ( isset( $open[ $key ] ) && $open[ $key ]['top'] + count( $open[ $key ]['values'] ) === $row ) {
+                        $open[ $key ]['values'][] = array_values( $run );
+                        continue;
                     }
+                    if ( isset( $open[ $key ] ) ) {
+                        $done[] = $open[ $key ];
+                    }
+                    $open[ $key ] = array( 'top' => $row, 'first' => $first, 'last' => $last, 'values' => array( array_values( $run ) ) );
+                }
+            }
+            return array_merge( $done, array_values( $open ) );
+        }
+
+        /**
+         * Writes through Graph JSON batching: per block a text-format PATCH then a
+         * values PATCH, every request chained with dependsOn so the workbook sees
+         * them strictly in order (format before values; no parallel Excel writes).
+         */
+        public function write_cells( array $ref, array $cells ) {
+            $path = substr( $this->ws( $ref ), strlen( self::API ) );
+            $reqs = array();
+            foreach ( self::blocks( $cells ) as $b ) {
+                $addr  = Anchor_Sheet_Adapters::col_letter( $b['first'] ) . $b['top'] . ':'
+                    . Anchor_Sheet_Adapters::col_letter( $b['last'] ) . ( $b['top'] + count( $b['values'] ) - 1 );
+                $url   = $path . "/range(address='" . $addr . "')";
+                $fmt   = array_fill( 0, count( $b['values'] ), array_fill( 0, $b['last'] - $b['first'] + 1, '@' ) );
+                $reqs[] = array( 'url' => $url, 'body' => array( 'numberFormat' => $fmt ) );
+                $reqs[] = array( 'url' => $url, 'body' => array( 'values' => $b['values'] ) );
+            }
+            // BATCH_MAX is even, so a format/values pair never straddles two batches.
+            foreach ( array_chunk( $reqs, self::BATCH_MAX ) as $chunk ) {
+                $res = $this->batch( $chunk );
+                if ( is_wp_error( $res ) ) {
+                    return $res;
                 }
             }
             return true;
+        }
+
+        /** One $batch POST of sequential PATCHes. @return true|WP_Error the first failed sub-request. */
+        private function batch( array $chunk ) {
+            $requests = array();
+            foreach ( $chunk as $i => $r ) {
+                $req = array(
+                    'id'      => (string) ( $i + 1 ),
+                    'method'  => 'PATCH',
+                    'url'     => $r['url'],
+                    'headers' => array( 'Content-Type' => 'application/json' ),
+                    'body'    => $r['body'],
+                );
+                if ( $i > 0 ) {
+                    $req['dependsOn'] = array( (string) $i );
+                }
+                $requests[] = $req;
+            }
+            $res = $this->call( 'POST', self::API . '/$batch', array( 'requests' => $requests ) );
+            if ( is_wp_error( $res ) ) {
+                return $res;
+            }
+            $failed = null;
+            foreach ( (array) ( $res['responses'] ?? array() ) as $sub ) {
+                $status = (int) ( $sub['status'] ?? 0 );
+                if ( $status >= 200 && $status < 300 ) {
+                    continue;
+                }
+                if ( null === $failed || 424 === (int) ( $failed['status'] ?? 0 ) ) {
+                    $failed = $sub; // Prefer the root cause over its "failed dependency" followers.
+                }
+            }
+            return null === $failed ? true : self::sub_error( $failed );
+        }
+
+        private static function sub_error( array $sub ) {
+            $status = (int) ( $sub['status'] ?? 0 );
+            if ( 403 === $status || 404 === $status ) {
+                return new WP_Error( 'anchor_sheet_forbidden', sprintf(
+                    /* translators: %s provider */
+                    __( 'Cannot open that spreadsheet. Check the link, and that the connected %s account can edit it.', 'anchor-schema' ),
+                    ( $c = Anchor_OAuth_Connector::get( 'microsoft' ) ) ? $c->label() : 'Microsoft'
+                ), array( 'status' => $status ) );
+            }
+            $msg = isset( $sub['body']['error']['message'] ) ? sanitize_text_field( (string) $sub['body']['error']['message'] ) : '';
+            if ( '' === $msg ) {
+                $msg = sprintf( /* translators: %d HTTP status */ __( 'Request failed (HTTP %d).', 'anchor-schema' ), $status );
+            }
+            return new WP_Error( 'anchor_oauth_http', $msg, array( 'status' => $status ) );
         }
 
         public function append_rows( array $ref, array $rows ) {

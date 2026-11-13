@@ -54,14 +54,14 @@ if ( ! class_exists( 'Anchor_Sheet_Adapters' ) ) {
         public static function call( $provider, $method, $url, $body = null ) {
             $conn = Anchor_OAuth_Connector::get( $provider );
             if ( ! $conn || ! $conn->is_connected() || $conn->needs_reconnect() ) {
-                return self::not_connected( $conn ? $conn->label() : (string) $provider );
+                return self::not_connected( $conn ? $conn->label() : (string) $provider, $conn && $conn->needs_reconnect() );
             }
             $res = $conn->request( $method, $url, $body );
             if ( ! is_wp_error( $res ) ) {
                 return $res;
             }
             if ( in_array( $res->get_error_code(), array( 'anchor_oauth_reconnect', 'anchor_oauth_not_connected' ), true ) ) {
-                return self::not_connected( $conn->label() );
+                return self::not_connected( $conn->label(), $conn->needs_reconnect() );
             }
             $status = (int) ( is_array( $res->get_error_data() ) ? ( $res->get_error_data()['status'] ?? 0 ) : 0 );
             if ( 403 === $status || 404 === $status ) {
@@ -74,12 +74,14 @@ if ( ! class_exists( 'Anchor_Sheet_Adapters' ) ) {
             return $res;
         }
 
-        private static function not_connected( $label ) {
-            return new WP_Error( 'anchor_sheet_not_connected', sprintf(
+        /** Same code either way (callers branch on it); the wording says which fix is needed. */
+        private static function not_connected( $label, $reconnect = false ) {
+            $msg = $reconnect
                 /* translators: %s provider */
-                __( '%s is not connected. Connect it in Settings > Anchor Tools > Connectors.', 'anchor-schema' ),
-                $label
-            ) );
+                ? __( '%s needs to be reconnected. Reconnect it in Settings > Anchor Tools > Connectors.', 'anchor-schema' )
+                /* translators: %s provider */
+                : __( '%s is not connected. Connect it in Settings > Anchor Tools > Connectors.', 'anchor-schema' );
+            return new WP_Error( 'anchor_sheet_not_connected', sprintf( $msg, $label ) );
         }
 
         /** Every cell to a string; null -> ''. */

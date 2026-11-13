@@ -156,19 +156,94 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         $this->assertStringContainsString( '/drives/DRV1/items/ITEM1/workbook/worksheets', $this->calls[1]['url'] );
     }
 
-    public function test_excel_write_cells_patches_text_number_format() {
+    /** The sub-requests of every $batch POST, in order. */
+    private function batch_requests() {
+        $out = array();
+        foreach ( $this->calls as $c ) {
+            if ( 'POST' === $c['method'] && false !== strpos( $c['url'], '/$batch' ) ) {
+                $out = array_merge( $out, $c['body']['requests'] );
+            }
+        }
+        return $out;
+    }
+
+    public function test_excel_write_cells_formats_then_writes_each_block_in_one_batch() {
         $this->connect( 'microsoft' );
         $a   = new Anchor_Sheet_Excel();
         $ref = array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'Sheet1' );
         $this->assertTrue( $a->write_cells( $ref, array( array( 2, 0, '=1+1' ), array( 2, 1, 'b' ), array( 2, 3, 'd' ), array( 5, 2, 'x' ) ) ) );
-        $this->assertCount( 6, $this->calls ); // A2:B2, D2:D2, C5:C5, each format then values
-        $this->assertSame( 'PATCH', $this->calls[0]['method'] );
-        $this->assertStringContainsString( "/worksheets/Sheet1/range(address='A2:B2')", $this->calls[0]['url'] );
-        $this->assertSame( array( 'numberFormat' => array( array( '@', '@' ) ) ), $this->calls[0]['body'] );
-        $this->assertSame( $this->calls[0]['url'], $this->calls[1]['url'] );
-        $this->assertSame( array( 'values' => array( array( '=1+1', 'b' ) ) ), $this->calls[1]['body'] );
-        $this->assertStringContainsString( "range(address='D2:D2')", $this->calls[2]['url'] );
-        $this->assertStringContainsString( "range(address='C5:C5')", $this->calls[4]['url'] );
+        $this->assertCount( 1, $this->calls, 'one $batch POST' );
+        $this->assertSame( 'https://graph.microsoft.com/v1.0/$batch', $this->calls[0]['url'] );
+        $req = $this->batch_requests();
+        $this->assertCount( 6, $req ); // A2:B2, D2:D2, C5:C5, each format then values
+        $this->assertSame( 'PATCH', $req[0]['method'] );
+        $this->assertSame( "/drives/D/items/I/workbook/worksheets/Sheet1/range(address='A2:B2')", $req[0]['url'] );
+        $this->assertSame( array( 'numberFormat' => array( array( '@', '@' ) ) ), $req[0]['body'] );
+        $this->assertSame( $req[0]['url'], $req[1]['url'] );
+        $this->assertSame( array( 'values' => array( array( '=1+1', 'b' ) ) ), $req[1]['body'] );
+        $this->assertSame( array( $req[0]['id'] ), $req[1]['dependsOn'], 'values only after its format' );
+        $this->assertArrayNotHasKey( 'dependsOn', $req[0] );
+        $this->assertSame( array( $req[1]['id'] ), $req[2]['dependsOn'], 'blocks run in sequence' );
+        $urls = array_column( $req, 'url' );
+        $this->assertContains( "/drives/D/items/I/workbook/worksheets/Sheet1/range(address='D2:D2')", $urls );
+        $this->assertContains( "/drives/D/items/I/workbook/worksheets/Sheet1/range(address='C5:C5')", $urls );
+    }
+
+    public function test_excel_new_column_over_50_rows_is_one_block_one_call() {
+        $this->connect( 'microsoft' );
+        $cells = array( array( 1, 7, 'New question' ) );
+        for ( $r = 2; $r <= 51; $r++ ) {
+            $cells[] = array( $r, 7, 'answer ' . $r );
+        }
+        $ref = array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'S' );
+        $this->assertTrue( ( new Anchor_Sheet_Excel() )->write_cells( $ref, $cells ) );
+        $this->assertCount( 1, $this->calls );
+        $req = $this->batch_requests();
+        $this->assertCount( 2, $req );
+        $this->assertStringContainsString( "range(address='H1:H51')", $req[0]['url'] );
+        $this->assertCount( 51, $req[1]['body']['values'] );
+        $this->assertSame( array( 'answer 51' ), $req[1]['body']['values'][50] );
+        $this->assertSame( array( '@' ), $req[0]['body']['numberFormat'][50] );
+    }
+
+    public function test_excel_scattered_cells_batch_at_most_20_requests_per_call() {
+        $this->connect( 'microsoft' );
+        $cells = array();
+        for ( $i = 0; $i < 25; $i++ ) {
+            $cells[] = array( 2 + $i * 2, $i % 3 * 2, 'v' . $i ); // No two cells touch.
+        }
+        $ref = array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'S' );
+        $this->assertTrue( ( new Anchor_Sheet_Excel() )->write_cells( $ref, $cells ) );
+        $this->assertCount( 3, $this->calls, '50 sub-requests = 20 + 20 + 10' );
+        foreach ( $this->calls as $c ) {
+            $this->assertLessThanOrEqual( 20, count( $c['body']['requests'] ) );
+            $first = $c['body']['requests'][0];
+            $this->assertArrayHasKey( 'numberFormat', $first['body'], 'a batch never starts with a values write' );
+        }
+        $this->assertCount( 50, $this->batch_requests() );
+    }
+
+    public function test_excel_batch_sub_request_failure_is_an_error() {
+        $this->connect( 'microsoft' );
+        $this->responder = function () {
+            return array( 200, array( 'responses' => array(
+                array( 'id' => '1', 'status' => 403, 'body' => array( 'error' => array( 'message' => 'Access denied' ) ) ),
+                array( 'id' => '2', 'status' => 424, 'body' => array() ),
+            ) ) );
+        };
+        $ref = array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'S' );
+        $r   = ( new Anchor_Sheet_Excel() )->write_cells( $ref, array( array( 2, 0, 'x' ) ) );
+        $this->assertWPError( $r );
+        $this->assertSame( 'anchor_sheet_forbidden', $r->get_error_code() );
+        $this->responder = function () {
+            return array( 200, array( 'responses' => array(
+                array( 'id' => '1', 'status' => 200, 'body' => array() ),
+                array( 'id' => '2', 'status' => 500, 'body' => array( 'error' => array( 'message' => 'Busy' ) ) ),
+            ) ) );
+        };
+        $r = ( new Anchor_Sheet_Excel() )->write_cells( $ref, array( array( 2, 0, 'x' ) ) );
+        $this->assertWPError( $r );
+        $this->assertStringContainsString( 'Busy', $r->get_error_message() );
     }
 
     public function test_excel_append_writes_after_used_range() {
@@ -217,6 +292,8 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         update_option( 'anchor_connector_microsoft', $o, false );
         $r = ( new Anchor_Sheet_Excel() )->write_cells( array( 'worksheet' => 'S' ), array( array( 1, 0, 'x' ) ) );
         $this->assertSame( 'anchor_sheet_not_connected', $r->get_error_code() );
+        $this->assertStringContainsString( 'needs to be reconnected', $r->get_error_message() );
+        $this->assertStringNotContainsString( 'is not connected', $r->get_error_message() );
         $this->assertCount( 0, $this->calls );
     }
 

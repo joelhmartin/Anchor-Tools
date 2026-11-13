@@ -178,34 +178,37 @@ class Test_Roster extends Anchor_Events_TestCase {
 	 * REG-D39 — the manual add asks the capacity authority
 	 * --------------------------------------------------------------- */
 
-	public function test_manual_add_to_a_closed_registration_window_is_refused() {
+	public function test_manual_add_to_a_closed_registration_window_goes_through() {
 		$event_id = $this->make_event(
 			[ 'registration_close' => gmdate( 'Y-m-d', strtotime( '-2 days' ) ) ]
 		);
 
 		$location = $this->post_add( $event_id );
 
-		$this->assertSame( 'closed', $this->code_of( $location ) );
-		$this->assertSame( 0, $this->count_seats( $event_id ), 'A closed event took a manual seat.' );
+		$this->assertSame( '', $this->code_of( $location ), 'A manual add is never refused for a closed window.' );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+		$this->assertContains( 'capacity_overfill', $this->error_codes(), 'The bypass is still recorded.' );
+		$this->assertSame( 'closed', $this->module()->registrations->capacity_decision( $event_id, $this->module()->get_meta( $event_id ), 1 ), 'Public sign-up stays closed.' );
 	}
 
-	public function test_manual_add_to_a_hand_flagged_sold_out_event_is_refused_as_full() {
+	public function test_manual_add_to_a_hand_flagged_sold_out_event_goes_through() {
 		$event_id = $this->make_event( [ 'sold_out' => 1 ] );
 
 		$location = $this->post_add( $event_id );
 
-		$this->assertSame( 'full', $this->code_of( $location ) );
-		$this->assertSame( 0, $this->count_seats( $event_id ) );
+		$this->assertSame( '', $this->code_of( $location ) );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
 	}
 
-	public function test_manual_add_past_capacity_without_a_waitlist_is_refused_as_full() {
+	public function test_manual_add_past_capacity_goes_through() {
 		$event_id = $this->make_event( [ 'capacity' => 1 ] );
 		$this->make_seat( $event_id );
 
 		$location = $this->post_add( $event_id );
 
-		$this->assertSame( 'full', $this->code_of( $location ) );
-		$this->assertSame( 1, $this->count_seats( $event_id ) );
+		$this->assertSame( '', $this->code_of( $location ) );
+		$this->assertSame( 2, $this->count_seats( $event_id ) );
+		$this->assertContains( 'capacity_overfill', $this->error_codes() );
 	}
 
 	public function test_the_override_checkbox_forces_a_closed_add_and_records_the_overfill() {
@@ -229,13 +232,13 @@ class Test_Roster extends Anchor_Events_TestCase {
 	 * hand-cancelled event with room left decided 'open' and a manual add
 	 * went straight through with nobody ticking "Allow over capacity".
 	 */
-	public function test_manual_add_to_a_cancelled_event_is_refused_as_closed() {
+	public function test_manual_add_to_a_cancelled_event_goes_through() {
 		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'cancelled' ] );
 
 		$location = $this->post_add( $event_id );
 
-		$this->assertSame( 'closed', $this->code_of( $location ) );
-		$this->assertSame( 0, $this->count_seats( $event_id ), 'A cancelled event took a manual seat.' );
+		$this->assertSame( '', $this->code_of( $location ) );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
 	}
 
 	/** The override checkbox still forces the add through, logged distinctly from a plain capacity overfill. */
@@ -264,13 +267,13 @@ class Test_Roster extends Anchor_Events_TestCase {
 	 * only `=== 'cancelled'` and let a postponed event's manual add through
 	 * unopposed.
 	 */
-	public function test_manual_add_to_a_postponed_event_is_refused_as_closed() {
+	public function test_manual_add_to_a_postponed_event_goes_through() {
 		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'postponed' ] );
 
 		$location = $this->post_add( $event_id );
 
-		$this->assertSame( 'closed', $this->code_of( $location ) );
-		$this->assertSame( 0, $this->count_seats( $event_id ), 'A postponed event took a manual seat.' );
+		$this->assertSame( '', $this->code_of( $location ) );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
 	}
 
 	/** The override checkbox still forces the add through, logged distinctly from a plain capacity overfill. */
@@ -293,7 +296,7 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertSame( 'status_postponed', $overfill['context']['from'] ?? null );
 	}
 
-	public function test_a_full_event_with_a_waitlist_still_waitlists_a_manual_add() {
+	public function test_a_manual_add_to_a_full_event_with_a_waitlist_is_confirmed_not_waitlisted() {
 		$event_id = $this->make_event(
 			[
 				'capacity' => 1,
@@ -305,8 +308,16 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$location = $this->post_add( $event_id );
 
 		$this->assertSame( '', $this->code_of( $location ) );
-		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_WAITLIST ) );
-		$this->assertStringContainsString( 'waitlist', strtolower( $this->message_of( $location ) ) );
+		$this->assertSame( 2, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+		$this->assertSame( 0, $this->count_seats( $event_id, Registrations::STATUS_WAITLIST ) );
+	}
+
+	/** The add forms no longer offer the checkbox; the seat edit form still does. */
+	public function test_the_add_forms_have_no_override_checkbox() {
+		$event_id = $this->make_event();
+		$html     = $this->module()->roster->frontend_add_form_public( $event_id, home_url( '/console/' ) );
+		$this->assertStringNotContainsString( 'roster_allow_over', $html );
+		$this->assertStringContainsString( 'always go through', $html );
 	}
 
 	/* -----------------------------------------------------------------

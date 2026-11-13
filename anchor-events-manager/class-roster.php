@@ -450,7 +450,7 @@ class Roster {
     private function render_add_form( $event_id ) {
         $event_id = (int) $event_id;
         echo '<h2>' . \esc_html__( 'Add attendee', 'anchor-schema' ) . '</h2>';
-        echo '<p class="description">' . \esc_html__( 'Manually added seats go through the same capacity decision as a public sign-up: a closed registration window, a sold-out flag or a full event blocks the add (or waitlists it, when the waitlist is on). Use “Allow over capacity” to override all of that deliberately — it is recorded in the seat history and the error log.', 'anchor-schema' ) . '</p>';
+        echo '<p class="description">' . \esc_html__( 'Manually added seats always go through, even when registration is closed, the event is sold out or full, or it is cancelled or postponed. Public sign-up stays closed. An add the public form would have refused is recorded in the seat history and the error log.', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:24px;">';
         echo '<input type="hidden" name="action" value="anchor_roster_add" />';
         echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
@@ -462,7 +462,6 @@ class Roster {
         $this->text_row( 'roster_guests', \__( 'Additional guests', 'anchor-schema' ), '0', false, 'number' );
         $this->tier_row( $event_id );
         $this->question_rows( $event_id );
-        $this->override_row();
         echo '</tbody></table>';
         \submit_button( \__( 'Add attendee', 'anchor-schema' ) );
         echo '</form>';
@@ -559,8 +558,9 @@ class Roster {
             echo '</td></tr>';
         }
         // REG-D38 — a revive to confirmed now consults capacity, so the edit form
-        // needs the same explicit "I know, do it anyway" the add form has. It is
-        // never the default: an unticked box refuses rather than overbooking.
+        // needs an explicit "I know, do it anyway". It is never the default: an
+        // unticked box refuses rather than overbooking. (Adds no longer need it:
+        // handle_add() always goes through.)
         $this->override_row();
         echo '</tbody></table>';
         \submit_button( \__( 'Save seat', 'anchor-schema' ) );
@@ -831,10 +831,16 @@ class Roster {
             $tier_id = 'primary';
         }
 
-        // Over-capacity override (spec §10). Bypasses the registration window,
-        // the sold-out flag, the event capacity and the per-tier quota; recorded
-        // in the seat history note and in the error log.
-        $allow_over = ! empty( $_POST['roster_allow_over'] );
+        // A manual add ALWAYS goes through (TMJ, 2026-11-12): staff adding a
+        // person by hand have already decided to seat them, so a closed
+        // registration window, a sold-out flag, a full event, a tier quota or
+        // a cancelled/postponed status no longer refuses it. Public sign-up is
+        // untouched — it still runs the full capacity decision. Every add that
+        // the decision would have refused is still recorded: the seat history
+        // note says "capacity override" and Events_Log gets capacity_overfill
+        // (below). The seat EDIT form keeps its opt-in "Allow over capacity"
+        // box (handle_edit()), since a revive there is not a deliberate add.
+        $allow_over = true;
 
         // Whether this manual add emails the attendee. The wp-admin form has no
         // such control and posts nothing, so it keeps the historical behaviour
@@ -868,32 +874,16 @@ class Roster {
             ), 'invalid' );
         }
 
-        /* --- May a seat be sold at all? (codes: closed | full) --- */
-        $meta     = $this->module->get_meta( $event_id );
-        $decision = $this->registrations->capacity_decision( $event_id, $meta, 1 + $guests, $tier );
-        // finding-6 — capacity_decision() (Registrations) never consults the
-        // event's status; it only reasons about the registration window and
-        // seat counts. A hand-cancelled or postponed event with room left (or
-        // unlimited capacity) decided 'open' and a manual add went straight
-        // through with nobody ticking "Allow over capacity" — the checkbox
-        // that exists to mean exactly "I know, do it anyway". Checked here,
-        // alongside capacity_decision(), rather than folded into that method
-        // (kept — see the "Interfaces to keep" note on this task): the same
-        // status_is_closed( get_event_status() ) read bookability() uses for
-        // the exact same judgement (THEME-D25 / finding-16).
-        $closed_status  = $this->module->get_event_status( $event_id, $meta );
-        $status_closed  = $this->module->status_is_closed( $closed_status );
-        if ( ! $allow_over ) {
-            if ( $status_closed ) {
-                $this->redirect( $event_id, 'error', \__( 'This event is cancelled or postponed — tick “Allow over capacity” to add anyway.', 'anchor-schema' ), 'closed' );
-            }
-            if ( $decision === 'closed' ) {
-                $this->redirect( $event_id, 'error', \__( 'Registration is closed for this event — tick “Allow over capacity” to add anyway.', 'anchor-schema' ), 'closed' );
-            }
-            if ( $decision === 'full' ) {
-                $this->redirect( $event_id, 'error', \__( 'This event is full and its waitlist is off — tick “Allow over capacity” to add anyway.', 'anchor-schema' ), 'full' );
-            }
-        }
+        /* --- What would a public sign-up have been told? --- */
+        // Not a gate any more (a manual add always goes through, see
+        // $allow_over above): read only so an add the public form would have
+        // refused is logged as capacity_overfill below. The event status is
+        // read alongside capacity_decision(), which never consults it
+        // (finding-6), the same way bookability() does (THEME-D25).
+        $meta          = $this->module->get_meta( $event_id );
+        $decision      = $this->registrations->capacity_decision( $event_id, $meta, 1 + $guests, $tier );
+        $closed_status = $this->module->get_event_status( $event_id, $meta );
+        $status_closed = $this->module->status_is_closed( $closed_status );
 
         $result = $this->registrations->claim_seats( $event_id, $meta, 1, [
             'source'         => 'manual',
@@ -2482,7 +2472,6 @@ class Roster {
 
                 <input type="hidden" name="roster_notify_control" value="1" />
                 <p class="anchor-roster-fe-check"><label><input type="checkbox" name="roster_notify" value="1" checked /> <?php \esc_html_e( 'Send the confirmation email', 'anchor-schema' ); ?></label></p>
-                <p class="anchor-roster-fe-check"><?php echo $this->override_check(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?></p>
 
                 <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Add attendee', 'anchor-schema' ); ?></button>
             </form>
@@ -2541,7 +2530,7 @@ class Roster {
         $confirmation = ! empty( $settings['notify_user'] ) && $this->module->is_email_enabled( (int) $event_id, 'confirmation' );
         $reminders    = ! empty( $settings['reminder_enabled'] ) && $this->module->is_email_enabled( (int) $event_id, 'reminder' );
 
-        $text = \__( 'Seats added here are real registrations: they count against capacity and appear in the export.', 'anchor-schema' );
+        $text = \__( 'Seats added here are real registrations: they count against capacity and appear in the export. They always go through, even when registration is closed or the event is full.', 'anchor-schema' );
 
         if ( $confirmation ) {
             $text .= ' ' . \__( 'This event sends a confirmation email — untick “Send the confirmation email” to add somebody silently.', 'anchor-schema' );

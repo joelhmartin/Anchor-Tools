@@ -122,7 +122,7 @@ class Test_Roster_Add_Emails extends Anchor_Events_TestCase {
 	 * A full event puts the add on the waitlist — the attendee still hears
 	 * about it, and must not be told they are confirmed.
 	 */
-	public function test_manual_add_to_a_full_event_emails_the_waitlist_notice() {
+	public function test_manual_add_to_a_full_event_emails_the_confirmation() {
 		$this->set_notifications( true );
 		$event_id = $this->make_event(
 			[
@@ -133,11 +133,11 @@ class Test_Roster_Add_Emails extends Anchor_Events_TestCase {
 		);
 		$this->make_seat( $event_id, [ 'status' => 'confirmed' ] );
 
-		$this->add_attendee( $event_id, [ 'roster_email' => 'waitlisted@example.org' ] );
+		$this->add_attendee( $event_id, [ 'roster_email' => 'added@example.org' ] );
 
-		$mail = $this->mail_to( 'waitlisted@example.org' );
-		$this->assertNotNull( $mail, 'The waitlisted attendee was never emailed.' );
-		$this->assertStringContainsString( 'waitlist', strtolower( $mail['message'] ) );
+		$mail = $this->mail_to( 'added@example.org' );
+		$this->assertNotNull( $mail, 'The hand-added attendee was never emailed.' );
+		$this->assertStringNotContainsString( 'waitlist', strtolower( $mail['message'] ), 'A manual add is confirmed, never waitlisted.' );
 	}
 
 	/** notify_user off means off, on the roster path too. */

@@ -111,8 +111,11 @@ of them. See `EVENTS.md` for both.
 - The CSV export additionally refuses any id that is not a live `event` post (a trashed or deleted
   event exports nothing), and a manual seat action only accepts a seat that belongs to the event
   its nonce was issued for.
-- **Add attendee** directly (comped, no order): pick a tier, optionally tick **Allow over capacity** to
-  exceed the limit (recorded in the seat's history). Edit/cancel/mark-status are tier-aware.
+- **Add attendee** directly (comped, no order): pick a tier. A manual add always goes through and is
+  always confirmed, even when registration is closed, the event is full or sold out, or it is cancelled or
+  postponed; public sign-up is unaffected. An add the public form would have refused is recorded in the
+  seat's history and as `capacity_overfill` in the error log. Edit keeps its opt-in **Allow over
+  capacity** box. Edit/cancel/mark-status are tier-aware.
 
 ## Advanced: link an existing product
 

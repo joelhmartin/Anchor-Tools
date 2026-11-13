@@ -64,7 +64,7 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
                     'access_token'  => 'AT-1',
                     'refresh_token' => 'RT-SECRET-1',
                     'expires_in'    => 3600,
-                    'scope'         => 'openid email',
+                    'scope'         => 'openid email https://www.googleapis.com/auth/spreadsheets',
                 ), $overrides ) );
             }
             if ( false !== strpos( $url, 'userinfo' ) ) {
@@ -287,7 +287,7 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
     public function test_callback_exchanges_code_and_stores_account() {
         $uid = $this->admin();
         $c   = $this->google();
-        $this->token_responder( array( 'scope' => 'openid email https://www.googleapis.com/auth/drive' ) );
+        $this->token_responder( array( 'scope' => 'openid email https://www.googleapis.com/auth/spreadsheets' ) );
         parse_str( wp_parse_url( $c->begin_authorize( $uid ), PHP_URL_QUERY ), $q );
         $verifier = get_transient( 'anchor_oauth_state_' . $q['state'] )['verifier'];
         $req = new WP_REST_Request( 'GET', '/anchor-tools/v1/connectors/callback' );
@@ -303,8 +303,40 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
         $this->assertSame( 'the-code', $post['body']['code'] );
         $this->assertArrayNotHasKey( 'scope', $post['body'] );
         $this->assertSame( 'owner@example.com', $c->account() );
-        $this->assertTrue( $c->has_scope( 'https://www.googleapis.com/auth/drive' ) );
-        $this->assertFalse( $c->has_scope( 'https://www.googleapis.com/auth/spreadsheets' ) );
+        $this->assertTrue( $c->has_scope( 'https://www.googleapis.com/auth/spreadsheets' ) );
+        $this->assertFalse( $c->has_scope( 'https://www.googleapis.com/auth/drive' ) );
+    }
+
+    public function test_callback_without_sheets_scope_is_an_error_and_stays_disconnected() {
+        $uid = $this->admin();
+        $c   = $this->google();
+        $this->token_responder( array( 'scope' => 'openid email' ) );
+        parse_str( wp_parse_url( $c->begin_authorize( $uid ), PHP_URL_QUERY ), $q );
+        $fired = did_action( 'anchor_connector_connected' );
+        $req   = new WP_REST_Request( 'GET', '/anchor-tools/v1/connectors/callback' );
+        $req->set_param( 'state', $q['state'] );
+        $req->set_param( 'code', 'the-code' );
+        $res = Anchor_OAuth_Connector::handle_callback( $req );
+        $this->assertStringContainsString( 'anchor_connect_error_code=missing_scope', $res->get_headers()['Location'] );
+        $this->assertFalse( $c->is_connected() );
+        $this->assertSame( $fired, did_action( 'anchor_connector_connected' ) );
+    }
+
+    public function test_cached_access_token_is_sealed_and_connect_fires_action() {
+        $fired = did_action( 'anchor_connector_connected' );
+        $c     = $this->connect();
+        $this->assertSame( $fired + 1, did_action( 'anchor_connector_connected' ) );
+        $raw = get_transient( 'anchor_oauth_at_google' );
+        $this->assertNotSame( 'AT-1', $raw );
+        $this->assertStringNotContainsString( 'AT-1', (string) $raw );
+        $this->assertSame( 'AT-1', $c->access_token() );
+    }
+
+    public function test_undecryptable_cached_token_falls_back_to_refresh() {
+        $c = $this->connect();
+        set_transient( 'anchor_oauth_at_google', 'garbage', 3600 );
+        $this->token_responder( array( 'access_token' => 'AT-2', 'refresh_token' => null ) );
+        $this->assertSame( 'AT-2', $c->access_token() );
     }
 
     public function test_access_token_is_cached_until_near_expiry() {

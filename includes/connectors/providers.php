@@ -14,6 +14,8 @@ if ( ! function_exists( 'anchor_oauth_providers' ) ) {
                 'auth_url'       => 'https://accounts.google.com/o/oauth2/v2/auth',
                 'token_url'      => 'https://oauth2.googleapis.com/token',
                 'scopes'         => 'openid email https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive',
+                // Google lets the user untick scopes; without this one nothing can sync.
+                'required_scope' => 'https://www.googleapis.com/auth/spreadsheets',
                 'auth_params'    => array( 'access_type' => 'offline', 'prompt' => 'consent' ),
                 'token_scope'    => false, // Google token requests omit scope.
                 'account_url'    => 'https://openidconnect.googleapis.com/v1/userinfo',

@@ -396,6 +396,53 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 		$this->assertSame( array(), $this->fake->creates, 'no spreadsheet for children or external sign-up' );
 	}
 
+	public function test_replacement_sheet_is_shared_even_with_same_recipients() {
+		$this->shareable();
+		self::factory()->user->create( array( 'role' => 'shop_manager', 'user_email' => 'm@example.test' ) );
+		$e = $this->with_sheet( $this->make_event() );
+		$this->sync()->run( $e );
+		update_post_meta( $e, Sheets_Sync::META_REF, array( 'provider' => 'google', 'id' => 'OTHER', 'tab' => 't' ) );
+		$this->sync()->run( $e );
+		$this->assertCount( 2, $this->fake->shares );
+		delete_option( 'anchor_connector_google' );
+	}
+
+	public function test_create_is_refused_for_pasted_url_and_group_children() {
+		$this->autocreate();
+		$e = $this->draft_event();
+		update_post_meta( $e, Sheets_Sync::META_URL, 'https://docs.google.com/spreadsheets/d/PASTED/edit' );
+		$this->assertFalse( $this->sync()->can_create( $e ) );
+		$this->assertSame( array(), $this->sync()->create_now( $e ) );
+		list( $main, $dates ) = $this->group();
+		$this->assertFalse( $this->sync()->can_create( $dates[0] ) );
+		$this->assertSame( array(), $this->sync()->create_now( $dates[0] ) );
+		$this->assertTrue( $this->sync()->can_create( $main ) );
+		$this->assertSame( array(), $this->fake->creates );
+	}
+
+	public function test_pending_with_unresolved_pasted_url_never_creates() {
+		$this->autocreate();
+		$e = $this->draft_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		update_post_meta( $e, Sheets_Sync::META_URL, 'https://docs.google.com/spreadsheets/d/PASTED/edit' );
+		$this->sync()->run( $e );
+		$this->assertSame( array(), $this->fake->creates );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+	}
+
+	public function test_google_connecting_queues_waiting_auto_creates() {
+		$this->autocreate();
+		$e = $this->draft_event();
+		$other = $this->draft_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		_set_cron_array( array() );
+		do_action( 'anchor_connector_connected', 'microsoft' );
+		$this->assertFalse( $this->queued( $e ) );
+		do_action( 'anchor_connector_connected', 'google' );
+		$this->assertNotFalse( $this->queued( $e ) );
+		$this->assertFalse( $this->queued( $other ) );
+	}
+
 	public function test_autocreate_off_does_nothing() {
 		$this->autocreate( false );
 		$e = $this->draft_event();

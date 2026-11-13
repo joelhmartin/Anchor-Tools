@@ -30,7 +30,7 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
 
     private function connect( $provider ) {
         update_option( 'anchor_connector_' . $provider, array( 'refresh_token' => Anchor_Secret_Box::seal( 'refresh-x' ) ), false );
-        set_transient( 'anchor_oauth_at_' . $provider, 'access-x', 3600 );
+        set_transient( 'anchor_oauth_at_' . $provider, Anchor_Secret_Box::seal( 'access-x' ), 3600 );
     }
 
     public function mock_http( $pre, $args, $url ) {
@@ -80,8 +80,14 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         $this->assertStringContainsString( 'fields=sheets.properties', $this->calls[0]['url'] );
         $ref = $a->resolve( 'https://docs.google.com/spreadsheets/d/SHEETID/edit' );
         $this->assertSame( 'Main', $ref['tab'] );
-        $ref = $a->resolve( 'https://docs.google.com/spreadsheets/d/SHEETID/edit?gid=999#gid=999' );
-        $this->assertSame( 'Main', $ref['tab'] );
+    }
+
+    public function test_google_resolve_rejects_gid_of_a_deleted_tab() {
+        $this->connect( 'google' );
+        $this->responder = function () { return array( 200, $this->tabs_json() ); };
+        $ref = ( new Anchor_Sheet_Google() )->resolve( 'https://docs.google.com/spreadsheets/d/SHEETID/edit?gid=999#gid=999' );
+        $this->assertWPError( $ref );
+        $this->assertSame( 'anchor_sheet_no_tab', $ref->get_error_code() );
     }
 
     public function test_google_resolve_rejects_non_sheet_url() {

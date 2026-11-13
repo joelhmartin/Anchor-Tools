@@ -39,6 +39,7 @@ class Sheets_Sync {
 		\add_action( 'updated_post_meta', array( $this, 'on_meta' ), 10, 2 );
 		\add_action( self::HOOK, array( $this, 'run' ), 10, 1 );
 		\add_action( 'transition_post_status', array( $this, 'on_transition' ), 10, 3 );
+		\add_action( 'anchor_connector_connected', array( $this, 'on_connected' ), 10, 1 );
 	}
 
 	/** @param int $seat_id */
@@ -280,6 +281,11 @@ class Sheets_Sync {
 			\update_post_meta( $target, self::META_AUTOCREATE, 'done' ); // Already has a sheet: never create another.
 			return true;
 		}
+		if ( \get_post_meta( $target, self::META_URL, true ) !== '' ) {
+			// A pasted URL waiting for its connection already claims this event: creating would orphan a sheet.
+			\update_post_meta( $target, self::META_AUTOCREATE, 'done' );
+			return true;
+		}
 		$creator = \Anchor_Sheet_Adapters::for_ref( array( 'provider' => 'google' ) );
 		if ( ! $creator || ! \method_exists( $creator, 'create' ) ) {
 			return new \WP_Error( 'no_adapter', \__( 'Unsupported spreadsheet provider.', 'anchor-schema' ) );
@@ -316,11 +322,48 @@ class Sheets_Sync {
 	 * @return array Saved state.
 	 */
 	public function create_now( int $event_id ): array {
-		if ( $event_id <= 0 || $this->module->uses_external_signup( $event_id ) || $this->has_ref( $event_id ) && ! $this->is_pending( $event_id ) ) {
+		if ( ! $this->can_create( $event_id ) ) {
 			return array();
 		}
 		\update_post_meta( $event_id, self::META_AUTOCREATE, 'pending' );
 		return $this->run( $event_id );
+	}
+
+	/**
+	 * Whether the Create spreadsheet button may make a sheet for this event:
+	 * not for external sign-ups, not when a sheet or pasted URL already exists,
+	 * and not for a dated child of a group (it rides the group's sheet).
+	 */
+	public function can_create( int $event_id ): bool {
+		if ( $event_id <= 0 || $this->module->uses_external_signup( $event_id ) ) {
+			return false;
+		}
+		if ( $this->module->occurrences && $this->module->occurrences->is_group_child( $event_id ) ) {
+			return false;
+		}
+		if ( $this->is_pending( $event_id ) ) {
+			return true;
+		}
+		return null === $this->ref( $event_id ) && \get_post_meta( $event_id, self::META_URL, true ) === '';
+	}
+
+	/** Google just connected: queue every event whose auto-create was waiting for it. */
+	public function on_connected( $provider ): void {
+		if ( 'google' !== $provider ) {
+			return;
+		}
+		$ids = \get_posts( array(
+			'post_type'      => 'any',
+			'post_status'    => 'any',
+			'fields'         => 'ids',
+			'posts_per_page' => 200,
+			'meta_key'       => self::META_AUTOCREATE, // phpcs:ignore WordPress.DB.SlowDBQuery -- one-off on connect.
+			'meta_value'     => 'pending', // phpcs:ignore WordPress.DB.SlowDBQuery
+			'no_found_rows'  => true,
+		) );
+		foreach ( $ids as $id ) {
+			$this->schedule( (int) $id );
+		}
 	}
 
 	/** @return int|\WP_Error Roster row count on success. */
@@ -392,7 +435,8 @@ class Sheets_Sync {
 		}
 		$emails = \array_values( \array_unique( \array_map( 'strtolower', $emails ) ) );
 		\sort( $emails );
-		$hash = \sha1( \implode( ',', $emails ) . '|' . $cfg['role'] );
+		// Includes the sheet id, so a replacement sheet is shared even with the same recipients.
+		$hash = \sha1( (string) ( $ref['id'] ?? '' ) . '|' . \implode( ',', $emails ) . '|' . $cfg['role'] );
 		if ( ! $emails || \get_post_meta( $target, self::META_SHARED, true ) === $hash ) {
 			return '';
 		}

@@ -181,7 +181,7 @@ if ( ! class_exists( 'Anchor_Sheet_Google' ) ) {
             if ( ! $tabs ) {
                 return new WP_Error( 'anchor_sheet_no_tab', __( 'That spreadsheet has no tabs.', 'anchor-schema' ) );
             }
-            $pick = $tabs[0];
+            $pick = null === $gid ? $tabs[0] : null;
             if ( null !== $gid ) {
                 foreach ( $tabs as $t ) {
                     if ( isset( $t['sheetId'] ) && (int) $t['sheetId'] === $gid ) {
@@ -189,6 +189,10 @@ if ( ! class_exists( 'Anchor_Sheet_Google' ) ) {
                         break;
                     }
                 }
+            }
+            if ( null === $pick ) {
+                // The link names a tab that no longer exists: never fall back to another tab's data.
+                return new WP_Error( 'anchor_sheet_no_tab', __( "That link points to a tab that doesn't exist anymore. Open the tab you want and copy its link again.", 'anchor-schema' ) );
             }
             return array( 'provider' => 'google', 'id' => $m[1], 'tab' => (string) $pick['title'] );
         }

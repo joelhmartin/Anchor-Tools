@@ -44,6 +44,14 @@ class Test_Sheets_Reconciler extends PHPUnit\Framework\TestCase {
 		$this->assertSame( array( array( 2, 2, 'vegan' ) ), $r['cells'] );
 	}
 
+	public function test_new_column_skips_data_under_a_blank_header() {
+		$existing = array( array( 'Seat ID', 'Name' ), array( '2', 'B', 'private note' ) );
+		$r        = R::reconcile( $existing, $this->t( array( 'Seat ID', 'Name', 'Status' ), array( array( 2, 'B', 'confirmed' ) ) ), 'Seat ID' );
+		$this->assertSame( array( 'Status' ), $r['header_append'] );
+		$this->assertSame( 3, $r['header_start_col'] );
+		$this->assertSame( array( array( 2, 3, 'confirmed' ) ), $r['cells'] );
+	}
+
 	public function test_hand_added_middle_column_is_never_written() {
 		$existing = array( array( 'Seat ID', 'Notes', 'Name', 'Status' ), array( '2', 'vip', 'B', 'confirmed' ) );
 		$r        = R::reconcile( $existing, $this->t( array( 'Seat ID', 'Name', 'Status' ), array( array( 3, 'C', 'confirmed' ), array( 2, 'B', 'cancelled' ) ) ), 'Seat ID' );

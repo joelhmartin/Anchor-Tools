@@ -62,7 +62,16 @@ class Sheets_Reconciler {
 		if ( isset( $existing[0] ) && is_array( $existing[0] ) ) {
 			$sheet_header = array_map( 'strval', array_values( $existing[0] ) );
 		}
-		$start_col = count( $sheet_header );
+		// Hand-typed data can sit under a blank header cell to the right of the
+		// header: new columns start after the widest row so they never overwrite it.
+		$width = count( $sheet_header );
+		foreach ( $existing as $row ) {
+			if ( is_array( $row ) ) {
+				$width = max( $width, count( $row ) );
+			}
+		}
+		$sheet_header = array_pad( $sheet_header, $width, '' );
+		$start_col    = $width;
 
 		$final         = $sheet_header;
 		$header_append = array();

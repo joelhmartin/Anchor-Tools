@@ -205,6 +205,10 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             if ( empty( $tok['refresh_token'] ) ) {
                 return self::redirect( $conn->provider, 'anchor_connect_error', 'no_refresh_token' );
             }
+            $required = (string) ( $conn->def['required_scope'] ?? '' );
+            if ( '' !== $required && ! in_array( $required, preg_split( '/[\s,]+/', (string) ( $tok['scope'] ?? '' ), -1, PREG_SPLIT_NO_EMPTY ), true ) ) {
+                return self::redirect( $conn->provider, 'anchor_connect_error', 'missing_scope' );
+            }
             $o                    = $conn->opt();
             $o['refresh_token']   = Anchor_Secret_Box::seal( $tok['refresh_token'] );
             $o['scope']           = (string) ( $tok['scope'] ?? '' );
@@ -213,6 +217,8 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             unset( $o['needs_reconnect'] );
             $conn->save_opt( $o );
             $conn->cache_access_token( $tok );
+            /** Fires after a provider connects; lets features resume work that was waiting for it. */
+            do_action( 'anchor_connector_connected', $conn->provider );
             return self::redirect( $conn->provider, 'anchor_connected' );
         }
 
@@ -250,7 +256,8 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
 
         private function cache_access_token( array $tok ) {
             $ttl = max( 60, (int) ( $tok['expires_in'] ?? 3600 ) - 120 );
-            set_transient( $this->at_key(), $tok['access_token'], $ttl );
+            // Sealed: without an object cache the transient lives in wp_options.
+            set_transient( $this->at_key(), Anchor_Secret_Box::seal( $tok['access_token'] ), $ttl );
         }
 
         private function fetch_account( $access_token ) {
@@ -284,6 +291,7 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
                 return new WP_Error( 'anchor_oauth_reconnect', sprintf( /* translators: %s provider */ __( 'The %s connection needs to be reconnected.', 'anchor-schema' ), $this->label() ) );
             }
             $cached = get_transient( $this->at_key() );
+            $cached = is_string( $cached ) && '' !== $cached ? Anchor_Secret_Box::open( $cached ) : false;
             if ( is_string( $cached ) && '' !== $cached ) {
                 return $cached;
             }

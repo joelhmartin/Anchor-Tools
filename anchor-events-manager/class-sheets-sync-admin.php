@@ -261,7 +261,11 @@ class Sheets_Sync_Admin {
 		if ( $has_ref || $pending ) {
 			$this->render_state( $event_id, $has_ref );
 		}
-		if ( ! $has_ref ) {
+		$target = $this->sync->target_for_event( $event_id );
+		if ( ! $has_ref && $target > 0 && $target !== $event_id ) {
+			echo '<p>' . \esc_html__( "This date's registrations go to the series spreadsheet on the main event.", 'anchor-schema' ) . '</p>';
+		}
+		if ( $this->sync->can_create( $event_id ) ) {
 			$link = \wp_nonce_url(
 				\admin_url( 'admin-post.php?action=' . self::CREATE_ACTION . '&event_id=' . $event_id ),
 				self::CREATE_ACTION . '_' . $event_id

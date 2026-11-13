@@ -61,7 +61,7 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
                 isset( $_POST['client_id'] ) ? sanitize_text_field( wp_unslash( $_POST['client_id'] ) ) : '',
                 isset( $_POST['client_secret'] ) ? trim( wp_unslash( $_POST['client_secret'] ) ) : '' // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             );
-            wp_safe_redirect( $this->tab_url( array( 'anchor_saved' => $_POST['provider'] ) ) );
+            wp_safe_redirect( $this->tab_url( array( 'anchor_saved' => sanitize_key( $_POST['provider'] ) ) ) );
             exit;
         }
 

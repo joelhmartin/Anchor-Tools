@@ -31,6 +31,49 @@ if ( ! class_exists( 'Anchor_Sheet_Google' ) ) {
             );
         }
 
+        /** Auto-create settings from the Google connector option. */
+        public static function autocreate_settings() {
+            $o = (array) get_option( 'anchor_connector_google', array() );
+            return array(
+                'enabled'   => ! empty( $o['autocreate'] ),
+                'folder_id' => preg_replace( '/[^A-Za-z0-9_-]/', '', (string) ( $o['autocreate_folder_id'] ?? '' ) ),
+            );
+        }
+
+        /** Drive folder id from a drive.google.com/drive/.../folders/<id> URL ('' when not a folder link). */
+        public static function parse_folder_id( $url ) {
+            $parts = wp_parse_url( trim( (string) $url ) );
+            if ( 'drive.google.com' === strtolower( (string) ( $parts['host'] ?? '' ) )
+                && preg_match( '#/folders/([A-Za-z0-9_-]+)#', (string) ( $parts['path'] ?? '' ), $m ) ) {
+                return $m[1];
+            }
+            return '';
+        }
+
+        /**
+         * Creates a spreadsheet, optionally moving it into a Drive folder.
+         * A failed move leaves the sheet in My Drive and is not an error (the sheet exists; retrying would duplicate it).
+         *
+         * @return array|WP_Error {url, ref}
+         */
+        public function create( $title, $folder_id = '' ) {
+            $res = $this->call( 'POST', rtrim( self::API, '/' ), array( 'properties' => array( 'title' => (string) $title ) ) );
+            if ( is_wp_error( $res ) ) {
+                return $res;
+            }
+            $id = (string) ( $res['spreadsheetId'] ?? '' );
+            if ( '' === $id ) {
+                return new WP_Error( 'anchor_sheet_create_failed', __( 'Google did not return a spreadsheet.', 'anchor-schema' ) );
+            }
+            if ( '' !== $folder_id ) {
+                $this->call( 'PATCH', self::DRIVE . rawurlencode( $id ) . '?addParents=' . rawurlencode( $folder_id ) . '&removeParents=root&supportsAllDrives=true' );
+            }
+            return array(
+                'url' => (string) ( $res['spreadsheetUrl'] ?? 'https://docs.google.com/spreadsheets/d/' . $id . '/edit' ),
+                'ref' => array( 'provider' => 'google', 'id' => $id, 'tab' => (string) ( $res['sheets'][0]['properties']['title'] ?? 'Sheet1' ) ),
+            );
+        }
+
         /**
          * Adds Drive permissions for any of $emails the file does not already have. Never removes access.
          *

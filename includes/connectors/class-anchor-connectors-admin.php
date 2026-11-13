@@ -109,6 +109,8 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
             $o['share_emails']   = array_values( $emails );
             $o['share_role']     = 'reader' === ( $_POST['share_role'] ?? '' ) ? 'reader' : 'writer';
             $o['share_notify']   = ! empty( $_POST['share_notify'] );
+            $o['autocreate']            = ! empty( $_POST['autocreate'] );
+            $o['autocreate_folder_id']  = Anchor_Sheet_Google::parse_folder_id( wp_unslash( $_POST['autocreate_folder'] ?? '' ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             update_option( 'anchor_connector_google', $o, false );
             wp_safe_redirect( $this->tab_url( array( 'anchor_share_saved' => 'google', 'anchor_share_dropped' => $dropped ) ) );
             exit;
@@ -135,8 +137,14 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
                 . '<option value="reader"' . selected( $s['role'], 'reader', false ) . '>' . esc_html__( 'Viewer', 'anchor-schema' ) . '</option></select></td></tr>';
             $inner .= '<tr><th>' . esc_html__( 'Notify people by email', 'anchor-schema' ) . '</th><td><label><input type="checkbox" name="share_notify" value="1"' . checked( $s['notify'], true, false ) . ' /> '
                 . esc_html__( 'Send Google\'s own share notification', 'anchor-schema' ) . '</label></td></tr>';
+            $a      = Anchor_Sheet_Google::autocreate_settings();
+            $folder = '' !== $a['folder_id'] ? 'https://drive.google.com/drive/folders/' . $a['folder_id'] : '';
+            $inner .= '<tr><th>' . esc_html__( 'Auto-create spreadsheets', 'anchor-schema' ) . '</th><td><label><input type="checkbox" name="autocreate" value="1"' . checked( $a['enabled'], true, false ) . ' /> '
+                . esc_html__( 'Create a spreadsheet for each new event when it is first published', 'anchor-schema' ) . '</label></td></tr>';
+            $inner .= '<tr><th><label for="anchor-autocreate-folder">' . esc_html__( 'Drive folder', 'anchor-schema' ) . '</label></th><td><input type="url" id="anchor-autocreate-folder" name="autocreate_folder" class="large-text" value="' . esc_attr( $folder ) . '" placeholder="https://drive.google.com/drive/folders/..." />'
+                . '<p class="description">' . esc_html__( 'Optional. New spreadsheets are moved here; blank keeps them in My Drive.', 'anchor-schema' ) . '</p></td></tr>';
             $inner .= '</tbody></table><p class="description">' . esc_html__( 'Access is only ever added; remove people in Google.', 'anchor-schema' ) . '</p>'
-                . '<p><button type="submit" class="button">' . esc_html__( 'Save auto-share', 'anchor-schema' ) . '</button></p>';
+                . '<p><button type="submit" class="button">' . esc_html__( 'Save auto-share and auto-create', 'anchor-schema' ) . '</button></p>';
             $this->post_form( 'share_save', $provider, $inner );
         }
 

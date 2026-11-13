@@ -173,4 +173,30 @@ class Test_Connectors_Admin extends WP_UnitTestCase {
         $this->post( 'share_save', 'google', array(), false );
         $this->assertSame( 'wp_die', $this->run_handler( 'handle_share_save' ) );
     }
+
+    public function test_autocreate_settings_save_and_parse_folder_url() {
+        $this->post( 'share_save', 'google', array(
+            'autocreate'        => '1',
+            'autocreate_folder' => 'https://drive.google.com/drive/folders/Fold_er-1?usp=sharing',
+        ) );
+        $this->assertStringContainsString( 'anchor_share_saved=google', $this->run_handler( 'handle_share_save' ) );
+        $o = get_option( 'anchor_connector_google' );
+        $this->assertTrue( $o['autocreate'] );
+        $this->assertSame( 'Fold_er-1', $o['autocreate_folder_id'] );
+        $html = $this->render_share();
+        $this->assertStringContainsString( 'name="autocreate"', $html );
+        $this->assertStringContainsString( 'value="https://drive.google.com/drive/folders/Fold_er-1"', $html );
+
+        $this->post( 'share_save', 'google', array( 'autocreate_folder' => 'not a folder link' ) );
+        $this->run_handler( 'handle_share_save' );
+        $o = get_option( 'anchor_connector_google' );
+        $this->assertFalse( $o['autocreate'] );
+        $this->assertSame( '', $o['autocreate_folder_id'] );
+    }
+
+    private function render_share() {
+        ob_start();
+        $this->admin->render_share_settings( 'google', Anchor_OAuth_Connector::get( 'google' ) );
+        return ob_get_clean();
+    }
 }

@@ -281,4 +281,41 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         $added = ( new Anchor_Sheet_Google() )->share( array( 'id' => 'F1' ), array( 'a@x.test', 'b@x.test' ), 'writer', true );
         $this->assertSame( array(), $added );
     }
+
+    public function test_create_posts_title_and_moves_into_folder() {
+        $this->connect( 'google' );
+        $this->responder = function ( $u, $args ) {
+            if ( 'POST' === $args['method'] ) {
+                return array( 200, array( 'spreadsheetId' => 'NEW1', 'spreadsheetUrl' => 'https://docs.google.com/spreadsheets/d/NEW1/edit', 'sheets' => array( array( 'properties' => array( 'title' => 'Sheet1' ) ) ) ) );
+            }
+            return array( 200, array( 'id' => 'NEW1' ) );
+        };
+        $res = ( new Anchor_Sheet_Google() )->create( "Spring Gala \xE2\x80\x94 Registrants", 'FOLD9' );
+        $this->assertSame( 'https://docs.google.com/spreadsheets/d/NEW1/edit', $res['url'] );
+        $this->assertSame( array( 'provider' => 'google', 'id' => 'NEW1', 'tab' => 'Sheet1' ), $res['ref'] );
+        $this->assertCount( 2, $this->calls );
+        $this->assertSame( 'POST', $this->calls[0]['method'] );
+        $this->assertSame( 'https://sheets.googleapis.com/v4/spreadsheets', $this->calls[0]['url'] );
+        $this->assertSame( array( 'properties' => array( 'title' => "Spring Gala \xE2\x80\x94 Registrants" ) ), $this->calls[0]['body'] );
+        $this->assertSame( 'PATCH', $this->calls[1]['method'] );
+        $this->assertStringContainsString( '/drive/v3/files/NEW1?', $this->calls[1]['url'] );
+        $this->assertStringContainsString( 'addParents=FOLD9', $this->calls[1]['url'] );
+        $this->assertStringContainsString( 'removeParents=root', $this->calls[1]['url'] );
+        $this->assertStringContainsString( 'supportsAllDrives=true', $this->calls[1]['url'] );
+
+        $this->calls = array();
+        ( new Anchor_Sheet_Google() )->create( 'T' );
+        $this->assertCount( 1, $this->calls );
+    }
+
+    public function test_autocreate_settings_parse_folder_url() {
+        update_option( 'anchor_connector_google', array( 'autocreate' => true, 'autocreate_folder_id' => 'abc_1-2' ), false );
+        $s = Anchor_Sheet_Google::autocreate_settings();
+        $this->assertTrue( $s['enabled'] );
+        $this->assertSame( 'abc_1-2', $s['folder_id'] );
+        $this->assertSame( 'abc_1-2', Anchor_Sheet_Google::parse_folder_id( 'https://drive.google.com/drive/u/0/folders/abc_1-2?usp=sharing' ) );
+        $this->assertSame( '', Anchor_Sheet_Google::parse_folder_id( 'https://example.com/x' ) );
+        delete_option( 'anchor_connector_google' );
+        $this->assertFalse( Anchor_Sheet_Google::autocreate_settings()['enabled'] );
+    }
 }

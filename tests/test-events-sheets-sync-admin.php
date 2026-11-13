@@ -43,6 +43,15 @@ class Anchor_Sheet_Admin_Memory implements Anchor_Sheet_Adapter {
 	}
 }
 
+/** In-memory sheet that can also create spreadsheets. */
+class Anchor_Sheet_Admin_Creator extends Anchor_Sheet_Admin_Memory {
+	public $creates = array();
+	public function create( $title, $folder_id = '' ) {
+		$this->creates[] = $title;
+		return array( 'url' => 'https://docs.google.com/spreadsheets/d/NEW/edit', 'ref' => array( 'provider' => 'google', 'id' => 'NEW', 'tab' => 'Sheet1' ) );
+	}
+}
+
 /** Adapter whose resolve() is scripted. */
 class Anchor_Fake_Resolve_Google extends Anchor_Sheet_Google {
 	public static $result;
@@ -289,5 +298,85 @@ class Test_Events_Sheets_Sync_Admin extends Anchor_Events_TestCase {
 		update_post_meta( $e, Sheets_Sync::META_URL, self::URL );
 		update_post_meta( $e, Sheets_Sync::META_REF, array( 'provider' => 'google', 'id' => 'abc', 'tab' => 'T' ) );
 		$this->assertStringContainsString( 'Nothing to sync', (string) get_transient( 'anchor_ev_sheet_notice_' . $e . '_' . get_current_user_id() ) );
+	}
+
+	public function test_create_spreadsheet_button_creates_inline_and_redirects() {
+		$this->connect();
+		$this->fake = new Anchor_Sheet_Admin_Creator();
+		$e          = $this->make_event( array( 'title' => 'Spring Gala' ) );
+		$this->assertStringContainsString( 'Create spreadsheet', $this->render( $e ) );
+		$_REQUEST = array( 'event_id' => $e, '_wpnonce' => wp_create_nonce( 'anchor_events_sheet_create_' . $e ) );
+		$trap     = function ( $location ) {
+			throw new Anchor_Sheet_Admin_Redirect_Signal( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		$location = '';
+		try {
+			$this->admin()->handle_create();
+			$this->fail( 'No redirect.' );
+		} catch ( Anchor_Sheet_Admin_Redirect_Signal $s ) {
+			$location = $s->getMessage();
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
+		$this->assertStringContainsString( 'post.php', $location );
+		$this->assertSame( array( "Spring Gala \xE2\x80\x94 Registrants" ), $this->fake->creates );
+		$this->assertSame( 'NEW', get_post_meta( $e, Sheets_Sync::META_REF, true )['id'] );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertTrue( $this->module()->sheets_sync->get_state( $e )['ok'] );
+		$html = $this->render( $e );
+		$this->assertStringContainsString( 'Sync now', $html );
+		$this->assertStringNotContainsString( 'Create spreadsheet', $html );
+	}
+
+	public function test_create_spreadsheet_rejects_bad_nonce_and_missing_capability() {
+		$this->connect();
+		$this->fake = new Anchor_Sheet_Admin_Creator();
+		$e          = $this->make_event();
+		$call       = function ( $nonce ) use ( $e ) {
+			$_REQUEST = array( 'event_id' => $e, '_wpnonce' => $nonce );
+			add_filter( 'wp_die_handler', array( $this, 'die_handler' ) );
+			try {
+				$this->admin()->handle_create();
+				return 'none';
+			} catch ( \WPDieException $d ) {
+				return 'die';
+			} finally {
+				remove_filter( 'wp_die_handler', array( $this, 'die_handler' ) );
+			}
+		};
+		$this->assertSame( 'die', $call( 'bogus' ) );
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		$this->assertSame( 'die', $call( wp_create_nonce( 'anchor_events_sheet_create_' . $e ) ) );
+		$this->assertSame( array(), $this->fake->creates );
+	}
+
+	public function test_ok_state_with_message_renders_as_a_warning() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		update_post_meta( $e, Sheets_Sync::META_STATE, array( 'last_sync' => time(), 'ok' => true, 'message' => 'Reconnect to enable auto-share', 'rows' => 2 ) );
+		$html = $this->render( $e );
+		$this->assertStringContainsString( '2 rows', $html );
+		$this->assertStringContainsString( 'Reconnect to enable auto-share', $html );
+		$this->assertStringNotContainsString( 'Last sync failed', $html );
+	}
+
+	public function test_pending_event_shows_waiting_message_and_create_button() {
+		$e = $this->make_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		update_post_meta( $e, Sheets_Sync::META_STATE, array( 'last_sync' => time(), 'ok' => true, 'message' => 'Waiting to create: connect Google', 'rows' => 0 ) );
+		$html = $this->render( $e );
+		$this->assertStringContainsString( 'connect Google', $html );
+		$this->assertStringContainsString( 'Create spreadsheet', $html );
+		$this->assertStringNotContainsString( 'Last sync:', $html );
+	}
+
+	public function test_pasting_a_url_ends_a_pending_auto_create() {
+		$this->connect();
+		$e = $this->make_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		$this->save( $e, self::URL );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
 	}
 }

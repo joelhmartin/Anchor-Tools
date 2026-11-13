@@ -56,6 +56,19 @@ class Anchor_Fake_Shareable_Adapter extends Anchor_Fake_Sheet_Adapter {
 	}
 }
 
+/** Shareable fake that can also create spreadsheets. */
+class Anchor_Fake_Creator_Adapter extends Anchor_Fake_Shareable_Adapter {
+	public $creates = array();
+	public $create_error = null;
+	public function create( $title, $folder_id = '' ) {
+		if ( $this->create_error ) {
+			return $this->create_error;
+		}
+		$this->creates[] = array( 'title' => $title, 'folder' => $folder_id );
+		return array( 'url' => 'https://docs.google.com/spreadsheets/d/NEW/edit', 'ref' => array( 'provider' => 'google', 'id' => 'NEW', 'tab' => 'Sheet1' ) );
+	}
+}
+
 /**
  * @group sheets
  */
@@ -319,5 +332,118 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 		$this->assertSame( '', $state['message'] );
 		$this->assertCount( 0, $this->fake->shares );
 		delete_option( 'anchor_connector_google' );
+	}
+
+	/* ---- Auto-create ---- */
+
+	private function autocreate( $on = true, $folder = '' ) {
+		$this->fake = new Anchor_Fake_Creator_Adapter();
+		update_option( 'anchor_connector_google', array( 'autocreate' => $on, 'autocreate_folder_id' => $folder, 'scope' => 'openid https://www.googleapis.com/auth/drive', 'share_managers' => false ), false );
+	}
+
+	private function draft_event( $title = 'Spring Gala' ) {
+		return (int) self::factory()->post->create( array( 'post_type' => \Anchor\Events\Module::CPT, 'post_status' => 'draft', 'post_title' => $title ) );
+	}
+
+	public function test_first_publish_with_autocreate_marks_pending_and_schedules() {
+		$this->autocreate();
+		$e = $this->draft_event();
+		$this->http_calls = 0;
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'publish' ) );
+		$this->assertSame( 'pending', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertNotFalse( $this->queued( $e ) );
+		$this->assertSame( 0, $this->http_calls );
+		$this->assertSame( array(), $this->fake->creates );
+	}
+
+	public function test_autocreate_skips_external_signup_group_children_and_events_with_a_url() {
+		$this->autocreate();
+		$ext = $this->draft_event();
+		update_post_meta( $ext, '_anchor_event_registration_mode', 'external' );
+		$this->assertTrue( $this->module()->uses_external_signup( $ext ), 'fixture must be external-signup' );
+		wp_update_post( array( 'ID' => $ext, 'post_status' => 'publish' ) );
+		$this->assertSame( '', get_post_meta( $ext, Sheets_Sync::META_AUTOCREATE, true ) );
+
+		$has = $this->draft_event();
+		update_post_meta( $has, Sheets_Sync::META_URL, 'https://docs.google.com/spreadsheets/d/x/edit' );
+		wp_update_post( array( 'ID' => $has, 'post_status' => 'publish' ) );
+		$this->assertSame( '', get_post_meta( $has, Sheets_Sync::META_AUTOCREATE, true ) );
+
+		list( $main, $dates ) = $this->group();
+		foreach ( $dates as $child ) {
+			delete_post_meta( $child, Sheets_Sync::META_AUTOCREATE );
+			wp_update_post( array( 'ID' => $child, 'post_status' => 'draft' ) );
+			wp_update_post( array( 'ID' => $child, 'post_status' => 'publish' ) );
+			$this->assertSame( '', get_post_meta( $child, Sheets_Sync::META_AUTOCREATE, true ), 'group child' );
+		}
+	}
+
+	public function test_autocreate_off_does_nothing() {
+		$this->autocreate( false );
+		$e = $this->draft_event();
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'publish' ) );
+		$this->assertSame( '', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertFalse( $this->queued( $e ) );
+	}
+
+	public function test_republish_or_update_does_not_create_again() {
+		$this->autocreate();
+		$e = $this->draft_event();
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'publish' ) );
+		$this->sync()->run( $e );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		delete_post_meta( $e, Sheets_Sync::META_URL );
+		delete_post_meta( $e, Sheets_Sync::META_REF );
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'draft' ) );
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'publish' ) );
+		$this->sync()->run( $e );
+		$this->assertSame( '', get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertCount( 1, $this->fake->creates );
+	}
+
+	public function test_run_with_pending_creates_shares_and_syncs() {
+		$this->autocreate( true, 'FOLDER1' );
+		$o = get_option( 'anchor_connector_google' );
+		$o['share_emails'] = array( 'extra@example.test' );
+		update_option( 'anchor_connector_google', $o, false );
+		$e = $this->draft_event( 'Spring Gala' );
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'publish' ) );
+		$this->make_seat( $e );
+		$state = $this->sync()->run( $e );
+		$this->assertCount( 1, $this->fake->creates );
+		$this->assertSame( "Spring Gala \xE2\x80\x94 Registrants", $this->fake->creates[0]['title'] );
+		$this->assertSame( 'FOLDER1', $this->fake->creates[0]['folder'] );
+		$this->assertSame( 'NEW', get_post_meta( $e, Sheets_Sync::META_REF, true )['id'] );
+		$this->assertSame( 'https://docs.google.com/spreadsheets/d/NEW/edit', get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertTrue( $state['ok'] );
+		$this->assertSame( 1, $state['rows'] );
+		$this->assertGreaterThan( 1, count( $this->fake->grid ) );
+		$this->assertSame( array( 'extra@example.test' ), $this->fake->shares[0]['emails'] );
+	}
+
+	public function test_pending_without_connection_waits_and_reports() {
+		$this->autocreate();
+		$this->fake->create_error = new WP_Error( 'anchor_sheet_not_connected', 'Google is not connected.' );
+		$e = $this->draft_event();
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'publish' ) );
+		$state = $this->sync()->run( $e );
+		$this->assertStringContainsString( 'Google', $state['message'] );
+		$this->assertSame( 'pending', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertSame( '', get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		// Connected later: the next run creates it.
+		$this->fake->create_error = null;
+		$this->sync()->run( $e );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertCount( 1, $this->fake->creates );
+	}
+
+	public function test_seat_on_pending_event_schedules_a_run() {
+		$this->autocreate();
+		$e = $this->draft_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		_set_cron_array( array() );
+		$this->make_seat( $e );
+		$this->assertNotFalse( $this->queued( $e ) );
 	}
 }

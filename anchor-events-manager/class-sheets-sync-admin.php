@@ -18,6 +18,7 @@ class Sheets_Sync_Admin {
 	const NONCE_ACTION = 'anchor_event_sheet_save';
 	const URL_FIELD    = 'anchor_event_sheet_url';
 	const SYNC_ACTION  = 'anchor_events_sheet_sync_now';
+	const CREATE_ACTION = 'anchor_events_sheet_create';
 	const NOTICE_TTL   = 300;
 
 	/** @var Module */
@@ -32,6 +33,7 @@ class Sheets_Sync_Admin {
 		\add_action( 'add_meta_boxes', array( $this, 'add_metabox' ) );
 		\add_action( 'save_post_' . Module::CPT, array( $this, 'save' ), 20, 1 );
 		\add_action( 'admin_post_' . self::SYNC_ACTION, array( $this, 'handle_sync_now' ) );
+		\add_action( 'admin_post_' . self::CREATE_ACTION, array( $this, 'handle_create' ) );
 	}
 
 	public function add_metabox() {
@@ -150,6 +152,7 @@ class Sheets_Sync_Admin {
 
 		\update_post_meta( $event_id, Sheets_Sync::META_URL, $url );
 		\update_post_meta( $event_id, Sheets_Sync::META_REF, $ref );
+		$this->settle_pending( $event_id );
 		\delete_post_meta( $event_id, Sheets_Sync::META_STATE );
 		\delete_transient( $this->notice_key( $event_id ) );
 		$target = $this->sync->target_for_event( $event_id );
@@ -158,7 +161,15 @@ class Sheets_Sync_Admin {
 		}
 	}
 
+	/** A hand-pasted or cleared URL ends any pending auto-create. */
+	private function settle_pending( int $event_id ) {
+		if ( \get_post_meta( $event_id, Sheets_Sync::META_AUTOCREATE, true ) === 'pending' ) {
+			\update_post_meta( $event_id, Sheets_Sync::META_AUTOCREATE, 'done' );
+		}
+	}
+
 	private function clear( int $event_id ) {
+		$this->settle_pending( $event_id );
 		\delete_post_meta( $event_id, Sheets_Sync::META_URL );
 		\delete_post_meta( $event_id, Sheets_Sync::META_REF );
 		\delete_post_meta( $event_id, Sheets_Sync::META_STATE );
@@ -192,6 +203,24 @@ class Sheets_Sync_Admin {
 	}
 
 	/* ------------------------------------------------------------------
+	 * Create spreadsheet
+	 * ---------------------------------------------------------------- */
+
+	public function handle_create() {
+		$event_id = isset( $_REQUEST['event_id'] ) ? (int) $_REQUEST['event_id'] : 0;
+		\check_admin_referer( self::CREATE_ACTION . '_' . $event_id );
+		if ( $event_id <= 0 || ! $this->can_manage( $event_id ) ) {
+			\wp_die( \esc_html__( 'You are not allowed to do that.', 'anchor-schema' ), '', array( 'response' => 403 ) );
+		}
+		$state = $this->sync->create_now( $event_id );
+		if ( ! $state ) {
+			$this->fail( $event_id, \__( 'Nothing to create: this event already has a spreadsheet, or takes sign-ups on an external form.', 'anchor-schema' ) );
+		}
+		\wp_safe_redirect( (string) \get_edit_post_link( $event_id, 'url' ) );
+		exit;
+	}
+
+	/* ------------------------------------------------------------------
 	 * Render
 	 * ---------------------------------------------------------------- */
 
@@ -217,9 +246,17 @@ class Sheets_Sync_Admin {
 			\delete_transient( $this->notice_key( $event_id ) );
 		}
 
-		$this->render_connection( $url, $ref );
-		if ( $has_ref ) {
-			$this->render_state( $event_id );
+		$pending = \get_post_meta( $event_id, Sheets_Sync::META_AUTOCREATE, true ) === 'pending';
+		$this->render_connection( $url, $has_ref ? $ref : ( $pending ? array( 'provider' => 'google' ) : $ref ) );
+		if ( $has_ref || $pending ) {
+			$this->render_state( $event_id, $has_ref );
+		}
+		if ( ! $has_ref ) {
+			$link = \wp_nonce_url(
+				\admin_url( 'admin-post.php?action=' . self::CREATE_ACTION . '&event_id=' . $event_id ),
+				self::CREATE_ACTION . '_' . $event_id
+			);
+			echo '<p><a class="button" href="' . \esc_url( $link ) . '">' . \esc_html__( 'Create spreadsheet', 'anchor-schema' ) . '</a></p>';
 		}
 	}
 
@@ -244,18 +281,18 @@ class Sheets_Sync_Admin {
 			. \esc_html__( 'Settings → Anchor Tools → Connectors', 'anchor-schema' ) . '</a>.</p>';
 	}
 
-	private function render_state( int $event_id ) {
+	private function render_state( int $event_id, bool $has_ref = true ) {
 		$state = $this->sync->get_state( $event_id );
 		if ( $state ) {
 			$when = \wp_date( 'M j, Y g:i a', (int) ( $state['last_sync'] ?? 0 ) );
-			if ( ! empty( $state['ok'] ) ) {
+			if ( ! empty( $state['ok'] ) && $has_ref ) {
 				echo '<p>' . \esc_html( \sprintf(
 					/* translators: 1: time, 2: row count */
 					\_n( 'Last sync: %1$s, %2$d row.', 'Last sync: %1$s, %2$d rows.', (int) ( $state['rows'] ?? 0 ), 'anchor-schema' ),
 					$when,
 					(int) ( $state['rows'] ?? 0 )
 				) ) . '</p>';
-			} else {
+			} elseif ( empty( $state['ok'] ) ) {
 				echo '<p style="color:#b32d2e">' . \esc_html( \sprintf(
 					/* translators: 1: time, 2: error */
 					\__( 'Last sync failed (%1$s): %2$s', 'anchor-schema' ),
@@ -263,8 +300,14 @@ class Sheets_Sync_Admin {
 					(string) ( $state['message'] ?? '' )
 				) ) . '</p>';
 			}
-		} else {
+			if ( ! empty( $state['ok'] ) && ! empty( $state['message'] ) ) {
+				echo '<p style="color:#996800">' . \esc_html( (string) $state['message'] ) . '</p>';
+			}
+		} elseif ( $has_ref ) {
 			echo '<p>' . \esc_html__( 'Not synced yet.', 'anchor-schema' ) . '</p>';
+		}
+		if ( ! $has_ref ) {
+			return;
 		}
 		$link = \wp_nonce_url(
 			\admin_url( 'admin-post.php?action=' . self::SYNC_ACTION . '&event_id=' . $event_id ),

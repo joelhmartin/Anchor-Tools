@@ -20,6 +20,7 @@ class Sheets_Sync {
 	const META_REF   = '_anchor_event_sheet_ref';
 	const META_STATE = '_anchor_event_sheet_state';
 	const META_SHARED = '_anchor_event_sheet_shared';
+	const META_AUTOCREATE = '_anchor_event_sheet_autocreate'; // pending|done
 	const HOOK       = 'anchor_events_sheet_sync';
 	const DELAY      = 30;
 	const LOCK_TTL   = 120;
@@ -34,6 +35,7 @@ class Sheets_Sync {
 		\add_action( 'added_post_meta', array( $this, 'on_meta' ), 10, 2 );
 		\add_action( 'updated_post_meta', array( $this, 'on_meta' ), 10, 2 );
 		\add_action( self::HOOK, array( $this, 'run' ), 10, 1 );
+		\add_action( 'transition_post_status', array( $this, 'on_transition' ), 10, 3 );
 	}
 
 	/** @param int $seat_id */
@@ -50,6 +52,32 @@ class Sheets_Sync {
 			return;
 		}
 		$this->schedule_for_seat( (int) $object_id );
+	}
+
+	/**
+	 * First publish of an event with Google auto-create on: mark it pending and
+	 * queue a run. No HTTP here; the run creates the spreadsheet.
+	 *
+	 * @param string   $new
+	 * @param string   $old
+	 * @param \WP_Post $post
+	 */
+	public function on_transition( $new, $old, $post ) {
+		if ( 'publish' !== $new || 'publish' === $old || ! $post || Module::CPT !== $post->post_type ) {
+			return;
+		}
+		$id = (int) $post->ID;
+		if ( \get_post_meta( $id, self::META_AUTOCREATE, true ) !== '' || $this->has_ref( $id )
+			|| \get_post_meta( $id, self::META_URL, true ) !== '' ) {
+			return;
+		}
+		if ( ! \Anchor_Sheet_Google::autocreate_settings()['enabled']
+			|| $this->module->uses_external_signup( $id )
+			|| ( $this->module->occurrences && $this->module->occurrences->is_group_child( $id ) ) ) {
+			return;
+		}
+		\update_post_meta( $id, self::META_AUTOCREATE, 'pending' );
+		$this->schedule( $id );
 	}
 
 	private function schedule_for_seat( $seat_id ) {
@@ -81,9 +109,14 @@ class Sheets_Sync {
 		return 0;
 	}
 
+	/** True when the event has a spreadsheet or is waiting for one to be auto-created. */
 	private function has_ref( int $event_id ): bool {
 		$ref = \get_post_meta( $event_id, self::META_REF, true );
-		return \is_array( $ref ) && ! empty( $ref['provider'] );
+		return ( \is_array( $ref ) && ! empty( $ref['provider'] ) ) || $this->is_pending( $event_id );
+	}
+
+	private function is_pending( int $event_id ): bool {
+		return \get_post_meta( $event_id, self::META_AUTOCREATE, true ) === 'pending';
 	}
 
 	/** Queue one sync SELF::DELAY seconds out unless one is already queued. */
@@ -107,8 +140,7 @@ class Sheets_Sync {
 	 */
 	public function run( $target ): array {
 		$target = (int) $target;
-		$ref    = \get_post_meta( $target, self::META_REF, true );
-		if ( $target <= 0 || ! \is_array( $ref ) || empty( $ref['provider'] ) || $this->module->uses_external_signup( $target ) ) {
+		if ( $target <= 0 || ! $this->has_ref( $target ) || $this->module->uses_external_signup( $target ) ) {
 			return array();
 		}
 		$lock = 'anchor_ev_sheet_lock_' . $target;
@@ -117,18 +149,68 @@ class Sheets_Sync {
 		}
 		\set_transient( $lock, 1, self::LOCK_TTL );
 		try {
-			$result = $this->sync_once( $target, $ref );
+			$created = $this->is_pending( $target ) ? $this->create_pending( $target ) : true;
+			if ( \is_wp_error( $created ) ) {
+				$result = $created;
+			} else {
+				$ref    = \get_post_meta( $target, self::META_REF, true );
+				$result = \is_array( $ref ) && ! empty( $ref['provider'] ) ? $this->sync_once( $target, $ref ) : 0;
+			}
 		} finally {
 			\delete_transient( $lock );
 		}
-		if ( \is_wp_error( $result ) ) {
+		if ( \is_wp_error( $result ) && $this->is_pending( $target ) && 'anchor_sheet_not_connected' === $result->get_error_code() ) {
+			// Waiting for a connection: not a failure; a later run creates it.
+			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => \__( 'Waiting to create the spreadsheet: connect Google under Settings > Anchor Tools > Connectors.', 'anchor-schema' ), 'rows' => 0 );
+		} elseif ( \is_wp_error( $result ) ) {
 			$state = array( 'last_sync' => \time(), 'ok' => false, 'message' => $result->get_error_message(), 'rows' => 0 );
 			Events_Log::error( 'sheet_sync_failed', array( 'event_id' => $target, 'code' => $result->get_error_code() ) );
 		} else {
+			$ref   = \get_post_meta( $target, self::META_REF, true );
 			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => $this->share_step( $target, $ref ), 'rows' => (int) $result );
 		}
 		\update_post_meta( $target, self::META_STATE, $state );
 		return $state;
+	}
+
+	/**
+	 * Creates the Google spreadsheet for a pending event and stores its ref.
+	 * Stays pending on any error so a later run (or the button) retries.
+	 *
+	 * @return true|\WP_Error
+	 */
+	private function create_pending( int $target ) {
+		$creator = \Anchor_Sheet_Adapters::for_ref( array( 'provider' => 'google' ) );
+		if ( ! $creator || ! \method_exists( $creator, 'create' ) ) {
+			return new \WP_Error( 'no_adapter', \__( 'Unsupported spreadsheet provider.', 'anchor-schema' ) );
+		}
+		$title = \sprintf(
+			/* translators: %s event title */
+			\__( '%s — Registrants', 'anchor-schema' ),
+			\wp_strip_all_tags( \get_the_title( $target ) )
+		);
+		$made = $creator->create( $title, \Anchor_Sheet_Google::autocreate_settings()['folder_id'] );
+		if ( \is_wp_error( $made ) ) {
+			return $made;
+		}
+		\update_post_meta( $target, self::META_URL, $made['url'] );
+		\update_post_meta( $target, self::META_REF, $made['ref'] );
+		\update_post_meta( $target, self::META_AUTOCREATE, 'done' );
+		\delete_post_meta( $target, self::META_SHARED );
+		return true;
+	}
+
+	/**
+	 * Mark an event pending and run now (the Create spreadsheet button).
+	 *
+	 * @return array Saved state.
+	 */
+	public function create_now( int $event_id ): array {
+		if ( $event_id <= 0 || $this->module->uses_external_signup( $event_id ) || $this->has_ref( $event_id ) && ! $this->is_pending( $event_id ) ) {
+			return array();
+		}
+		\update_post_meta( $event_id, self::META_AUTOCREATE, 'pending' );
+		return $this->run( $event_id );
 	}
 
 	/** @return int|\WP_Error Roster row count on success. */

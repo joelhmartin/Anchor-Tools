@@ -449,6 +449,87 @@ buyer's; else an existing account with the seat email; else a new one.
 
 ---
 
+## Spreadsheet sync
+
+Mirrors an event's registrant roster into a Google Sheet or an Excel file on
+OneDrive/SharePoint. It is one-way (WordPress to spreadsheet) and uses the per-site
+OAuth Connectors (`includes/connectors/`); the events glue is
+`Sheets_Sync` (`class-sheets-sync.php`), the event metabox is `Sheets_Sync_Admin`, and
+the row diff is the pure `Sheets_Reconciler`.
+
+### One-time setup (per site)
+Each site brings its own OAuth app, so credentials never leave the site.
+1. **Settings > Anchor Tools > Connectors.** Each provider card shows this site's
+   **Callback URL** (a REST path, `anchor-tools/v1/connectors/callback`). Sites on plain
+   permalinks get a warning: switch to pretty permalinks first.
+2. **Google:** in Google Cloud Console create an OAuth client of type "Web application",
+   add the callback URL under Authorized redirect URIs, and enable the **Google Sheets
+   API** and the **Google Drive API**. The Drive scope is a restricted scope, so use an
+   **Internal** consent screen (Workspace accounts only, no Google review); an External
+   app would need verification.
+3. **Microsoft:** in Entra (Azure AD) register an app, add a "Web" platform with the
+   callback URL as a redirect URI, and create a client secret.
+4. Paste the **Client ID** and **Client Secret**, save, then press **Connect** and approve.
+   Tokens are stored encrypted. If a token is revoked the card shows Reconnect, and event
+   metaboxes say "Reconnect ... under Connectors" until it is fixed.
+
+### Per event
+The **Spreadsheet sync** metabox (event edit screen, side column; events that take sign-ups on an external form just show
+"nothing to sync", since they keep no roster):
+- Paste the spreadsheet URL and save. The link is resolved immediately; if the connected
+  account cannot open it you are told to check the URL or share it with that account.
+- **Sync now** runs a sync immediately. **Create spreadsheet** (Google) is shown while the
+  event has no sheet; see Google extras.
+- Status line: **Not synced yet**; **Last sync: <time>, N rows** (rows = registrants
+  written); **Last sync failed (<time>): <reason>** in red; an amber line after a good sync
+  is a warning (for example sharing failed or a folder move failed, the rows still synced).
+  "Waiting to create the spreadsheet: connect Google ..." means auto-create is pending
+  and will run once Google is connected. Clearing the URL stops syncing and leaves the
+  spreadsheet untouched.
+
+### Behaviour
+- **Triggers:** a seat being created, a seat changing status, or any seat meta changing
+  schedules one sync **30 seconds** out (debounced: one is queued at a time per event).
+  Every run is a full, idempotent reconcile, so a missed trigger heals on the next run and
+  an event with existing registrants is backfilled on its first sync.
+- **Row key = `Seat ID`.** A registrant whose Seat ID is already in the sheet is
+  updated in place; new ones are appended. Columns are matched by header text; missing
+  headers are appended on the right.
+- **Cancelled people stay**, with Status `cancelled`. Rows are never deleted.
+- **Hand-added columns and edits are untouched**: the sync only writes the columns it owns.
+- Values are written as raw text, never formulas (Google `RAW`, Excel text number format).
+- **Never blocks registration.** All HTTP happens in the scheduled run, a failure is
+  logged (`sheet_sync_failed`, no secrets) and shown in the status line only.
+- **Group events:** a pick-one / series parent owns the sheet; its dates roll up into
+  it (all dates, one sheet). Child dates with no sheet of their own sync to the parent's.
+
+### Google extras
+Set on the Google card of the Connectors tab (Auto-share and Auto-create section):
+- **Share with event managers** (on by default): every user with the events capability is
+  given access by account email. **Also share with**: extra emails, one per line (invalid
+  lines are dropped and counted). **Access:** Editor (default) or Viewer. **Notify people by
+  email** (on by default) controls Google's invitation email. Sharing runs after the rows are
+  written and is re-done only when the recipient list or role changes. A connection made
+  before the Drive scope existed shows "Reconnect to enable auto-share".
+- **Auto-create spreadsheets:** when a new event is first published with this on, a sheet
+  named `<event title> — Registrants` is created and linked automatically (not for
+  external-signup events or group child dates). The optional **Drive folder** (paste a
+  `drive.google.com/drive/folders/...` link) is where it goes; if the move fails the sheet
+  stays in My Drive and the status line says so. A pasted URL on the event always wins and
+  cancels the auto-create; an event never gets a second auto-created sheet.
+- **Create spreadsheet** button: does the same for an existing event that has no sheet.
+
+### Limits
+- **No two-way sync:** edits made in the spreadsheet never flow back to WordPress.
+- Rows are never deleted and access is never removed (un-sharing is done by hand in Drive).
+- **Excel has no auto-share and no auto-create**; paste an existing file's URL.
+- **PHI / privacy:** every registration field **and every attendee-question answer** is
+  copied to the spreadsheet and is then governed by that provider's sharing, not
+  WordPress. Do not point a clinical-registration event at a sheet or folder with wider
+  access than the registrants' data warrants.
+
+---
+
 ## Key Meta Keys
 
 All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).

@@ -320,6 +320,11 @@ class Module {
 
     /** @var Roster|null Roster admin screen + CSV export (always loaded). */
     public $roster = null;
+    /** @var Sheets_Sync|null */
+    public $sheets_sync = null;
+
+    /** @var Sheets_Sync_Admin|null */
+    public $sheets_sync_admin = null;
 
     /** @var Ticket_Types|null Per-event ticket-tier model (always loaded). */
     public $ticket_types = null;
@@ -451,6 +456,9 @@ class Module {
             require_once $dir . 'class-email-log-import.php';
         }
         require_once $dir . 'class-roster.php';
+        require_once $dir . 'class-sheets-reconciler.php';
+        require_once $dir . 'class-sheets-sync.php';
+        require_once $dir . 'class-sheets-sync-admin.php';
         require_once $dir . 'class-ticket-types.php';
         require_once $dir . 'class-series.php';
         require_once $dir . 'class-occurrences.php';
@@ -477,6 +485,9 @@ class Module {
         $this->email_log = new Email_Log( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
+        // Mirrors registrants into a connected Google Sheet / Excel workbook.
+        $this->sheets_sync = new Sheets_Sync( $this );
+        $this->sheets_sync_admin = new Sheets_Sync_Admin( $this, $this->sheets_sync );
         // Ticket-tier model (spec §3.2) — free + paid; no WooCommerce dependency.
         $this->ticket_types = new Ticket_Types( $this );
         // Series taxonomy + archive (spec §3.3, §6) — free + paid; registers the

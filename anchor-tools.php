@@ -107,6 +107,20 @@ if ( ! class_exists( 'Anchor_Builder_Shell' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/class-anchor-builder-preset-picker.php';
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/class-anchor-builder-shell.php';
 }
+if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-secret-box.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/providers.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-oauth-connector.php';
+}
+if ( ! class_exists( 'Anchor_Sheet_Adapters' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/interface-anchor-sheet-adapter.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-sheet-adapters.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-sheet-google.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-sheet-excel.php';
+}
+if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/connectors/class-anchor-connectors-admin.php';
+}
 
 if ( class_exists( PucFactory::class ) ) {
     $anchor_tools_update = PucFactory::buildUpdateChecker(
@@ -174,6 +188,9 @@ add_action(
         }
         if ( is_admin() && class_exists( 'Anchor_Schema_Admin' ) ) {
             new Anchor_Schema_Admin();
+        }
+        if ( is_admin() && class_exists( 'Anchor_Connectors_Admin' ) ) {
+            new Anchor_Connectors_Admin();
         }
         if ( is_admin() && class_exists( 'Anchor_Preview_CSS' ) ) {
             new Anchor_Preview_CSS();

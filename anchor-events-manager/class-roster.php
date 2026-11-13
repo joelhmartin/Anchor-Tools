@@ -1581,6 +1581,17 @@ class Roster {
     }
 
     /**
+     * Public seam for export_table_all_dates() (spreadsheet mirror of a group parent).
+     *
+     * @param int    $parent_id
+     * @param string $scope
+     * @return array{header:string[],rows:array<int,array>}
+     */
+    public function export_table_all_dates_public( $parent_id, $scope ) {
+        return $this->export_table_all_dates( (int) $parent_id, (string) $scope );
+    }
+
+    /**
      * Header + data rows for the "All dates" export on a group parent
      * (Task 42): one leading Date column carrying each child's own
      * occurrence label, the base columns unchanged, question columns

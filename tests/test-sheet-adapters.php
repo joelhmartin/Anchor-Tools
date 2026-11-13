@@ -161,13 +161,14 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         $a   = new Anchor_Sheet_Excel();
         $ref = array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'Sheet1' );
         $this->assertTrue( $a->write_cells( $ref, array( array( 2, 0, '=1+1' ), array( 2, 1, 'b' ), array( 2, 3, 'd' ), array( 5, 2, 'x' ) ) ) );
-        $this->assertCount( 3, $this->calls ); // A2:B2, D2:D2, C5:C5
+        $this->assertCount( 6, $this->calls ); // A2:B2, D2:D2, C5:C5, each format then values
         $this->assertSame( 'PATCH', $this->calls[0]['method'] );
         $this->assertStringContainsString( "/worksheets/Sheet1/range(address='A2:B2')", $this->calls[0]['url'] );
-        $this->assertSame( array( array( '@', '@' ) ), $this->calls[0]['body']['numberFormat'] );
-        $this->assertSame( array( array( '=1+1', 'b' ) ), $this->calls[0]['body']['values'] );
-        $this->assertStringContainsString( "range(address='D2:D2')", $this->calls[1]['url'] );
-        $this->assertStringContainsString( "range(address='C5:C5')", $this->calls[2]['url'] );
+        $this->assertSame( array( 'numberFormat' => array( array( '@', '@' ) ) ), $this->calls[0]['body'] );
+        $this->assertSame( $this->calls[0]['url'], $this->calls[1]['url'] );
+        $this->assertSame( array( 'values' => array( array( '=1+1', 'b' ) ) ), $this->calls[1]['body'] );
+        $this->assertStringContainsString( "range(address='D2:D2')", $this->calls[2]['url'] );
+        $this->assertStringContainsString( "range(address='C5:C5')", $this->calls[4]['url'] );
     }
 
     public function test_excel_append_writes_after_used_range() {
@@ -179,8 +180,8 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         $ref = array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'Sheet1' );
         $this->assertTrue( $a->append_rows( $ref, array( array( 'a', 'b', 'c' ), array( 'd' ) ) ) );
         $this->assertStringContainsString( "range(address='A5:C6')", $this->calls[1]['url'] );
-        $this->assertSame( array( array( 'a', 'b', 'c' ), array( 'd', '', '' ) ), $this->calls[1]['body']['values'] );
         $this->assertSame( '@', $this->calls[1]['body']['numberFormat'][1][2] );
+        $this->assertSame( array( array( 'a', 'b', 'c' ), array( 'd', '', '' ) ), $this->calls[2]['body']['values'] );
         $this->assertTrue( $a->ensure_columns( $ref, 99 ) );
     }
 
@@ -217,5 +218,24 @@ class Test_Sheet_Adapters extends WP_UnitTestCase {
         $r = ( new Anchor_Sheet_Excel() )->write_cells( array( 'worksheet' => 'S' ), array( array( 1, 0, 'x' ) ) );
         $this->assertSame( 'anchor_sheet_not_connected', $r->get_error_code() );
         $this->assertCount( 0, $this->calls );
+    }
+
+    public function test_excel_read_pads_used_range_offset() {
+        $this->connect( 'microsoft' );
+        $this->responder = function () { return array( 200, array( 'rowIndex' => 1, 'columnIndex' => 2, 'values' => array( array( 'h1', 'h2' ), array( 'a', 'b' ) ) ) ); };
+        $rows = ( new Anchor_Sheet_Excel() )->read( array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'S' ) );
+        $this->assertSame( array( array(), array( '', '', 'h1', 'h2' ), array( '', '', 'a', 'b' ) ), $rows );
+        $this->assertStringContainsString( 'select=values,rowIndex,columnIndex', urldecode( $this->calls[0]['url'] ) );
+    }
+
+    public function test_excel_append_on_empty_sheet_starts_at_row_one() {
+        $this->connect( 'microsoft' );
+        $this->responder = function ( $u, $args ) {
+            return 'GET' === $args['method'] ? array( 200, array( 'rowIndex' => 0, 'columnIndex' => 0, 'rowCount' => 1, 'values' => array( array( '' ) ) ) ) : array( 200, array() );
+        };
+        $ref = array( 'provider' => 'microsoft', 'drive_id' => 'D', 'item_id' => 'I', 'worksheet' => 'S' );
+        $this->assertTrue( ( new Anchor_Sheet_Excel() )->append_rows( $ref, array( array( 'a', 'b' ) ) ) );
+        $patch = array_values( array_filter( $this->calls, function ( $c ) { return 'PATCH' === $c['method']; } ) );
+        $this->assertStringContainsString( "range(address='A1:B1')", $patch[0]['url'] );
     }
 }

@@ -46,27 +46,46 @@ if ( ! class_exists( 'Anchor_Sheet_Excel' ) ) {
             return array( 'provider' => 'microsoft', 'drive_id' => $drive, 'item_id' => $id, 'worksheet' => $name );
         }
 
+        /** A1-anchored matrix: usedRange values start at rowIndex/columnIndex, so pad the offset. */
         public function read( array $ref ) {
-            $res = $this->call( 'GET', $this->ws( $ref ) . '/usedRange(valuesOnly=true)' );
+            $res = $this->call( 'GET', $this->ws( $ref ) . '/usedRange(valuesOnly=true)?$select=values,rowIndex,columnIndex' );
             if ( is_wp_error( $res ) ) {
                 return $res;
             }
             $rows = Anchor_Sheet_Adapters::stringify( $res['values'] ?? array() );
-            foreach ( $rows as $r ) {
-                if ( array_filter( $r, static function ( $v ) { return '' !== $v; } ) ) {
-                    return $rows;
-                }
+            if ( self::all_blank( $rows ) ) {
+                return array(); // An empty sheet reports a single blank used cell.
             }
-            return array(); // An empty sheet reports a single blank used cell.
+            $lead = array_fill( 0, max( 0, (int) ( $res['columnIndex'] ?? 0 ) ), '' );
+            foreach ( $rows as $i => $r ) {
+                $rows[ $i ] = array_merge( $lead, $r );
+            }
+            return array_merge( array_fill( 0, max( 0, (int) ( $res['rowIndex'] ?? 0 ) ), array() ), $rows );
         }
 
-        /** PATCH one contiguous range with text format. */
+        private static function all_blank( array $rows ) {
+            foreach ( $rows as $r ) {
+                foreach ( $r as $v ) {
+                    if ( '' !== $v ) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /** One contiguous range: text number format first (so a leading "=" stays text), then the values. */
         private function patch( array $ref, $address, array $values ) {
             $fmt = array();
             foreach ( $values as $row ) {
                 $fmt[] = array_fill( 0, count( $row ), '@' );
             }
-            $res = $this->call( 'PATCH', $this->ws( $ref ) . "/range(address='" . $address . "')", array( 'numberFormat' => $fmt, 'values' => $values ) );
+            $url = $this->ws( $ref ) . "/range(address='" . $address . "')";
+            $res = $this->call( 'PATCH', $url, array( 'numberFormat' => $fmt ) );
+            if ( is_wp_error( $res ) ) {
+                return $res;
+            }
+            $res = $this->call( 'PATCH', $url, array( 'values' => $values ) );
             return is_wp_error( $res ) ? $res : true;
         }
 
@@ -112,6 +131,15 @@ if ( ! class_exists( 'Anchor_Sheet_Excel' ) ) {
                 return $used;
             }
             $start = (int) ( $used['rowIndex'] ?? 0 ) + (int) ( $used['rowCount'] ?? 0 ) + 1;
+            if ( 2 === $start && 0 === (int) ( $used['rowIndex'] ?? 0 ) ) { // One used cell: is the sheet really empty?
+                $cur = $this->read( $ref );
+                if ( is_wp_error( $cur ) ) {
+                    return $cur;
+                }
+                if ( ! $cur ) {
+                    $start = 1;
+                }
+            }
             $width = max( array_map( 'count', $rows ) );
             $vals  = array();
             foreach ( $rows as $r ) {

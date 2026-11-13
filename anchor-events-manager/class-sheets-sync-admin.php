@@ -112,9 +112,9 @@ class Sheets_Sync_Admin {
 			$this->clear( $event_id );
 			return;
 		}
+		$old_ref = $this->sync->ref( $event_id ); // First: drops a ref copied from another event.
 		$old_url = (string) \get_post_meta( $event_id, Sheets_Sync::META_URL, true );
-		$old_ref = \get_post_meta( $event_id, Sheets_Sync::META_REF, true );
-		$has_ref = \is_array( $old_ref ) && ! empty( $old_ref['provider'] );
+		$has_ref = null !== $old_ref;
 		if ( $url === $old_url && $has_ref && $this->provider_for_url( $url ) === (string) $old_ref['provider'] ) {
 			return; // Unchanged and already resolved.
 		}
@@ -129,8 +129,11 @@ class Sheets_Sync_Admin {
 		if ( ! $conn || ! $conn->is_connected() || $conn->needs_reconnect() ) {
 			// Keep what was pasted; the metabox shows the Connect message. The
 			// old ref belongs to a different sheet, so stop syncing to it.
+			// A pasted URL also ends a pending auto-create, or the next run would
+			// create a second, orphaned spreadsheet beside the pasted one.
 			\update_post_meta( $event_id, Sheets_Sync::META_URL, $url );
 			\delete_post_meta( $event_id, Sheets_Sync::META_REF );
+			$this->settle_pending( $event_id );
 			\delete_post_meta( $event_id, Sheets_Sync::META_STATE );
 			\wp_clear_scheduled_hook( Sheets_Sync::HOOK, array( $event_id ) );
 			return;
@@ -150,6 +153,7 @@ class Sheets_Sync_Admin {
 			return;
 		}
 
+		$ref['event_id'] = $event_id; // Binds the ref to this event; a duplicated post's copy is then rejected.
 		\update_post_meta( $event_id, Sheets_Sync::META_URL, $url );
 		\update_post_meta( $event_id, Sheets_Sync::META_REF, $ref );
 		$this->settle_pending( $event_id );
@@ -237,9 +241,9 @@ class Sheets_Sync_Admin {
 			echo '<p>' . \esc_html__( "This event takes sign-ups on an external form, so there's nothing to sync.", 'anchor-schema' ) . '</p>';
 			return;
 		}
-		$url = (string) \get_post_meta( $event_id, Sheets_Sync::META_URL, true );
-		$ref = \get_post_meta( $event_id, Sheets_Sync::META_REF, true );
-		$has_ref = \is_array( $ref ) && ! empty( $ref['provider'] );
+		$ref     = $this->sync->ref( $event_id );
+		$url     = (string) \get_post_meta( $event_id, Sheets_Sync::META_URL, true );
+		$has_ref = null !== $ref;
 
 		\wp_nonce_field( self::NONCE_ACTION, self::NONCE_FIELD );
 		echo '<p><label for="anchor_event_sheet_url"><strong>' . \esc_html__( 'Spreadsheet URL', 'anchor-schema' ) . '</strong></label>';

@@ -70,6 +70,13 @@ class Anchor_Fake_Creator_Adapter extends Anchor_Fake_Shareable_Adapter {
 	}
 }
 
+/** Adapter whose read() throws (a Throwable mid-sync). */
+class Anchor_Fake_Throwing_Adapter extends Anchor_Fake_Sheet_Adapter {
+	public function read( array $ref ) {
+		throw new \RuntimeException( 'SECRET-IN-MESSAGE' );
+	}
+}
+
 /**
  * @group sheets
  */
@@ -85,6 +92,7 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 		add_filter( 'anchor_sheet_adapter_for_ref', array( $this, 'inject' ), 10, 2 );
 		add_filter( 'pre_http_request', array( $this, 'spy' ), 10, 3 );
 		delete_option( \Anchor\Events\Events_Log::ERROR_OPTION );
+		delete_option( \Anchor_Sheet_Google::SETTINGS_OPTION );
 	}
 
 	public function tear_down() {
@@ -370,13 +378,22 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 		wp_update_post( array( 'ID' => $has, 'post_status' => 'publish' ) );
 		$this->assertSame( '', get_post_meta( $has, Sheets_Sync::META_AUTOCREATE, true ) );
 
+		// Group children are created by the real reconcile path, which publishes
+		// them BEFORE it tags them as children; the run must still never create.
 		list( $main, $dates ) = $this->group();
 		foreach ( $dates as $child ) {
-			delete_post_meta( $child, Sheets_Sync::META_AUTOCREATE );
-			wp_update_post( array( 'ID' => $child, 'post_status' => 'draft' ) );
-			wp_update_post( array( 'ID' => $child, 'post_status' => 'publish' ) );
-			$this->assertSame( '', get_post_meta( $child, Sheets_Sync::META_AUTOCREATE, true ), 'group child' );
+			$this->assertTrue( $this->module()->occurrences->is_group_child( $child ) );
+			$this->sync()->run( $child );
+			$this->assertSame( '', get_post_meta( $child, Sheets_Sync::META_AUTOCREATE, true ), 'group child pending cleared' );
 		}
+		// An event switched to external sign-up after it went pending.
+		$late = $this->draft_event();
+		wp_update_post( array( 'ID' => $late, 'post_status' => 'publish' ) );
+		$this->assertSame( 'pending', get_post_meta( $late, Sheets_Sync::META_AUTOCREATE, true ) );
+		update_post_meta( $late, '_anchor_event_registration_mode', 'external' );
+		$this->sync()->run( $late );
+		$this->assertSame( '', get_post_meta( $late, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertSame( array(), $this->fake->creates, 'no spreadsheet for children or external sign-up' );
 	}
 
 	public function test_autocreate_off_does_nothing() {
@@ -483,5 +500,76 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 		$this->assertTrue( $state['ok'] );
 		$this->assertStringContainsString( "couldn't move it into the chosen folder", $state['message'] );
 		$this->assertSame( 'NEW', get_post_meta( $e, Sheets_Sync::META_REF, true )['id'] );
+	}
+
+	public function test_orphan_create_with_no_ref_saves_state_without_fatal() {
+		$this->autocreate();
+		$e = $this->draft_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		update_post_meta( $e, Sheets_Sync::META_URL, 'https://docs.google.com/spreadsheets/d/PASTED/edit' );
+		$state = $this->sync()->run( $e );
+		$this->assertTrue( $state['ok'] );
+		$this->assertSame( $state, $this->sync()->get_state( $e ) );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertSame( 'https://docs.google.com/spreadsheets/d/PASTED/edit', get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertFalse( get_option( 'anchor_ev_sheet_lock_' . $e ), 'lock released' );
+	}
+
+	public function test_run_that_hits_the_lock_requeues_itself() {
+		$e = $this->with_sheet( $this->make_event() );
+		_set_cron_array( array() );
+		add_option( 'anchor_ev_sheet_lock_' . $e, time(), '', false );
+		$this->sync()->run( $e );
+		$this->assertSame( 0, $this->fake->reads );
+		$this->assertNotFalse( $this->queued( $e ), 'trigger is kept for a later run' );
+		delete_option( 'anchor_ev_sheet_lock_' . $e );
+	}
+
+	public function test_throwable_during_sync_records_failed_state_and_releases_lock() {
+		$this->fake = new Anchor_Fake_Throwing_Adapter();
+		$e = $this->with_sheet( $this->make_event() );
+		$state = $this->sync()->run( $e );
+		$this->assertFalse( $state['ok'] );
+		$this->assertSame( $state, $this->sync()->get_state( $e ) );
+		$this->assertFalse( get_option( 'anchor_ev_sheet_lock_' . $e ), 'lock released' );
+		$log = wp_json_encode( get_option( \Anchor\Events\Events_Log::ERROR_OPTION ) );
+		$this->assertStringContainsString( 'sheet_sync_failed', $log );
+		$this->assertStringNotContainsString( 'SECRET-IN-MESSAGE', $log );
+		$this->assertStringNotContainsString( 'SECRET-IN-MESSAGE', $state['message'] );
+	}
+
+	public function test_child_with_own_sheet_also_refreshes_parent_all_dates_sheet() {
+		list( $main, $dates ) = $this->group();
+		$this->with_sheet( $main );
+		$this->with_sheet( $dates[0] );
+		_set_cron_array( array() );
+		$this->make_seat( $dates[0], array( 'email' => 'c@example.test' ) );
+		$this->assertNotFalse( $this->queued( $dates[0] ) );
+		$this->assertNotFalse( $this->queued( $main ), 'parent all-dates sheet refreshed too' );
+	}
+
+	public function test_duplicated_event_does_not_inherit_the_originals_sheet() {
+		$this->autocreate();
+		$orig = $this->make_event();
+		update_post_meta( $orig, Sheets_Sync::META_URL, 'https://docs.google.com/spreadsheets/d/x/edit' );
+		update_post_meta( $orig, Sheets_Sync::META_REF, array( 'provider' => 'google', 'id' => 'x', 'tab' => 't', 'event_id' => $orig ) );
+		// A duplicate-post plugin copies every meta key onto a new draft.
+		$copy = $this->draft_event( 'Copy' );
+		foreach ( array( Sheets_Sync::META_URL, Sheets_Sync::META_REF, Sheets_Sync::META_SHARED, Sheets_Sync::META_AUTOCREATE ) as $k ) {
+			update_post_meta( $copy, $k, Sheets_Sync::META_SHARED === $k ? 'hash' : ( Sheets_Sync::META_AUTOCREATE === $k ? 'done' : get_post_meta( $orig, $k, true ) ) );
+		}
+		$this->assertSame( $orig, $this->sync()->target_for_event( $orig ) );
+		$this->assertSame( 0, $this->sync()->target_for_event( $copy ) );
+		$this->assertSame( array(), $this->sync()->run( $copy ) );
+		$this->assertSame( 0, $this->fake->reads, 'copy never writes into the original sheet' );
+		foreach ( array( Sheets_Sync::META_URL, Sheets_Sync::META_REF, Sheets_Sync::META_SHARED, Sheets_Sync::META_AUTOCREATE ) as $k ) {
+			$this->assertSame( '', get_post_meta( $copy, $k, true ), $k . ' cleared on the copy' );
+		}
+		// Publishing the copy now auto-creates its own spreadsheet.
+		wp_update_post( array( 'ID' => $copy, 'post_status' => 'publish' ) );
+		$this->assertSame( 'pending', get_post_meta( $copy, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->sync()->run( $copy );
+		$this->assertSame( $copy, get_post_meta( $copy, Sheets_Sync::META_REF, true )['event_id'], 'created ref is bound to its event' );
+		$this->assertSame( 'x', get_post_meta( $orig, Sheets_Sync::META_REF, true )['id'] );
 	}
 }

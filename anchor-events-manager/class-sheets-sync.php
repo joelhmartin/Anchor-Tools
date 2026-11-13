@@ -70,6 +70,7 @@ class Sheets_Sync {
 			return;
 		}
 		$id = (int) $post->ID;
+		$this->ref( $id ); // Drops a ref copied from another event (duplicate-post) before deciding.
 		if ( \get_post_meta( $id, self::META_AUTOCREATE, true ) !== '' || $this->has_ref( $id )
 			|| \get_post_meta( $id, self::META_URL, true ) !== '' ) {
 			return;
@@ -91,6 +92,11 @@ class Sheets_Sync {
 		$target = $this->target_for_event( $event_id );
 		if ( $target > 0 ) {
 			$this->schedule( $target );
+		}
+		// A child with its own sheet: the parent's all-dates sheet lists it too.
+		$parent = $target === $event_id && $this->module->occurrences ? (int) $this->module->occurrences->parent_of( $event_id ) : 0;
+		if ( $parent > 0 && $this->has_ref( $parent ) ) {
+			$this->schedule( $parent );
 		}
 	}
 
@@ -114,8 +120,31 @@ class Sheets_Sync {
 
 	/** True when the event has a spreadsheet or is waiting for one to be auto-created. */
 	private function has_ref( int $event_id ): bool {
+		return null !== $this->ref( $event_id ) || $this->is_pending( $event_id );
+	}
+
+	/**
+	 * The event's own spreadsheet ref, or null.
+	 *
+	 * Refs carry the event_id they were made for. A ref naming another event
+	 * was copied by a duplicate-post plugin; it and the copied URL / share /
+	 * auto-create markers are dropped so the copy never writes into the
+	 * original's sheet. Legacy refs without event_id are accepted.
+	 */
+	public function ref( int $event_id ): ?array {
 		$ref = \get_post_meta( $event_id, self::META_REF, true );
-		return ( \is_array( $ref ) && ! empty( $ref['provider'] ) ) || $this->is_pending( $event_id );
+		if ( ! \is_array( $ref ) || empty( $ref['provider'] ) ) {
+			return null;
+		}
+		if ( isset( $ref['event_id'] ) && (int) $ref['event_id'] !== $event_id ) {
+			foreach ( array( self::META_REF, self::META_URL, self::META_SHARED, self::META_AUTOCREATE, self::META_STATE ) as $key ) {
+				\delete_post_meta( $event_id, $key );
+			}
+			\wp_clear_scheduled_hook( self::HOOK, array( $event_id ) );
+			Events_Log::info( 'sheet_ref_copied_dropped', array( 'event_id' => $event_id, 'from' => (int) $ref['event_id'] ) );
+			return null;
+		}
+		return $ref;
 	}
 
 	private function is_pending( int $event_id ): bool {
@@ -143,40 +172,78 @@ class Sheets_Sync {
 	 */
 	public function run( $target ): array {
 		$target = (int) $target;
-		if ( $target <= 0 || ! $this->has_ref( $target ) || $this->module->uses_external_signup( $target ) ) {
+		if ( $target <= 0 ) {
+			return array();
+		}
+		$this->drop_ineligible_pending( $target );
+		if ( ! $this->has_ref( $target ) || $this->module->uses_external_signup( $target ) ) {
 			return array();
 		}
 		$lock = 'anchor_ev_sheet_lock_' . $target;
 		if ( ! $this->acquire_lock( $lock ) ) {
+			$this->schedule( $target ); // Another run holds it; keep this trigger so its change is not lost.
 			return $this->get_state( $target );
 		}
-		$this->create_warning = '';
 		try {
-			$created = $this->is_pending( $target ) ? $this->create_pending( $target ) : true;
-			if ( \is_wp_error( $created ) ) {
-				$result = $created;
-			} else {
-				$ref    = \get_post_meta( $target, self::META_REF, true );
-				$result = \is_array( $ref ) && ! empty( $ref['provider'] ) ? $this->sync_once( $target, $ref ) : 0;
-			}
+			$state = $this->run_locked( $target );
+			\update_post_meta( $target, self::META_STATE, $state );
 		} finally {
 			$this->release_lock( $lock );
 		}
-		if ( \is_wp_error( $result ) && $this->is_pending( $target ) && 'anchor_sheet_not_connected' === $result->get_error_code() ) {
-			// Waiting for a connection: not a failure; a later run creates it.
-			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => \__( 'Waiting to create the spreadsheet: connect Google under Settings > Anchor Tools > Connectors.', 'anchor-schema' ), 'rows' => 0 );
-		} elseif ( \is_wp_error( $result ) ) {
-			$state = array( 'last_sync' => \time(), 'ok' => false, 'message' => $result->get_error_message(), 'rows' => 0 );
-			Events_Log::error( 'sheet_sync_failed', array( 'event_id' => $target, 'code' => $result->get_error_code() ) );
-		} else {
-			$ref   = \get_post_meta( $target, self::META_REF, true );
-			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => \trim( $this->create_warning . ' ' . $this->share_step( $target, $ref ) ), 'rows' => (int) $result );
-		}
-		\update_post_meta( $target, self::META_STATE, $state );
 		return $state;
 	}
 
-	/** Atomic lock: add_option / wp_cache_add fail when the key exists; a stale option lock is taken over. */
+	/**
+	 * Group children are published before reconcile tags them, so the publish
+	 * transition may have marked one pending; an event can also switch to
+	 * external sign-up while pending. Neither gets a spreadsheet.
+	 */
+	private function drop_ineligible_pending( int $target ): void {
+		if ( $this->is_pending( $target ) && ( $this->module->uses_external_signup( $target )
+			|| ( $this->module->occurrences && $this->module->occurrences->is_group_child( $target ) ) ) ) {
+			\delete_post_meta( $target, self::META_AUTOCREATE );
+		}
+	}
+
+	/** Create (if pending) + sync + share, under the lock. Never throws. */
+	private function run_locked( int $target ): array {
+		$this->create_warning = '';
+		try {
+			$result = $this->is_pending( $target ) ? $this->create_pending( $target ) : true;
+			if ( ! \is_wp_error( $result ) ) {
+				$ref    = $this->ref( $target );
+				$result = $ref ? $this->sync_once( $target, $ref ) : 0;
+			}
+			return $this->state_for( $target, $result );
+		} catch ( \Throwable $e ) {
+			// The exception message may echo provider data: record a fixed message and code only.
+			return $this->state_for( $target, new \WP_Error( 'anchor_sheet_exception', \__( 'The sync stopped on an unexpected error. It retries on the next change, or press Sync now.', 'anchor-schema' ) ) );
+		}
+	}
+
+	/** @param int|true|\WP_Error $result Row count, true for a create with no sheet to sync, or the error. */
+	private function state_for( int $target, $result ): array {
+		if ( \is_wp_error( $result ) && $this->is_pending( $target ) && 'anchor_sheet_not_connected' === $result->get_error_code() ) {
+			// Waiting for a connection: not a failure; a later run creates it.
+			return array( 'last_sync' => \time(), 'ok' => true, 'message' => \__( 'Waiting to create the spreadsheet: connect Google under Settings > Anchor Tools > Connectors.', 'anchor-schema' ), 'rows' => 0 );
+		}
+		if ( \is_wp_error( $result ) ) {
+			Events_Log::error( 'sheet_sync_failed', array( 'event_id' => $target, 'code' => $result->get_error_code() ) );
+			return array( 'last_sync' => \time(), 'ok' => false, 'message' => $result->get_error_message(), 'rows' => 0 );
+		}
+		$ref   = $this->ref( $target );
+		$share = $ref ? $this->share_step( $target, $ref ) : '';
+		return array( 'last_sync' => \time(), 'ok' => true, 'message' => \trim( $this->create_warning . ' ' . $share ), 'rows' => (int) $result );
+	}
+
+	/**
+	 * Best-effort mutual exclusion. add_option() is an INSERT on the unique
+	 * option_name, so two racing first-takers cannot both win; wp_cache_add()
+	 * is atomic on a persistent cache. The stale-lock takeover (delete then
+	 * add) is not atomic: two runs that both see an expired lock in the same
+	 * instant can both take it. That window needs a run to have died holding
+	 * the lock for LOCK_TTL seconds, and the reconcile is idempotent anyway.
+	 */
 	private function acquire_lock( string $key ): bool {
 		if ( \wp_using_ext_object_cache() ) {
 			return \wp_cache_add( $key, 1, 'anchor_events', self::LOCK_TTL );
@@ -209,8 +276,7 @@ class Sheets_Sync {
 	 * @return true|\WP_Error
 	 */
 	private function create_pending( int $target ) {
-		$ref = \get_post_meta( $target, self::META_REF, true );
-		if ( \is_array( $ref ) && ! empty( $ref['provider'] ) ) {
+		if ( null !== $this->ref( $target ) ) {
 			\update_post_meta( $target, self::META_AUTOCREATE, 'done' ); // Already has a sheet: never create another.
 			return true;
 		}
@@ -235,7 +301,7 @@ class Sheets_Sync {
 			return true;
 		}
 		\update_post_meta( $target, self::META_URL, $made['url'] );
-		\update_post_meta( $target, self::META_REF, $made['ref'] );
+		\update_post_meta( $target, self::META_REF, \array_merge( (array) $made['ref'], array( 'event_id' => $target ) ) );
 		\delete_post_meta( $target, self::META_SHARED );
 		if ( ! empty( $made['warning'] ) ) {
 			Events_Log::info( 'sheet_folder_move_failed', array( 'event_id' => $target, 'code' => (string) $made['warning'] ) );

@@ -76,4 +76,17 @@ class Test_Sheets_Reconciler extends PHPUnit\Framework\TestCase {
 		$r = R::reconcile( array( array( 'Seat ID', 'Name' ), array( '2', 'B' ) ), $this->t( array( 'Seat ID', 'Name' ), array( array( 2, 'B' ) ) ), 'Seat ID' );
 		$this->assertSame( array(), $r['cells'] );
 	}
+
+	public function test_duplicate_header_labels_get_their_own_columns() {
+		$table = $this->t( array( 'Seat ID', 'Email', 'Phone', 'Email', 'Phone', 'Phone (2)', 'Seat ID' ), array( array( 1, 'a@x', '111', 'q-email', 'q-phone', 'already', 'q-seat' ) ) );
+		$r     = R::reconcile( array(), $table, 'Seat ID' );
+		$this->assertSame( array( 'Seat ID', 'Email', 'Phone', 'Email (2)', 'Phone (3)', 'Phone (2)', 'Seat ID (2)' ), $r['header_append'] );
+		$this->assertSame( array( array( '1', 'a@x', '111', 'q-email', 'q-phone', 'already', 'q-seat' ) ), $r['appends'] );
+		// Next run: the sheet already has the de-duplicated header; nothing collapses, nothing rewrites.
+		$sheet = array( $r['header_append'], $r['appends'][0] );
+		$again = R::reconcile( $sheet, $table, 'Seat ID' );
+		$this->assertSame( array(), $again['header_append'] );
+		$this->assertSame( array(), $again['cells'] );
+		$this->assertSame( array(), $again['appends'] );
+	}
 }

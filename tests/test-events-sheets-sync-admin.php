@@ -83,6 +83,7 @@ class Test_Events_Sheets_Sync_Admin extends Anchor_Events_TestCase {
 		add_filter( 'anchor_sheet_adapter_for_ref', array( $this, 'inject' ), 10, 2 );
 		add_filter( 'pre_http_request', array( $this, 'block' ), 10, 3 );
 		delete_option( 'anchor_connector_google' );
+		delete_option( \Anchor_Sheet_Google::SETTINGS_OPTION );
 		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
 	}
 
@@ -378,5 +379,25 @@ class Test_Events_Sheets_Sync_Admin extends Anchor_Events_TestCase {
 		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
 		$this->save( $e, self::URL );
 		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+	}
+
+	public function test_pasting_a_url_for_an_unconnected_provider_ends_pending_and_run_creates_nothing() {
+		update_option( 'anchor_connector_google', array( 'autocreate' => true ), false );
+		$this->fake = new Anchor_Sheet_Admin_Creator();
+		$e          = $this->make_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		$this->save( $e, self::URL ); // Google is not connected.
+		$this->assertSame( self::URL, get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->module()->sheets_sync->run( $e );
+		$this->assertSame( array(), $this->fake->creates );
+		$this->assertSame( self::URL, get_post_meta( $e, Sheets_Sync::META_URL, true ) );
+	}
+
+	public function test_saved_ref_is_bound_to_its_event() {
+		$this->connect();
+		$e = $this->make_event();
+		$this->save( $e, self::URL );
+		$this->assertSame( $e, get_post_meta( $e, Sheets_Sync::META_REF, true )['event_id'] );
 	}
 }

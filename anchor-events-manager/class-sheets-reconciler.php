@@ -17,13 +17,45 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Sheets_Reconciler {
 
 	/**
+	 * Columns are matched by header text, so two columns with the same label
+	 * (a question called "Email", two questions with one label) would collapse
+	 * into one. The first keeps its label (so the key column, which precedes
+	 * every question, is never renamed); later ones become "Label (2)", "(3)"…,
+	 * skipping any label already in the header.
+	 *
+	 * @param string[] $header
+	 * @return string[]
+	 */
+	public static function unique_headers( array $header ): array {
+		$taken = array_fill_keys( $header, true );
+		$seen  = array();
+		$out   = array();
+		foreach ( $header as $h ) {
+			if ( ! isset( $seen[ $h ] ) ) {
+				$seen[ $h ] = true;
+				$out[]      = $h;
+				continue;
+			}
+			$n = 2;
+			while ( isset( $taken[ $h . ' (' . $n . ')' ] ) ) {
+				++$n;
+			}
+			$label           = $h . ' (' . $n . ')';
+			$taken[ $label ] = true;
+			$seen[ $label ]  = true;
+			$out[]           = $label;
+		}
+		return $out;
+	}
+
+	/**
 	 * @param array  $existing   Sheet values; row 0 is the header, rows may be ragged.
 	 * @param array  $table      ['header' => string[], 'rows' => array[]], newest first.
 	 * @param string $key_header Header text of the unique row key column (Seat ID).
 	 * @return array{header_append:string[],header_start_col:int,cells:array,appends:string[][]}
 	 */
 	public static function reconcile( array $existing, array $table, string $key_header ): array {
-		$our_header = array_map( 'strval', array_values( $table['header'] ?? array() ) );
+		$our_header = self::unique_headers( array_map( 'strval', array_values( $table['header'] ?? array() ) ) );
 		$rows       = $table['rows'] ?? array();
 
 		$sheet_header = array();

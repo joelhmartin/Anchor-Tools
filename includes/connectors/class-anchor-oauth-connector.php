@@ -35,6 +35,7 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
 
         public static function bootstrap() {
             add_action( 'rest_api_init', array( __CLASS__, 'register_routes' ) );
+            add_filter( 'rest_pre_serve_request', array( __CLASS__, 'serve_html_page' ), 10, 4 );
         }
 
         public static function register_routes() {
@@ -43,6 +44,28 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
                 'callback'            => array( __CLASS__, 'handle_callback' ),
                 'permission_callback' => '__return_true', // Browser redirect carries no REST nonce; state + capability check protect it.
             ) );
+        }
+
+        /** Plain HTML error page (status carried on the response; served raw by serve_html_page). */
+        private static function error_page( $message, $status ) {
+            $back = admin_url( 'options-general.php?page=anchor-schema&tab=connectors' );
+            $html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
+                . esc_html__( 'Connection problem', 'anchor-schema' ) . '</title></head><body style="font-family:sans-serif;max-width:32em;margin:4em auto;padding:0 1em"><h1>'
+                . esc_html__( 'Connection problem', 'anchor-schema' ) . '</h1><p>' . esc_html( $message ) . '</p><p><a href="'
+                . esc_url( $back ) . '">' . esc_html__( 'Back to Connectors', 'anchor-schema' ) . '</a></p></body></html>';
+            $res  = new WP_REST_Response( $html, $status );
+            $res->header( 'Content-Type', 'text/html; charset=utf-8' );
+            $res->header( 'X-Anchor-Html', '1' );
+            return $res;
+        }
+
+        /** rest_pre_serve_request: emit our HTML error pages instead of JSON-encoding them. */
+        public static function serve_html_page( $served, $result, $request, $server ) {
+            if ( $result instanceof WP_REST_Response && $result->get_headers() && ! empty( $result->get_headers()['X-Anchor-Html'] ) ) {
+                echo $result->get_data(); // Built by error_page(); every dynamic part is escaped.
+                return true;
+            }
+            return $served;
         }
 
         /* ---------- stored state ---------- */
@@ -153,12 +176,12 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             $state = (string) $req->get_param( 'state' );
             $st    = '' === $state ? false : get_transient( 'anchor_oauth_state_' . $state );
             if ( ! is_array( $st ) || empty( $st['provider'] ) ) {
-                return new WP_Error( 'anchor_oauth_state', __( 'This connection link is invalid or has expired. Start again from Settings > Anchor Tools > Connectors.', 'anchor-schema' ), array( 'status' => 400 ) );
+                return self::error_page( __( 'This connection link is invalid or has expired. Start again from Settings > Anchor Tools > Connectors.', 'anchor-schema' ), 400 );
             }
             delete_transient( 'anchor_oauth_state_' . $state ); // Single use.
             $conn = self::get( $st['provider'] );
             if ( ! $conn || ! user_can( (int) $st['user_id'], 'manage_options' ) ) {
-                return new WP_Error( 'anchor_oauth_forbidden', __( 'You do not have permission to connect accounts.', 'anchor-schema' ), array( 'status' => 403 ) );
+                return self::error_page( __( 'You do not have permission to connect accounts.', 'anchor-schema' ), 403 );
             }
             $code = (string) $req->get_param( 'code' );
             if ( $req->get_param( 'error' ) || '' === $code ) {
@@ -209,8 +232,9 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             $data = json_decode( wp_remote_retrieve_body( $res ), true );
             $data = is_array( $data ) ? $data : array();
             if ( $code < 200 || $code >= 300 || empty( $data['access_token'] ) ) {
-                $err = isset( $data['error'] ) && is_string( $data['error'] ) ? $data['error'] : 'token_error';
-                return new WP_Error( 'anchor_oauth_token', $err, array( 'status' => $code, 'oauth_error' => $err ) );
+                $err  = isset( $data['error'] ) && is_string( $data['error'] ) ? $data['error'] : 'token_error';
+                $desc = isset( $data['error_description'] ) && is_string( $data['error_description'] ) ? ': ' . sanitize_text_field( $data['error_description'] ) : '';
+                return new WP_Error( 'anchor_oauth_token', $err . $desc, array( 'status' => $code, 'oauth_error' => $err ) );
             }
             return $data;
         }
@@ -265,7 +289,7 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             $tok = $this->token_request( array( 'grant_type' => 'refresh_token', 'refresh_token' => $refresh ) );
             if ( is_wp_error( $tok ) ) {
                 $d = $tok->get_error_data();
-                if ( is_array( $d ) && 'invalid_grant' === ( $d['oauth_error'] ?? '' ) ) {
+                if ( is_array( $d ) && in_array( $d['oauth_error'] ?? '', array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
                     $this->mark_needs_reconnect();
                 }
                 return $tok;
@@ -284,6 +308,16 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
 
         /** @return array|WP_Error Decoded JSON ([] for an empty body). */
         public function request( $method, $url, $json_body = null, array $headers = array() ) {
+            $res = $this->request_once( $method, $url, $json_body, $headers );
+            if ( is_wp_error( $res ) && 'anchor_oauth_http' === $res->get_error_code() && 401 === ( $res->get_error_data()['status'] ?? 0 ) ) {
+                // Stale/revoked access token: refresh once and retry once. A refresh failure marks needs_reconnect itself.
+                delete_transient( $this->at_key() );
+                return $this->request_once( $method, $url, $json_body, $headers );
+            }
+            return $res;
+        }
+
+        private function request_once( $method, $url, $json_body, array $headers ) {
             $token = $this->access_token();
             if ( is_wp_error( $token ) ) {
                 return $token;
@@ -302,9 +336,6 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             $data = json_decode( wp_remote_retrieve_body( $res ), true );
             if ( $code >= 200 && $code < 300 ) {
                 return is_array( $data ) ? $data : array();
-            }
-            if ( 401 === $code ) {
-                $this->mark_needs_reconnect();
             }
             $msg = '';
             if ( is_array( $data ) ) {

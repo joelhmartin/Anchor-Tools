@@ -139,8 +139,103 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
         $req->set_param( 'state', 'bogus' );
         $req->set_param( 'code', 'x' );
         $res = Anchor_OAuth_Connector::handle_callback( $req );
-        $this->assertWPError( $res );
+        $this->assertInstanceOf( 'WP_REST_Response', $res );
+        $this->assertSame( 400, $res->get_status() );
         $this->assertCount( 0, $this->calls );
+    }
+
+    public function test_unknown_state_serves_plain_html_page_with_link_back() {
+        $res = Anchor_OAuth_Connector::handle_callback( $this->callback_req( 'bogus', 'x' ) );
+        ob_start();
+        $served = Anchor_OAuth_Connector::serve_html_page( false, $res, new WP_REST_Request(), rest_get_server() );
+        $out    = ob_get_clean();
+        $this->assertTrue( $served );
+        $this->assertStringStartsWith( '<!doctype html>', $out );
+        $this->assertStringContainsString( 'tab=connectors', $out );
+        $this->assertStringNotContainsString( '{"', $out );
+        $this->assertFalse( Anchor_OAuth_Connector::serve_html_page( false, new WP_REST_Response( array( 'a' => 1 ) ), new WP_REST_Request(), rest_get_server() ) );
+    }
+
+    private function callback_req( $state, $code, array $extra = array() ) {
+        $r = new WP_REST_Request( 'GET', '/anchor-tools/v1/connectors/callback' );
+        $r->set_param( 'state', $state );
+        $r->set_param( 'code', $code );
+        foreach ( $extra as $k => $v ) {
+            $r->set_param( $k, $v );
+        }
+        return $r;
+    }
+
+    public function test_route_is_registered_for_get() {
+        $routes = rest_get_server()->get_routes();
+        $this->assertArrayHasKey( '/anchor-tools/v1/connectors/callback', $routes );
+        $this->assertArrayHasKey( 'GET', $routes['/anchor-tools/v1/connectors/callback'][0]['methods'] );
+    }
+
+    public function test_callback_with_provider_error_redirects_and_consumes_state() {
+        $uid = $this->admin();
+        $c   = $this->google();
+        parse_str( wp_parse_url( $c->begin_authorize( $uid ), PHP_URL_QUERY ), $q );
+        $res = Anchor_OAuth_Connector::handle_callback( $this->callback_req( $q['state'], '', array( 'error' => 'access_denied' ) ) );
+        $this->assertSame( 302, $res->get_status() );
+        $this->assertStringContainsString( 'anchor_connect_error=google', $res->get_headers()['Location'] );
+        $this->assertFalse( get_transient( 'anchor_oauth_state_' . $q['state'] ) );
+        $this->assertCount( 0, $this->calls );
+    }
+
+    public function test_401_refreshes_and_retries_once() {
+        $c = $this->connect();
+        $n = 0;
+        $this->responder = function ( $url ) use ( &$n ) {
+            if ( false !== strpos( $url, '/token' ) ) {
+                return array( 200, array( 'access_token' => 'AT-NEW', 'expires_in' => 3600 ) );
+            }
+            return 1 === ++$n ? array( 401, array( 'error' => array( 'message' => 'expired' ) ) ) : array( 200, array( 'ok' => 1 ) );
+        };
+        $this->assertSame( array( 'ok' => 1 ), $c->request( 'GET', 'https://sheets.googleapis.com/v4/x' ) );
+        $this->assertFalse( $c->needs_reconnect() );
+        $this->assertSame( 'Bearer AT-NEW', end( $this->calls )['headers']['Authorization'] );
+    }
+
+    public function test_401_on_retry_returns_error_without_marking() {
+        $c = $this->connect();
+        $this->responder = function ( $url ) {
+            if ( false !== strpos( $url, '/token' ) ) {
+                return array( 200, array( 'access_token' => 'AT-NEW', 'expires_in' => 3600 ) );
+            }
+            return array( 401, array( 'error' => array( 'message' => 'nope' ) ) );
+        };
+        $r = $c->request( 'GET', 'https://sheets.googleapis.com/v4/x' );
+        $this->assertWPError( $r );
+        $this->assertSame( 401, $r->get_error_data()['status'] );
+        $this->assertFalse( $c->needs_reconnect() );
+    }
+
+    public function test_401_then_invalid_grant_marks_needs_reconnect() {
+        $c = $this->connect();
+        $this->responder = function ( $url ) {
+            if ( false !== strpos( $url, '/token' ) ) {
+                return array( 400, array( 'error' => 'invalid_grant' ) );
+            }
+            return array( 401, array( 'error' => array( 'message' => 'expired' ) ) );
+        };
+        $this->assertWPError( $c->request( 'GET', 'https://sheets.googleapis.com/v4/x' ) );
+        $this->assertTrue( $c->needs_reconnect() );
+    }
+
+    public function test_invalid_client_marks_needs_reconnect() {
+        $c = $this->connect();
+        delete_transient( 'anchor_oauth_at_google' );
+        $this->responder = function () {
+            return array( 401, array( 'error' => 'invalid_client', 'error_description' => 'The OAuth client was deleted.' ) );
+        };
+        $r = $c->access_token();
+        $this->assertWPError( $r );
+        $this->assertStringContainsString( 'The OAuth client was deleted.', $r->get_error_message() );
+        $this->assertTrue( $c->needs_reconnect() );
+        $n = count( $this->calls );
+        $c->access_token();
+        $this->assertCount( $n, $this->calls );
     }
 
     public function test_callback_state_is_single_use() {
@@ -155,7 +250,7 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
             return $r;
         };
         $this->assertNotWPError( Anchor_OAuth_Connector::handle_callback( $mk() ) );
-        $this->assertWPError( Anchor_OAuth_Connector::handle_callback( $mk() ) );
+        $this->assertSame( 400, Anchor_OAuth_Connector::handle_callback( $mk() )->get_status() );
         $this->assertCount( 1, $this->token_posts() );
     }
 
@@ -167,7 +262,7 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
         $req = new WP_REST_Request( 'GET', '/anchor-tools/v1/connectors/callback' );
         $req->set_param( 'state', $q['state'] );
         $req->set_param( 'code', 'c' );
-        $this->assertWPError( Anchor_OAuth_Connector::handle_callback( $req ) );
+        $this->assertSame( 403, Anchor_OAuth_Connector::handle_callback( $req )->get_status() );
         $this->assertCount( 0, $this->calls );
         $this->assertFalse( $c->is_connected() );
     }
@@ -206,7 +301,9 @@ class Test_OAuth_Connector extends WP_UnitTestCase {
         $this->assertSame( 'AT-2', $c->access_token() );
         $this->assertSame( 'AT-2', $c->access_token() );
         $this->assertCount( $before + 1, $this->token_posts() );
-        $this->assertSame( 'refresh_token', end( $this->calls )['body']['grant_type'] ?? 'refresh_token' );
+        $post = $this->token_posts();
+        $this->assertSame( 'refresh_token', end( $post )['body']['grant_type'] );
+        $this->assertSame( 'RT-SECRET-1', end( $post )['body']['refresh_token'] );
     }
 
     public function test_rotated_refresh_token_is_persisted() {

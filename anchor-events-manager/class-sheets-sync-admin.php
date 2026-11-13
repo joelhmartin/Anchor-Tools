@@ -169,6 +169,12 @@ class Sheets_Sync_Admin {
 	}
 
 	private function clear( int $event_id ) {
+		// WP runs the publish transition before save_post, so an empty field on a
+		// first publish must stay a no-op or it would cancel a pending auto-create.
+		$had = \get_post_meta( $event_id, Sheets_Sync::META_URL, true ) !== '' || \get_post_meta( $event_id, Sheets_Sync::META_REF, true ) !== '';
+		if ( ! $had ) {
+			return;
+		}
 		$this->settle_pending( $event_id );
 		\delete_post_meta( $event_id, Sheets_Sync::META_URL );
 		\delete_post_meta( $event_id, Sheets_Sync::META_REF );

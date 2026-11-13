@@ -28,6 +28,9 @@ class Sheets_Sync {
 	/** @var Module */
 	private $module;
 
+	/** @var string Warning from the last create (folder move), shown in the state message. */
+	private $create_warning = '';
+
 	public function __construct( $module ) {
 		$this->module = $module;
 		\add_action( 'anchor_events_seat_created', array( $this, 'on_seat' ), 10, 1 );
@@ -144,10 +147,10 @@ class Sheets_Sync {
 			return array();
 		}
 		$lock = 'anchor_ev_sheet_lock_' . $target;
-		if ( \get_transient( $lock ) ) {
+		if ( ! $this->acquire_lock( $lock ) ) {
 			return $this->get_state( $target );
 		}
-		\set_transient( $lock, 1, self::LOCK_TTL );
+		$this->create_warning = '';
 		try {
 			$created = $this->is_pending( $target ) ? $this->create_pending( $target ) : true;
 			if ( \is_wp_error( $created ) ) {
@@ -157,7 +160,7 @@ class Sheets_Sync {
 				$result = \is_array( $ref ) && ! empty( $ref['provider'] ) ? $this->sync_once( $target, $ref ) : 0;
 			}
 		} finally {
-			\delete_transient( $lock );
+			$this->release_lock( $lock );
 		}
 		if ( \is_wp_error( $result ) && $this->is_pending( $target ) && 'anchor_sheet_not_connected' === $result->get_error_code() ) {
 			// Waiting for a connection: not a failure; a later run creates it.
@@ -167,10 +170,36 @@ class Sheets_Sync {
 			Events_Log::error( 'sheet_sync_failed', array( 'event_id' => $target, 'code' => $result->get_error_code() ) );
 		} else {
 			$ref   = \get_post_meta( $target, self::META_REF, true );
-			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => $this->share_step( $target, $ref ), 'rows' => (int) $result );
+			$state = array( 'last_sync' => \time(), 'ok' => true, 'message' => \trim( $this->create_warning . ' ' . $this->share_step( $target, $ref ) ), 'rows' => (int) $result );
 		}
 		\update_post_meta( $target, self::META_STATE, $state );
 		return $state;
+	}
+
+	/** Atomic lock: add_option / wp_cache_add fail when the key exists; a stale option lock is taken over. */
+	private function acquire_lock( string $key ): bool {
+		if ( \wp_using_ext_object_cache() ) {
+			return \wp_cache_add( $key, 1, 'anchor_events', self::LOCK_TTL );
+		}
+		if ( \add_option( $key, \time(), '', false ) ) {
+			return true;
+		}
+		\wp_cache_delete( $key, 'options' );
+		\wp_cache_delete( 'alloptions', 'options' );
+		$held = (int) \get_option( $key, 0 );
+		if ( $held > 0 && \time() - $held < self::LOCK_TTL ) {
+			return false;
+		}
+		\delete_option( $key );
+		return (bool) \add_option( $key, \time(), '', false );
+	}
+
+	private function release_lock( string $key ): void {
+		if ( \wp_using_ext_object_cache() ) {
+			\wp_cache_delete( $key, 'anchor_events' );
+			return;
+		}
+		\delete_option( $key );
 	}
 
 	/**
@@ -180,6 +209,11 @@ class Sheets_Sync {
 	 * @return true|\WP_Error
 	 */
 	private function create_pending( int $target ) {
+		$ref = \get_post_meta( $target, self::META_REF, true );
+		if ( \is_array( $ref ) && ! empty( $ref['provider'] ) ) {
+			\update_post_meta( $target, self::META_AUTOCREATE, 'done' ); // Already has a sheet: never create another.
+			return true;
+		}
 		$creator = \Anchor_Sheet_Adapters::for_ref( array( 'provider' => 'google' ) );
 		if ( ! $creator || ! \method_exists( $creator, 'create' ) ) {
 			return new \WP_Error( 'no_adapter', \__( 'Unsupported spreadsheet provider.', 'anchor-schema' ) );
@@ -193,10 +227,20 @@ class Sheets_Sync {
 		if ( \is_wp_error( $made ) ) {
 			return $made;
 		}
+		// Mark done first so a partial failure below can never trigger a second create.
+		\update_post_meta( $target, self::META_AUTOCREATE, 'done' );
+		if ( \get_post_meta( $target, self::META_URL, true ) !== '' ) {
+			// A URL was saved while we were creating: keep the user's, leave the new sheet discoverable.
+			Events_Log::info( 'sheet_autocreate_orphan', array( 'event_id' => $target, 'url' => $made['url'] ) );
+			return true;
+		}
 		\update_post_meta( $target, self::META_URL, $made['url'] );
 		\update_post_meta( $target, self::META_REF, $made['ref'] );
-		\update_post_meta( $target, self::META_AUTOCREATE, 'done' );
 		\delete_post_meta( $target, self::META_SHARED );
+		if ( ! empty( $made['warning'] ) ) {
+			Events_Log::info( 'sheet_folder_move_failed', array( 'event_id' => $target, 'code' => (string) $made['warning'] ) );
+			$this->create_warning = \__( "Created, but couldn't move it into the chosen folder.", 'anchor-schema' );
+		}
 		return true;
 	}
 

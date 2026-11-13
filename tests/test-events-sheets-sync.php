@@ -60,12 +60,13 @@ class Anchor_Fake_Shareable_Adapter extends Anchor_Fake_Sheet_Adapter {
 class Anchor_Fake_Creator_Adapter extends Anchor_Fake_Shareable_Adapter {
 	public $creates = array();
 	public $create_error = null;
+	public $create_warning = '';
 	public function create( $title, $folder_id = '' ) {
 		if ( $this->create_error ) {
 			return $this->create_error;
 		}
 		$this->creates[] = array( 'title' => $title, 'folder' => $folder_id );
-		return array( 'url' => 'https://docs.google.com/spreadsheets/d/NEW/edit', 'ref' => array( 'provider' => 'google', 'id' => 'NEW', 'tab' => 'Sheet1' ) );
+		return array( 'url' => 'https://docs.google.com/spreadsheets/d/NEW/edit', 'ref' => array( 'provider' => 'google', 'id' => 'NEW', 'tab' => 'Sheet1' ), 'warning' => $this->create_warning );
 	}
 }
 
@@ -231,13 +232,13 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 	public function test_lock_prevents_concurrent_run() {
 		$e = $this->with_sheet( $this->make_event() );
 		$this->make_seat( $e );
-		set_transient( 'anchor_ev_sheet_lock_' . $e, 1, 120 );
+		add_option( 'anchor_ev_sheet_lock_' . $e, time(), '', false );
 		$this->sync()->run( $e );
 		$this->assertSame( 0, $this->fake->reads );
-		delete_transient( 'anchor_ev_sheet_lock_' . $e );
+		update_option( 'anchor_ev_sheet_lock_' . $e, time() - 3600, false ); // Stale: taken over.
 		$this->sync()->run( $e );
 		$this->assertSame( 1, $this->fake->reads );
-		$this->assertFalse( get_transient( 'anchor_ev_sheet_lock_' . $e ), 'lock released' );
+		$this->assertFalse( get_option( 'anchor_ev_sheet_lock_' . $e ), 'lock released' );
 	}
 
 	public function test_external_signup_event_does_not_sync() {
@@ -445,5 +446,42 @@ class Test_Events_Sheets_Sync extends Anchor_Events_TestCase {
 		_set_cron_array( array() );
 		$this->make_seat( $e );
 		$this->assertNotFalse( $this->queued( $e ) );
+	}
+
+	public function test_editor_publish_with_empty_url_field_keeps_pending_and_creates_once() {
+		$this->autocreate();
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$e = $this->draft_event();
+		$_POST = array(
+			\Anchor\Events\Sheets_Sync_Admin::NONCE_FIELD => wp_create_nonce( \Anchor\Events\Sheets_Sync_Admin::NONCE_ACTION ),
+			\Anchor\Events\Sheets_Sync_Admin::URL_FIELD   => '',
+		);
+		wp_update_post( array( 'ID' => $e, 'post_status' => 'publish' ) );
+		$_POST = array();
+		$this->assertSame( 'pending', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+		$this->assertNotFalse( $this->queued( $e ) );
+		$this->sync()->run( $e );
+		$this->sync()->run( $e );
+		$this->assertCount( 1, $this->fake->creates );
+	}
+
+	public function test_pending_with_existing_ref_does_not_create() {
+		$this->autocreate();
+		$e = $this->with_sheet( $this->draft_event() );
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		$this->sync()->run( $e );
+		$this->assertSame( array(), $this->fake->creates );
+		$this->assertSame( 'done', get_post_meta( $e, Sheets_Sync::META_AUTOCREATE, true ) );
+	}
+
+	public function test_folder_move_failure_is_a_state_warning() {
+		$this->autocreate( true, 'F1' );
+		$this->fake->create_warning = 'anchor_oauth_http';
+		$e = $this->draft_event();
+		update_post_meta( $e, Sheets_Sync::META_AUTOCREATE, 'pending' );
+		$state = $this->sync()->run( $e );
+		$this->assertTrue( $state['ok'] );
+		$this->assertStringContainsString( "couldn't move it into the chosen folder", $state['message'] );
+		$this->assertSame( 'NEW', get_post_meta( $e, Sheets_Sync::META_REF, true )['id'] );
 	}
 }

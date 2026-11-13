@@ -65,12 +65,15 @@ if ( ! class_exists( 'Anchor_Sheet_Google' ) ) {
             if ( '' === $id ) {
                 return new WP_Error( 'anchor_sheet_create_failed', __( 'Google did not return a spreadsheet.', 'anchor-schema' ) );
             }
+            $warning = '';
             if ( '' !== $folder_id ) {
-                $this->call( 'PATCH', self::DRIVE . rawurlencode( $id ) . '?addParents=' . rawurlencode( $folder_id ) . '&removeParents=root&supportsAllDrives=true' );
+                $moved = $this->call( 'PATCH', self::DRIVE . rawurlencode( $id ) . '?addParents=' . rawurlencode( $folder_id ) . '&removeParents=root&supportsAllDrives=true' );
+                $warning = is_wp_error( $moved ) ? $moved->get_error_code() : '';
             }
             return array(
                 'url' => (string) ( $res['spreadsheetUrl'] ?? 'https://docs.google.com/spreadsheets/d/' . $id . '/edit' ),
                 'ref' => array( 'provider' => 'google', 'id' => $id, 'tab' => (string) ( $res['sheets'][0]['properties']['title'] ?? 'Sheet1' ) ),
+                'warning' => $warning,
             );
         }
 

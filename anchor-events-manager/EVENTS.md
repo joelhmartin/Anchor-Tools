@@ -461,10 +461,16 @@ the row diff is the pure `Sheets_Reconciler`.
 Anchor runs one Google OAuth client and one Microsoft Entra app for all sites. Their
 credentials live in each site's `wp-config.php` as `ANCHOR_GOOGLE_CLIENT_ID`,
 `ANCHOR_GOOGLE_CLIENT_SECRET` and `ANCHOR_MICROSOFT_CLIENT_ID`, never in this public
-repo or the release ZIP. `bin/push-connector-credentials.sh SITES_FILE` writes them over
-ssh and prints each site's callback URL; add every printed URL to the Google client's
-Authorized redirect URIs and the Entra app's redirect URIs. With the constants set,
-the card shows only **Sign in with Google / Microsoft**.
+repo or the release ZIP, plus `ANCHOR_OAUTH_RELAY_KEY` (one random value, same on every
+site). `bin/push-connector-credentials.sh SITES_FILE` writes them over ssh. With the
+constants set, the card shows only **Sign in with Google / Microsoft**.
+
+Logins return through Anchor's relay, `anchor-tools/v1/connectors/relay` on
+anchoryourpractice.com (`Anchor_OAuth_Connector::DEFAULT_RELAY_URL`; override with the
+`ANCHOR_OAUTH_RELAY_URL` constant). That is the ONLY redirect URI registered with Google
+and Entra, so a new site needs no console change. The relay forwards only states signed
+with the relay key, and only to a site's own connector callback. Without the relay key
+a site falls back to its own callback URL, which must then be registered.
 
 - **Google client:** type "Web application", **Internal** consent screen, Sheets API and
   Drive API enabled.

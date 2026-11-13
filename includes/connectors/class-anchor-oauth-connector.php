@@ -11,6 +11,9 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
     class Anchor_OAuth_Connector {
         const REST_NS    = 'anchor-tools/v1';
         const REST_ROUTE = '/connectors/callback';
+        const RELAY_ROUTE = '/connectors/relay';
+        /** Anchor's relay: the one redirect URI registered with Google/Microsoft for every site. */
+        const DEFAULT_RELAY_URL = 'https://anchoryourpractice.com/wp-json/anchor-tools/v1/connectors/relay';
 
         private $provider;
         private $def;
@@ -44,6 +47,96 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
                 'callback'            => array( __CLASS__, 'handle_callback' ),
                 'permission_callback' => '__return_true', // Browser redirect carries no REST nonce; state + capability check protect it.
             ) );
+            register_rest_route( self::REST_NS, self::RELAY_ROUTE, array(
+                'methods'             => 'GET',
+                'callback'            => array( __CLASS__, 'handle_relay' ),
+                'permission_callback' => '__return_true', // Forwards only states signed with the shared relay key.
+            ) );
+        }
+
+        /* ---------- relay ---------- */
+
+        /**
+         * Shared relay key (wp-config ANCHOR_OAUTH_RELAY_KEY, same on every site). Signs the
+         * return address inside state so the relay forwards only logins our own sites started.
+         */
+        private static function relay_key() {
+            $v = defined( 'ANCHOR_OAUTH_RELAY_KEY' ) ? (string) constant( 'ANCHOR_OAUTH_RELAY_KEY' ) : '';
+            return trim( (string) apply_filters( 'anchor_connector_relay_key', $v ) );
+        }
+
+        private static function relay_url() {
+            $v = defined( 'ANCHOR_OAUTH_RELAY_URL' ) ? (string) constant( 'ANCHOR_OAUTH_RELAY_URL' ) : self::DEFAULT_RELAY_URL;
+            return trim( (string) apply_filters( 'anchor_connector_relay_url', $v ) );
+        }
+
+        /** True when logins go through the relay (shared app + relay key), so no per-site redirect URI is needed. */
+        public function uses_relay() {
+            return $this->uses_shared_app() && '' !== self::relay_key() && '' !== self::relay_url();
+        }
+
+        /** The redirect_uri sent to the provider (authorize and token exchange must match). */
+        public function redirect_uri() {
+            return $this->uses_relay() ? self::relay_url() : $this->callback_url();
+        }
+
+        private static function b64url( $s ) {
+            return rtrim( strtr( base64_encode( $s ), '+/', '-_' ), '=' );
+        }
+
+        private static function sign_state( $nonce, $return_url ) {
+            $body = $nonce . '.' . self::b64url( $return_url );
+            return $body . '.' . self::b64url( hash_hmac( 'sha256', $body, self::relay_key(), true ) );
+        }
+
+        /** @return string|false The verified return URL, or false. */
+        private static function verify_state( $state ) {
+            $parts = explode( '.', (string) $state );
+            if ( 3 !== count( $parts ) || '' === self::relay_key() ) {
+                return false;
+            }
+            $want = self::b64url( hash_hmac( 'sha256', $parts[0] . '.' . $parts[1], self::relay_key(), true ) );
+            if ( ! hash_equals( $want, $parts[2] ) ) {
+                return false;
+            }
+            $url = base64_decode( strtr( $parts[1], '-_', '+/' ), true );
+            if ( ! is_string( $url ) ) {
+                return false;
+            }
+            $u = wp_parse_url( $url );
+            // Only ever a site's own connector callback (pretty or ?rest_route= form).
+            $route = self::REST_NS . self::REST_ROUTE;
+            $ok_path = isset( $u['path'] ) && '/' . $route === substr( $u['path'], -strlen( '/' . $route ) );
+            $ok_qs   = isset( $u['query'] ) && false !== strpos( rawurldecode( $u['query'] ), 'rest_route=/' . $route );
+            if ( empty( $u['host'] ) || ! in_array( $u['scheme'] ?? '', array( 'https', 'http' ), true ) || ! ( $ok_path || $ok_qs ) ) {
+                return false;
+            }
+            return $url;
+        }
+
+        /** GET /connectors/relay: verify the signed state, then forward the provider's reply to the site that asked. */
+        public static function handle_relay( WP_REST_Request $req ) {
+            $state  = (string) $req->get_param( 'state' );
+            $return = self::verify_state( $state );
+            if ( false === $return ) {
+                return self::error_page( __( 'This sign-in link is invalid or was not started by an Anchor site.', 'anchor-schema' ), 400 );
+            }
+            $args = array( 'state' => $state );
+            foreach ( array( 'code', 'error', 'error_description' ) as $k ) {
+                $v = $req->get_param( $k );
+                if ( is_string( $v ) && '' !== $v ) {
+                    $args[ $k ] = $v;
+                }
+            }
+            $res = new WP_REST_Response( null, 302 );
+            $res->header( 'Location', $return . ( false === strpos( $return, '?' ) ? '?' : '&' ) . http_build_query( $args, '', '&', PHP_QUERY_RFC3986 ) );
+            return $res;
+        }
+
+        /** The nonce part of a (possibly relay-signed) state. */
+        private static function state_nonce( $state ) {
+            $nonce = explode( '.', (string) $state )[0];
+            return preg_match( '/^[a-f0-9]{64}$/', $nonce ) ? $nonce : '';
         }
 
         /** Plain HTML error page (status carried on the response; served raw by serve_html_page). */
@@ -174,6 +267,7 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
         public function begin_authorize( $user_id ) {
             $state    = bin2hex( random_bytes( 32 ) );
             $verifier = rtrim( strtr( base64_encode( random_bytes( 48 ) ), '+/', '-_' ), '=' );
+            $sent     = $this->uses_relay() ? self::sign_state( $state, $this->callback_url() ) : $state;
             set_transient( 'anchor_oauth_state_' . $state, array(
                 'provider' => $this->provider,
                 'verifier' => $verifier,
@@ -181,10 +275,10 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             ), 600 );
             $params = array_merge( array(
                 'client_id'             => $this->client_id(),
-                'redirect_uri'          => $this->callback_url(),
+                'redirect_uri'          => $this->redirect_uri(),
                 'response_type'         => 'code',
                 'scope'                 => $this->def['scopes'],
-                'state'                 => $state,
+                'state'                 => $sent,
                 'code_challenge'        => rtrim( strtr( base64_encode( hash( 'sha256', $verifier, true ) ), '+/', '-_' ), '=' ),
                 'code_challenge_method' => 'S256',
             ), $this->def['auth_params'] );
@@ -204,7 +298,7 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
         }
 
         public static function handle_callback( WP_REST_Request $req ) {
-            $state = (string) $req->get_param( 'state' );
+            $state = self::state_nonce( $req->get_param( 'state' ) );
             $st    = '' === $state ? false : get_transient( 'anchor_oauth_state_' . $state );
             if ( ! is_array( $st ) || empty( $st['provider'] ) ) {
                 return self::error_page( __( 'This connection link is invalid or has expired. Start again from Settings > Anchor Tools > Connectors.', 'anchor-schema' ), 400 );
@@ -221,7 +315,7 @@ if ( ! class_exists( 'Anchor_OAuth_Connector' ) ) {
             $tok = $conn->token_request( array(
                 'grant_type'    => 'authorization_code',
                 'code'          => $code,
-                'redirect_uri'  => $conn->callback_url(),
+                'redirect_uri'  => $conn->redirect_uri(),
                 'code_verifier' => (string) $st['verifier'],
             ) );
             if ( is_wp_error( $tok ) ) {

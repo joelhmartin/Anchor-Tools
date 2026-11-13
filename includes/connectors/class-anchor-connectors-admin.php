@@ -231,7 +231,10 @@ if ( ! class_exists( 'Anchor_Connectors_Admin' ) ) {
             echo '<h2>' . esc_html( $c->label() ) . '</h2>';
             echo '<p><strong>' . esc_html( $this->status( $c ) ) . '</strong></p>';
 
-            if ( $shared ) {
+            if ( $shared && $c->uses_relay() ) {
+                /* translators: %s provider */
+                echo '<p>' . esc_html( sprintf( __( "This site uses Anchor's shared %s app. Nothing to set up: sign in below.", 'anchor-schema' ), $c->label() ) ) . '</p>';
+            } elseif ( $shared ) {
                 /* translators: %s provider */
                 echo '<p>' . esc_html( sprintf( __( "This site uses Anchor's shared %s app. If sign-in says the redirect URI doesn't match, add this callback URL to that app:", 'anchor-schema' ), $c->label() ) ) . '</p>';
                 echo '<p>' . $copy . '</p>'; // phpcs:ignore WordPress.Security.EscapeOutput -- escaped above.

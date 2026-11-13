@@ -13,10 +13,12 @@
 #
 # Credentials come from the environment (each one optional; unset = not touched):
 #   ANCHOR_GOOGLE_CLIENT_ID  ANCHOR_GOOGLE_CLIENT_SECRET  ANCHOR_MICROSOFT_CLIENT_ID
+#   ANCHOR_OAUTH_RELAY_KEY   (same random value on every site; turns on the relay)
 #
-# Values travel over ssh stdin, not the command line. Collect the printed
-# callback URLs and add them all to the Google OAuth client's
-# "Authorized redirect URIs" (and the Entra app's redirect URIs) in one go.
+# Values travel over ssh stdin, not the command line. With the relay key set,
+# logins return through Anchor's relay (Anchor_OAuth_Connector::DEFAULT_RELAY_URL),
+# which is the only redirect URI the Google/Entra apps need. Without it, add each
+# printed callback URL to the apps' redirect URIs.
 set -euo pipefail
 
 urls_only=0
@@ -27,7 +29,7 @@ fi
 sites="${1:?usage: $0 [--urls-only] SITES_FILE}"
 [[ -r "$sites" ]] || { echo "Cannot read $sites" >&2; exit 1; }
 
-names=(ANCHOR_GOOGLE_CLIENT_ID ANCHOR_GOOGLE_CLIENT_SECRET ANCHOR_MICROSOFT_CLIENT_ID)
+names=(ANCHOR_GOOGLE_CLIENT_ID ANCHOR_GOOGLE_CLIENT_SECRET ANCHOR_MICROSOFT_CLIENT_ID ANCHOR_OAUTH_RELAY_KEY)
 if [[ $urls_only -eq 0 ]]; then
   any=0
   for n in "${names[@]}"; do [[ -n "${!n:-}" ]] && any=1; done

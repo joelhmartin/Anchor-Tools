@@ -34,6 +34,9 @@ class Sheets_Sync_Admin {
 		\add_action( 'save_post_' . Module::CPT, array( $this, 'save' ), 20, 1 );
 		\add_action( 'admin_post_' . self::SYNC_ACTION, array( $this, 'handle_sync_now' ) );
 		\add_action( 'admin_post_' . self::CREATE_ACTION, array( $this, 'handle_create' ) );
+		// The [event_manager] front-end form: same fields, saved by save() above
+		// because its save goes through wp_update_post() and fires save_post.
+		\add_action( 'anchor_events_manager_form_fields', array( $this, 'render_frontend' ), 10, 1 );
 	}
 
 	public function add_metabox() {
@@ -208,8 +211,7 @@ class Sheets_Sync_Admin {
 		} else {
 			$this->fail( $event_id, \__( 'Nothing to sync: this event has no connected spreadsheet, or takes sign-ups on an external form.', 'anchor-schema' ) );
 		}
-		\wp_safe_redirect( (string) \get_edit_post_link( $event_id, 'url' ) );
-		exit;
+		$this->redirect_back( $event_id );
 	}
 
 	/* ------------------------------------------------------------------
@@ -226,8 +228,26 @@ class Sheets_Sync_Admin {
 		if ( ! $state ) {
 			$this->fail( $event_id, \__( 'Nothing to create: this event already has a spreadsheet, or takes sign-ups on an external form.', 'anchor-schema' ) );
 		}
-		\wp_safe_redirect( (string) \get_edit_post_link( $event_id, 'url' ) );
+		$this->redirect_back( $event_id );
+	}
+
+	/**
+	 * Back to the screen the button was pressed on: the `return` arg when it is
+	 * on this site (the front-end manager form), else the wp-admin edit screen.
+	 */
+	private function redirect_back( int $event_id ) {
+		$fallback = (string) \get_edit_post_link( $event_id, 'url' );
+		$return   = isset( $_REQUEST['return'] ) ? (string) \wp_unslash( $_REQUEST['return'] ) : '';
+		\wp_safe_redirect( $return !== '' ? \wp_validate_redirect( $return, $fallback ) : $fallback );
 		exit;
+	}
+
+	private function action_url( string $action, int $event_id, string $return ): string {
+		$url = \admin_url( 'admin-post.php?action=' . $action . '&event_id=' . $event_id );
+		if ( $return !== '' ) {
+			$url = \add_query_arg( 'return', \rawurlencode( $return ), $url );
+		}
+		return \wp_nonce_url( $url, $action . '_' . $event_id );
 	}
 
 	/* ------------------------------------------------------------------
@@ -236,19 +256,60 @@ class Sheets_Sync_Admin {
 
 	/** @param \WP_Post $post */
 	public function render( $post ) {
-		$event_id = (int) $post->ID;
-		if ( $this->module->uses_external_signup( $event_id ) ) {
+		$this->render_body( (int) $post->ID, self::admin_ui(), '' );
+	}
+
+	/**
+	 * The same controls inside the [event_manager] front-end form, as one more
+	 * form section. Its buttons come back to this page, not to wp-admin.
+	 *
+	 * @param int $event_id 0 while creating a new event.
+	 */
+	public function render_frontend( $event_id ) {
+		$event_id = (int) $event_id;
+		if ( $event_id > 0 && ! $this->can_manage( $event_id ) ) {
+			return;
+		}
+		// data-step 4 (Registration) so the step wizard shows it with sign-up settings.
+		echo '<div class="anchor-event-section anchor-event-sheet" data-step="4">';
+		echo '<h3>' . \esc_html__( 'Spreadsheet', 'anchor-schema' ) . '</h3>';
+		$this->render_body( $event_id, self::frontend_ui(), \remove_query_arg( 'event_manager_notice' ) );
+		if ( $event_id <= 0 ) {
+			echo '<p class="anchor-event-hint">' . \esc_html__( 'Paste a link now, or create the event first and come back to make a new spreadsheet.', 'anchor-schema' ) . '</p>';
+		}
+		echo '</div>';
+	}
+
+	/** @return array<string,string> */
+	private static function admin_ui(): array {
+		return array( 'input' => 'widefat', 'hint' => 'description', 'button' => 'button' );
+	}
+
+	/** @return array<string,string> */
+	private static function frontend_ui(): array {
+		return array( 'input' => '', 'hint' => 'anchor-event-hint', 'button' => 'anchor-event-button-secondary' );
+	}
+
+	/**
+	 * @param array<string,string> $ui     CSS classes for this screen.
+	 * @param string               $return Where the buttons come back to; '' = the wp-admin edit screen.
+	 */
+	private function render_body( int $event_id, array $ui, string $return ) {
+		if ( $event_id > 0 && $this->module->uses_external_signup( $event_id ) ) {
 			echo '<p>' . \esc_html__( "This event takes sign-ups on an external form, so there's nothing to sync.", 'anchor-schema' ) . '</p>';
 			return;
 		}
-		$ref     = $this->sync->ref( $event_id );
-		$url     = (string) \get_post_meta( $event_id, Sheets_Sync::META_URL, true );
+		$ref     = $event_id > 0 ? $this->sync->ref( $event_id ) : null;
+		$url     = $event_id > 0 ? (string) \get_post_meta( $event_id, Sheets_Sync::META_URL, true ) : '';
 		$has_ref = null !== $ref;
 
-		\wp_nonce_field( self::NONCE_ACTION, self::NONCE_FIELD );
+		\wp_nonce_field( self::NONCE_ACTION, self::NONCE_FIELD, false ); // The host form already sends its referer.
 		echo '<p><label for="anchor_event_sheet_url"><strong>' . \esc_html__( 'Spreadsheet URL', 'anchor-schema' ) . '</strong></label>';
-		echo '<input type="url" class="widefat" id="anchor_event_sheet_url" name="' . \esc_attr( self::URL_FIELD ) . '" value="' . \esc_attr( $url ) . '" placeholder="https://docs.google.com/spreadsheets/d/..."></p>';
-		echo '<p class="description">' . \esc_html__( 'Every registration field and answer is copied to this spreadsheet.', 'anchor-schema' ) . '</p>';
+		echo '<input type="url" class="' . \esc_attr( $ui['input'] ) . '" id="anchor_event_sheet_url" name="' . \esc_attr( self::URL_FIELD ) . '" value="' . \esc_attr( $url ) . '" placeholder="https://docs.google.com/spreadsheets/d/..."></p>';
+		echo '<p class="' . \esc_attr( $ui['hint'] ) . '">' . \esc_html__( 'Every registration field and answer is copied to this spreadsheet.', 'anchor-schema' ) . '</p>';
+		if ( $event_id <= 0 ) {
+			return;
+		}
 
 		$notice = \get_transient( $this->notice_key( $event_id ) );
 		if ( $notice ) {
@@ -259,18 +320,15 @@ class Sheets_Sync_Admin {
 		$pending = \get_post_meta( $event_id, Sheets_Sync::META_AUTOCREATE, true ) === 'pending';
 		$this->render_connection( $url, $has_ref ? $ref : ( $pending ? array( 'provider' => 'google' ) : $ref ) );
 		if ( $has_ref || $pending ) {
-			$this->render_state( $event_id, $has_ref );
+			$this->render_state( $event_id, $has_ref, $ui, $return );
 		}
 		$target = $this->sync->target_for_event( $event_id );
 		if ( ! $has_ref && $target > 0 && $target !== $event_id ) {
 			echo '<p>' . \esc_html__( "This date's registrations go to the series spreadsheet on the main event.", 'anchor-schema' ) . '</p>';
 		}
 		if ( $this->sync->can_create( $event_id ) ) {
-			$link = \wp_nonce_url(
-				\admin_url( 'admin-post.php?action=' . self::CREATE_ACTION . '&event_id=' . $event_id ),
-				self::CREATE_ACTION . '_' . $event_id
-			);
-			echo '<p><a class="button" href="' . \esc_url( $link ) . '">' . \esc_html__( 'Create spreadsheet', 'anchor-schema' ) . '</a></p>';
+			$link = $this->action_url( self::CREATE_ACTION, $event_id, $return );
+			echo '<p><a class="' . \esc_attr( $ui['button'] ) . '" href="' . \esc_url( $link ) . '">' . \esc_html__( 'Create spreadsheet', 'anchor-schema' ) . '</a></p>';
 		}
 	}
 
@@ -295,7 +353,7 @@ class Sheets_Sync_Admin {
 			. \esc_html__( 'Settings → Anchor Tools → Connectors', 'anchor-schema' ) . '</a>.</p>';
 	}
 
-	private function render_state( int $event_id, bool $has_ref = true ) {
+	private function render_state( int $event_id, bool $has_ref, array $ui, string $return ) {
 		$state = $this->sync->get_state( $event_id );
 		if ( $state ) {
 			$when = \wp_date( 'M j, Y g:i a', (int) ( $state['last_sync'] ?? 0 ) );
@@ -323,10 +381,7 @@ class Sheets_Sync_Admin {
 		if ( ! $has_ref ) {
 			return;
 		}
-		$link = \wp_nonce_url(
-			\admin_url( 'admin-post.php?action=' . self::SYNC_ACTION . '&event_id=' . $event_id ),
-			self::SYNC_ACTION . '_' . $event_id
-		);
-		echo '<p><a class="button" href="' . \esc_url( $link ) . '">' . \esc_html__( 'Sync now', 'anchor-schema' ) . '</a></p>';
+		$link = $this->action_url( self::SYNC_ACTION, $event_id, $return );
+		echo '<p><a class="' . \esc_attr( $ui['button'] ) . '" href="' . \esc_url( $link ) . '">' . \esc_html__( 'Sync now', 'anchor-schema' ) . '</a></p>';
 	}
 }

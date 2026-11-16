@@ -400,4 +400,69 @@ class Test_Events_Sheets_Sync_Admin extends Anchor_Events_TestCase {
 		$this->save( $e, self::URL );
 		$this->assertSame( $e, get_post_meta( $e, Sheets_Sync::META_REF, true )['event_id'] );
 	}
+
+	private function frontend( $event_id ) {
+		ob_start();
+		do_action( 'anchor_events_manager_form_fields', $event_id, $this->module() );
+		return ob_get_clean();
+	}
+
+	private function press_create( $event_id, $return ) {
+		$_REQUEST = array( 'event_id' => $event_id, 'return' => $return, '_wpnonce' => wp_create_nonce( 'anchor_events_sheet_create_' . $event_id ) );
+		$trap     = function ( $location ) {
+			throw new Anchor_Sheet_Admin_Redirect_Signal( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$this->admin()->handle_create();
+			$this->fail( 'No redirect.' );
+		} catch ( Anchor_Sheet_Admin_Redirect_Signal $s ) {
+			return $s->getMessage();
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
+	}
+
+	public function test_frontend_manager_form_shows_the_spreadsheet_section() {
+		$this->connect();
+		$e                      = $this->make_event();
+		$_SERVER['REQUEST_URI'] = '/manage/?event_action=edit&event_id=' . $e . '&event_manager_notice=saved';
+		$html                   = $this->frontend( $e );
+		$this->assertStringContainsString( 'data-step="4"', $html );
+		$this->assertStringContainsString( 'name="' . Sheets_Sync_Admin::URL_FIELD . '"', $html );
+		$this->assertStringContainsString( 'name="' . Sheets_Sync_Admin::NONCE_FIELD . '"', $html );
+		$this->assertStringContainsString( 'Create spreadsheet', $html );
+		$this->assertStringContainsString( 'anchor-event-button-secondary', $html );
+		$this->assertStringContainsString( 'return=' . rawurlencode( '/manage/?event_action=edit&event_id=' . $e ), $html );
+		$this->assertStringNotContainsString( 'event_manager_notice', $html );
+	}
+
+	public function test_frontend_new_event_shows_only_the_url_field() {
+		$html = $this->frontend( 0 );
+		$this->assertStringContainsString( 'name="' . Sheets_Sync_Admin::URL_FIELD . '"', $html );
+		$this->assertStringNotContainsString( 'Create spreadsheet', $html );
+		$this->assertStringNotContainsString( 'Sync now', $html );
+	}
+
+	public function test_frontend_section_hidden_from_users_who_cannot_manage() {
+		$e = $this->make_event();
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		$this->assertSame( '', $this->frontend( $e ) );
+	}
+
+	public function test_create_from_frontend_returns_to_the_manager_page() {
+		$this->connect();
+		$this->fake = new Anchor_Sheet_Admin_Creator();
+		$e          = $this->make_event();
+		$back       = '/manage/?event_action=edit&event_id=' . $e;
+		$this->assertStringEndsWith( $back, $this->press_create( $e, $back ) );
+		$this->assertSame( 'NEW', get_post_meta( $e, Sheets_Sync::META_REF, true )['id'] );
+	}
+
+	public function test_offsite_return_falls_back_to_the_edit_screen() {
+		$this->connect();
+		$this->fake = new Anchor_Sheet_Admin_Creator();
+		$e          = $this->make_event();
+		$this->assertStringContainsString( 'post.php', $this->press_create( $e, 'https://evil.example/' ) );
+	}
 }

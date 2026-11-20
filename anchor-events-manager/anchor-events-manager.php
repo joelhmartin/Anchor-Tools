@@ -318,6 +318,9 @@ class Module {
     /** @var Product_Sync|null Event→product sync; null when WooCommerce is inactive. */
     public $product_sync = null;
 
+    /** @var Manual_Sales|null Offline sales recorded as WooCommerce orders; null when WooCommerce is inactive. */
+    public $manual_sales = null;
+
     /** @var Roster|null Roster admin screen + CSV export (always loaded). */
     public $roster = null;
     /** @var Sheets_Sync|null */
@@ -534,6 +537,9 @@ class Module {
             // active; depends on the always-loaded Ticket_Types model.
             require_once $dir . 'class-product-sync.php';
             $this->product_sync = new Product_Sync( $this, $this->ticket_types );
+            // Roster "amount paid": an offline sale becomes a real order.
+            require_once $dir . 'class-manual-sales.php';
+            $this->manual_sales = new Manual_Sales( $this, $this->registrations );
         }
 
         \add_action( 'init', [ $this, 'register_cpt' ] );

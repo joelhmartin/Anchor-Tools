@@ -462,6 +462,9 @@ class Roster {
         $this->text_row( 'roster_guests', \__( 'Additional guests', 'anchor-schema' ), '0', false, 'number' );
         $this->tier_row( $event_id );
         $this->question_rows( $event_id );
+        if ( $this->module->manual_sales && $this->module->manual_sales->available( $event_id ) ) {
+            $this->module->manual_sales->admin_rows();
+        }
         echo '</tbody></table>';
         \submit_button( \__( 'Add attendee', 'anchor-schema' ) );
         echo '</form>';
@@ -562,6 +565,11 @@ class Roster {
         // unticked box refuses rather than overbooking. (Adds no longer need it:
         // handle_add() always goes through.)
         $this->override_row();
+        // A hand-added seat with no order behind it: offer to record what was
+        // paid offline (this is also how earlier manual seats are caught up).
+        if ( $this->module->manual_sales && $this->module->manual_sales->can_record_for_seat( $event_id, $seat ) ) {
+            $this->module->manual_sales->admin_rows( true );
+        }
         echo '</tbody></table>';
         \submit_button( \__( 'Save seat', 'anchor-schema' ) );
         echo ' <a class="button" href="' . \esc_url( $this->roster_url( $event_id ) ) . '">' . \esc_html__( 'Cancel', 'anchor-schema' ) . '</a>';
@@ -848,6 +856,10 @@ class Roster {
         // where somebody is being added after they were told in person.
         $notify = ! isset( $_POST['roster_notify_control'] ) || ! empty( $_POST['roster_notify'] );
 
+        // Paid offline? Read before anything is created, so a mistyped amount
+        // refuses the whole add instead of leaving a seat with no sale on it.
+        $sale = $this->read_sale_fields( $event_id );
+
         /* --- Is the submission usable? (code: invalid) --- */
         if ( \trim( $name ) === '' ) {
             $this->redirect( $event_id, 'error', \__( 'A name is required.', 'anchor-schema' ), 'invalid' );
@@ -940,9 +952,11 @@ class Roster {
             // "and emailed" is only true when an email actually went (REG-D24):
             // notify_user, the per-event confirmation switch and a blank address
             // each silently stop it, and the notice used to claim it anyway.
-            $this->redirect( $event_id, 'success', $emailed->is_sent()
+            $added = $emailed->is_sent()
                 ? \__( 'Attendee added and emailed.', 'anchor-schema' )
-                : \__( 'Attendee added (no confirmation email sent).', 'anchor-schema' ) );
+                : \__( 'Attendee added (no confirmation email sent).', 'anchor-schema' );
+            // After ensure_user() above, so the order belongs to the attendee's account.
+            $this->finish_with_sale( $event_id, (int) $result['created'][0], $sale, $added );
         } elseif ( ! empty( $result['waitlisted'] ) ) {
             $emailed = $notify
                 ? $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests, (int) $result['waitlisted'][0] )
@@ -972,6 +986,7 @@ class Roster {
         $phone      = \sanitize_text_field( \wp_unslash( $_POST['roster_phone'] ?? '' ) );
         $status     = \sanitize_text_field( \wp_unslash( $_POST['roster_status'] ?? '' ) );
         $allow_over = ! empty( $_POST['roster_allow_over'] );
+        $sale       = $this->read_sale_fields( $event_id );
 
         // Contact fields (name/email/phone) are not order-derived, so they are
         // editable for any seat — delegated to the data layer (no direct writes).
@@ -1027,7 +1042,69 @@ class Roster {
             }
         }
 
-        $this->redirect( $event_id, 'success', \__( 'Seat updated.', 'anchor-schema' ) );
+        $this->finish_with_sale( $event_id, $seat_id, $sale, \__( 'Seat updated.', 'anchor-schema' ) );
+    }
+
+    /**
+     * The "amount paid" fields of the add / edit forms, validated. Redirects
+     * with the error when the amount or date is unusable; returns null when
+     * there is no sale to record (blank amount, or no WooCommerce product).
+     *
+     * @param int $event_id
+     * @return array{amount:float,method:string,date:string}|null
+     */
+    private function read_sale_fields( $event_id ) {
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the calling handler verified the nonce.
+        $typed = isset( $_POST['roster_sale_amount'] ) && \trim( (string) \wp_unslash( $_POST['roster_sale_amount'] ) ) !== '';
+        if ( ! $this->module->manual_sales || ! $this->module->manual_sales->available( $event_id ) ) {
+            // The form offered the field and the product has since gone (or
+            // WooCommerce was switched off). Dropping a typed amount without
+            // a word would leave staff believing the sale was recorded.
+            if ( $typed ) {
+                $this->redirect( $event_id, 'error', \__( 'Nothing was saved: this event no longer has a WooCommerce product, so the amount paid cannot be recorded. Clear the amount to save without a sale.', 'anchor-schema' ), 'invalid' );
+            }
+            return null;
+        }
+        $sale = Manual_Sales::from_request();
+        if ( $sale['error'] !== '' ) {
+            $this->redirect( $event_id, 'error', $sale['error'], 'invalid' );
+        }
+        return null === $sale['amount'] ? null : $sale;
+    }
+
+    /**
+     * Record the offline sale (when one was entered) and redirect with one
+     * notice that says what happened to BOTH the seat and the sale. A sale
+     * that could not be recorded is an error notice, never a silent success:
+     * the seat is saved, the money is not on the books, and staff must know.
+     *
+     * @param int        $event_id
+     * @param int        $seat_id
+     * @param array|null $sale     read_sale_fields() result.
+     * @param string     $done     What already succeeded, e.g. "Attendee added and emailed."
+     */
+    private function finish_with_sale( $event_id, $seat_id, $sale, $done ) {
+        if ( ! \is_array( $sale ) ) {
+            $this->redirect( $event_id, 'success', $done );
+        }
+        $recorded = $this->module->manual_sales->record( $seat_id, $sale['amount'], $sale['method'], [
+            'date'  => $sale['date'],
+            'actor' => 'user:' . \get_current_user_id(),
+        ] );
+        if ( $recorded->is_sent() ) {
+            $this->redirect( $event_id, 'success', \sprintf(
+                /* translators: 1: what was done to the seat, 2: order number. */
+                \__( '%1$s Sale recorded as order #%2$s.', 'anchor-schema' ),
+                $done,
+                $recorded->reason()
+            ) );
+        }
+        $this->redirect( $event_id, 'error', \sprintf(
+            /* translators: 1: what was done to the seat, 2: why the sale was not recorded. */
+            \__( '%1$s The sale was NOT recorded: %2$s. Open the seat and enter the amount again.', 'anchor-schema' ),
+            $done,
+            Manual_Sales::failure_message( $recorded->reason() )
+        ), 'invalid' );
     }
 
     public function handle_cancel() {
@@ -2479,6 +2556,13 @@ class Roster {
                         ?>
                     </div>
                     <?php endforeach; ?>
+                    <?php
+                    if ( $this->module->manual_sales && $this->module->manual_sales->available( $event_id ) ) {
+                        $this->module->manual_sales->frontend_fields( function ( $base ) use ( $event_id ) {
+                            return $this->field_id( $base, $event_id );
+                        } );
+                    }
+                    ?>
                 </div>
 
                 <input type="hidden" name="roster_notify_control" value="1" />
@@ -2608,6 +2692,13 @@ class Roster {
                             <?php endforeach; ?>
                         </select>
                     </div>
+                    <?php
+                    if ( $this->module->manual_sales && $this->module->manual_sales->can_record_for_seat( $event_id, $seat ) ) {
+                        $this->module->manual_sales->frontend_fields( function ( $base ) use ( $event_id ) {
+                            return $this->field_id( $base, $event_id );
+                        }, true );
+                    }
+                    ?>
                 </div>
 
                 <?php

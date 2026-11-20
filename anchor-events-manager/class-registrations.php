@@ -1512,6 +1512,56 @@ class Registrations {
     }
 
     /**
+     * Attach an existing seat to a WooCommerce order line, so the order owns
+     * it from here on (the reconcile keeps it, a refund releases it).
+     *
+     * Used by Manual_Sales when staff record an offline payment for a seat
+     * they added by hand. The seat's status and source do not change: it stays
+     * a manual seat that now has an order behind it. Refuses a seat that
+     * already has an order — re-pointing one would orphan the first order's line.
+     *
+     * @param int    $seat_id
+     * @param array  $link  order_id, order_item_id, product_id, variation_id, customer_id.
+     * @param string $note  History note.
+     * @param string $actor History actor.
+     * @return Outcome sent = linked; failed = not a seat, bad ids, or already linked.
+     */
+    public function link_order( $seat_id, array $link, $note = '', $actor = 'system' ) {
+        $seat_id  = (int) $seat_id;
+        $order_id = (int) ( $link['order_id'] ?? 0 );
+        $item_id  = (int) ( $link['order_item_id'] ?? 0 );
+        if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return Outcome::failed( 'not_a_seat' );
+        }
+        if ( $order_id <= 0 || $item_id <= 0 ) {
+            return Outcome::failed( 'bad_link' );
+        }
+        if ( (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true ) > 0 ) {
+            return Outcome::failed( 'already_linked' );
+        }
+
+        \update_post_meta( $seat_id, '_anchor_event_order_id', $order_id );
+        \update_post_meta( $seat_id, '_anchor_event_order_item_id', $item_id );
+        \update_post_meta( $seat_id, '_anchor_event_product_id', max( 0, (int) ( $link['product_id'] ?? 0 ) ) );
+        \update_post_meta( $seat_id, '_anchor_event_variation_id', max( 0, (int) ( $link['variation_id'] ?? 0 ) ) );
+        \update_post_meta( $seat_id, '_anchor_event_customer_id', max( 0, (int) ( $link['customer_id'] ?? 0 ) ) );
+
+        $history = \get_post_meta( $seat_id, '_anchor_event_history', true );
+        if ( ! \is_array( $history ) ) {
+            $history = [];
+        }
+        $history[] = [
+            'status' => (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true ),
+            'time'   => \time(),
+            'note'   => (string) $note,
+            'actor'  => (string) $actor,
+        ];
+        \update_post_meta( $seat_id, '_anchor_event_history', \wp_slash( $history ) );
+
+        return Outcome::sent();
+    }
+
+    /**
      * All seats belonging to a WooCommerce order (any status, any line item).
      * Used by the order trash/delete capacity-release path (spec §7.8) where the
      * order is about to disappear so per-item lookups are unavailable afterwards.

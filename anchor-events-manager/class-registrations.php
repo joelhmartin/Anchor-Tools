@@ -1512,6 +1512,43 @@ class Registrations {
     }
 
     /**
+     * Detach a seat from the order link_order() gave it — only when it still
+     * points at THAT order. Used to undo a manual sale whose order never
+     * completed; never a way to pull a seat off a real order.
+     *
+     * @param int    $seat_id
+     * @param int    $order_id The order the seat is expected to be linked to.
+     * @param string $note
+     * @param string $actor
+     * @return Outcome sent = detached; skipped = it was not linked to that order.
+     */
+    public function unlink_order( $seat_id, $order_id, $note = '', $actor = 'system' ) {
+        $seat_id  = (int) $seat_id;
+        $order_id = (int) $order_id;
+        if ( $seat_id <= 0 || $order_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return Outcome::failed( 'not_a_seat' );
+        }
+        if ( (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true ) !== $order_id ) {
+            return Outcome::skipped( 'not_linked' );
+        }
+        foreach ( [ '_anchor_event_order_id', '_anchor_event_order_item_id', '_anchor_event_product_id', '_anchor_event_variation_id', '_anchor_event_customer_id' ] as $key ) {
+            \update_post_meta( $seat_id, $key, 0 );
+        }
+        $history = \get_post_meta( $seat_id, '_anchor_event_history', true );
+        if ( ! \is_array( $history ) ) {
+            $history = [];
+        }
+        $history[] = [
+            'status' => (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true ),
+            'time'   => \time(),
+            'note'   => (string) $note,
+            'actor'  => (string) $actor,
+        ];
+        \update_post_meta( $seat_id, '_anchor_event_history', \wp_slash( $history ) );
+        return Outcome::sent();
+    }
+
+    /**
      * Attach an existing seat to a WooCommerce order line, so the order owns
      * it from here on (the reconcile keeps it, a refund releases it).
      *

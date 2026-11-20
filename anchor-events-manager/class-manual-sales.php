@@ -129,7 +129,9 @@ class Manual_Sales {
         // phpcs:enable
         if ( $date !== '' ) {
             $parsed = \DateTime::createFromFormat( '!Y-m-d', $date, \wp_timezone() );
-            if ( ! $parsed || $parsed->format( 'Y-m-d' ) !== $date || $parsed->getTimestamp() > \time() + DAY_IN_SECONDS ) {
+            // Compared as site-time dates: "tomorrow" is in the future even
+            // though its midnight is less than 24 hours away.
+            if ( ! $parsed || $parsed->format( 'Y-m-d' ) !== $date || $date > \wp_date( 'Y-m-d' ) ) {
                 $out['error'] = \__( 'The payment date is not a valid past date.', 'anchor-schema' );
                 return $out;
             }
@@ -153,6 +155,23 @@ class Manual_Sales {
      */
     public function record( $seat_id, $amount, $method, array $args = [] ) {
         $seat_id = (int) $seat_id;
+        // One sale per seat, even when two saves of the same seat overlap (a
+        // double-click, two staff on the same row): the second waits here and
+        // then finds the order the first one made.
+        $lock = $this->acquire_seat_lock( $seat_id );
+        if ( ! $lock ) {
+            return Outcome::failed( 'busy' );
+        }
+        try {
+            return $this->record_locked( $seat_id, $amount, $method, $args );
+        } finally {
+            $this->release_seat_lock( $seat_id );
+        }
+    }
+
+    /** record() body; the caller holds the per-seat lock. */
+    private function record_locked( $seat_id, $amount, $method, array $args ) {
+        \clean_post_cache( $seat_id ); // The lock wait may have outlived this request's meta cache.
         $amount  = \round( (float) $amount, 2 );
         $seat    = $this->registrations->get_seat( $seat_id );
         if ( ! \is_array( $seat ) ) {
@@ -190,6 +209,8 @@ class Manual_Sales {
         $actor        = (string) ( $args['actor'] ?? ( 'user:' . \get_current_user_id() ) );
         $user_id      = (int) \get_post_meta( $seat_id, '_anchor_event_user_id', true );
         $paid_ts      = $this->paid_timestamp( (string) ( $args['date'] ?? '' ) );
+        $order        = null;
+        $order_id     = 0;
 
         try {
             $order = \wc_create_order( [
@@ -260,23 +281,43 @@ class Manual_Sales {
                 $methods[ $method ]
             );
 
-            $this->without_wc_emails( static function () use ( $order, $note ) {
-                $order->update_status( 'completed', $note, true );
+            $completed = false;
+            $this->without_wc_emails( static function () use ( $order, $note, &$completed ) {
+                $completed = (bool) $order->update_status( 'completed', $note, true );
             } );
+            if ( ! $completed || ! $this->order_is_completed( $order_id ) ) {
+                $this->roll_back( $seat_id, $order_id, $order );
+                return Outcome::failed( 'order_not_completed' );
+            }
+        } catch ( \Throwable $e ) {
+            Events_Log::error( 'manual_sale_failed', [ 'seat' => $seat_id, 'order' => $order_id, 'message' => $e->getMessage() ] );
+            // Report what is actually on the books. A completed order with the
+            // seat linked IS a recorded sale, whatever threw afterwards (a
+            // third-party hook on the status change, say); anything short of
+            // that is undone so no half-made order is left behind.
+            if ( $order_id > 0 && $this->order_is_completed( $order_id ) ) {
+                return Outcome::sent( (string) $order_id );
+            }
+            if ( $order instanceof \WC_Order ) {
+                $this->roll_back( $seat_id, $order_id, $order );
+            }
+            return Outcome::failed( 'exception' );
+        }
 
-            // WooCommerce stamps "completed" with now; a back-dated sale
-            // should read as completed on the day it was paid.
+        // Cosmetic and outside the rollback on purpose: WooCommerce stamps
+        // "completed" with now, and a back-dated sale should read as completed
+        // on the day it was paid. A failure here leaves a valid recorded sale.
+        try {
             $fresh = \wc_get_order( $order_id );
             if ( $fresh ) {
                 $fresh->set_date_completed( $paid_ts );
                 $fresh->save();
             }
-
-            return Outcome::sent( (string) $order_id );
         } catch ( \Throwable $e ) {
-            Events_Log::error( 'manual_sale_failed', [ 'seat' => $seat_id, 'message' => $e->getMessage() ] );
-            return Outcome::failed( 'exception' );
+            Events_Log::error( 'manual_sale_backdate_failed', [ 'order' => $order_id, 'message' => $e->getMessage() ] );
         }
+
+        return Outcome::sent( (string) $order_id );
     }
 
     /** Human message for a record() failure, for the roster notice. */
@@ -284,6 +325,8 @@ class Manual_Sales {
         switch ( (string) $reason ) {
             case 'already_has_order':
                 return \__( 'this seat already has an order', 'anchor-schema' );
+            case 'busy':
+                return \__( 'another save of this seat is still in progress', 'anchor-schema' );
             case 'seat_not_active':
                 return \__( 'the seat is not confirmed', 'anchor-schema' );
             case 'no_product':
@@ -383,6 +426,43 @@ class Manual_Sales {
             $order->set_billing_email( (string) $seat['email'] );
         }
         $order->set_billing_phone( (string) $seat['phone'] );
+    }
+
+    /** Is the order, read fresh from the database, completed? */
+    private function order_is_completed( $order_id ) {
+        $order = $order_id > 0 ? \wc_get_order( (int) $order_id ) : null;
+        return $order instanceof \WC_Order && $order->has_status( 'completed' );
+    }
+
+    /**
+     * Undo a sale that did not complete: detach the seat FIRST (deleting an
+     * order that still owns the seat would cancel the seat with it), then
+     * remove the order.
+     */
+    private function roll_back( $seat_id, $order_id, \WC_Order $order ) {
+        if ( $order_id > 0 ) {
+            $this->registrations->unlink_order( $seat_id, $order_id, 'manual sale not completed: order #' . $order_id . ' removed', 'system' );
+        }
+        $this->discard( $order );
+    }
+
+    /** MySQL named lock, one per seat. Runs unlocked (true) when GET_LOCK is unavailable. */
+    private function acquire_seat_lock( $seat_id ) {
+        global $wpdb;
+        $got = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $this->seat_lock_name( $seat_id ), 10 ) );
+        // NULL = the server could not answer (no named locks): degrade to
+        // unlocked like the order lock does. 0 = another request holds it.
+        return null === $got ? true : ( (int) $got === 1 );
+    }
+
+    private function release_seat_lock( $seat_id ) {
+        global $wpdb;
+        $wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $this->seat_lock_name( $seat_id ) ) );
+    }
+
+    private function seat_lock_name( $seat_id ) {
+        global $wpdb;
+        return 'anchor_msale_' . \md5( $wpdb->prefix . DB_NAME ) . '_' . (int) $seat_id;
     }
 
     /** Remove a half-built order so a failed record() leaves nothing behind. */

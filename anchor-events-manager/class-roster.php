@@ -1054,7 +1054,15 @@ class Roster {
      * @return array{amount:float,method:string,date:string}|null
      */
     private function read_sale_fields( $event_id ) {
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the calling handler verified the nonce.
+        $typed = isset( $_POST['roster_sale_amount'] ) && \trim( (string) \wp_unslash( $_POST['roster_sale_amount'] ) ) !== '';
         if ( ! $this->module->manual_sales || ! $this->module->manual_sales->available( $event_id ) ) {
+            // The form offered the field and the product has since gone (or
+            // WooCommerce was switched off). Dropping a typed amount without
+            // a word would leave staff believing the sale was recorded.
+            if ( $typed ) {
+                $this->redirect( $event_id, 'error', \__( 'Nothing was saved: this event no longer has a WooCommerce product, so the amount paid cannot be recorded. Clear the amount to save without a sale.', 'anchor-schema' ), 'invalid' );
+            }
             return null;
         }
         $sale = Manual_Sales::from_request();

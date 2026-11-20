@@ -209,4 +209,36 @@ class Test_Manual_Sales extends Anchor_Events_TestCase {
 		$_POST = [ 'roster_sale_amount' => '10', 'roster_sale_date' => '2999-01-01' ];
 		$this->assertNotSame( '', Manual_Sales::from_request()['error'], 'A future payment date is refused.' );
 	}
+
+	public function test_from_request_refuses_tomorrow() {
+		$_POST = [ 'roster_sale_amount' => '10', 'roster_sale_date' => wp_date( 'Y-m-d', time() + DAY_IN_SECONDS ) ];
+		$this->assertNotSame( '', Manual_Sales::from_request()['error'], 'Tomorrow is a future date too.' );
+	}
+
+	/** An order that cannot be completed leaves no order behind and the seat free to try again. */
+	public function test_failed_completion_rolls_back_the_order_and_the_link() {
+		$ctx  = $this->event_with_manual_seat();
+		$boom = static function () {
+			throw new \RuntimeException( 'status hook failed' );
+		};
+		// Before WooCommerce commits the new status, so the order never completes.
+		add_action( 'woocommerce_before_order_object_save', $boom_on_complete = static function ( $order ) use ( $boom ) {
+			if ( $order->get_status() === 'completed' ) {
+				$boom();
+			}
+		} );
+
+		$out = $this->manual_sales()->record( $ctx['seat_id'], 950, 'check' );
+
+		remove_action( 'woocommerce_before_order_object_save', $boom_on_complete );
+		$this->assertTrue( $out->is_failed() );
+		$seat = $this->registrations()->get_seat( $ctx['seat_id'] );
+		$this->assertSame( 0, $seat['order_id'], 'The seat is detached again.' );
+		$this->assertSame( Registrations::STATUS_CONFIRMED, $seat['status'], 'Rolling back must not cancel the seat.' );
+		$orders = wc_get_orders( [ 'created_via' => Manual_Sales::CREATED_VIA, 'limit' => -1, 'return' => 'ids', 'status' => 'any' ] );
+		$this->assertCount( 0, $orders, 'No half-made order is left behind.' );
+
+		$retry = $this->manual_sales()->record( $ctx['seat_id'], 950, 'check' );
+		$this->assertTrue( $retry->is_sent(), 'The same seat can be recorded once the fault is gone.' );
+	}
 }

@@ -24,6 +24,9 @@ Usage:
 
 == Changelog ==
 
+= 3.50.0 =
+* Events: record a sale that was paid outside the website. Add attendee has two new optional fields, Amount paid and Paid by. Fill them in and the seat gets a completed WooCommerce order for that amount, so the sale shows in your orders and revenue reports. Nothing is charged and no receipt is emailed. Leave them blank for a free seat. To catch up a seat you already added by hand, open it with Edit, enter the amount and the payment date, and save. Refunding the order in WooCommerce releases the seat.
+
 = 3.45.3 =
 * Library: a folder can have an "Available until" date. After that day, people who can only view it lose access to it and everything inside it, enforced on the server. Admins and managers keep access, and the files and watch history stay. Set it from the folder's menu.
 * Events: "Keep session recordings (days)" on the event. Above 0, saving creates a Library folder for the event, with a subfolder per online session that closes that many days after its session. Only people registered for the event can open it. The room links to it, and the roster gets a Recording views panel showing how much of each recording each registrant played.

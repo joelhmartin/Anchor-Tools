@@ -24,6 +24,9 @@ Usage:
 
 == Changelog ==
 
+= 3.50.1 =
+* Events: Amount paid and Paid by now also work on events whose WooCommerce product was linked by hand (for example one product with several ticket types). Those events show a Ticket sold dropdown to pick which ticket was bought. Manual sale orders show "Source: Manual" in WooCommerce instead of Unknown.
+
 = 3.50.0 =
 * Events: record a sale that was paid outside the website. Add attendee has two new optional fields, Amount paid and Paid by. Fill them in and the seat gets a completed WooCommerce order for that amount, so the sale shows in your orders and revenue reports. Nothing is charged and no receipt is emailed. Leave them blank for a free seat. To catch up a seat you already added by hand, open it with Edit, enter the amount and the payment date, and save. Refunding the order in WooCommerce releases the seat.
 

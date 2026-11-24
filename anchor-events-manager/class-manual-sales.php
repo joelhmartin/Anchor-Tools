@@ -34,6 +34,14 @@ class Manual_Sales {
     /** Payment method id stored on the order (not a registered gateway). */
     const PAYMENT_METHOD = 'anchor_manual';
 
+    /**
+     * WooCommerce order attribution source for these orders. Stored as a
+     * `utm` source so WooCommerce Analytics and the order screen show
+     * "Source: Manual" instead of "Unknown" (WooCommerce's own `admin` type
+     * would read "Web admin", which is how a staff-built checkout looks).
+     */
+    const ATTRIBUTION_SOURCE = 'Manual';
+
     /** @var Module */
     private $module;
 
@@ -303,6 +311,9 @@ class Manual_Sales {
             $order->set_payment_method_title( \sprintf( \__( 'Manual: %s', 'anchor-schema' ), $methods[ $method ] ) );
             $order->update_meta_data( '_anchor_manual_sale_method', $method );
             $order->update_meta_data( '_anchor_manual_sale_seat', $seat_id );
+            $order->update_meta_data( '_wc_order_attribution_source_type', 'utm' );
+            $order->update_meta_data( '_wc_order_attribution_utm_source', self::ATTRIBUTION_SOURCE );
+            $order->update_meta_data( '_wc_order_attribution_utm_medium', $method );
             $order->set_date_created( $paid_ts );
             $order->set_date_paid( $paid_ts );
             // The typed amount IS the total: no tax is added on top of it.

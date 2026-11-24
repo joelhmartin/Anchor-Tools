@@ -102,6 +102,9 @@ class Test_Manual_Sales extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'Check', $order->get_payment_method_title() );
 		$this->assertSame( 'pat@example.test', $order->get_billing_email() );
 		$this->assertNotNull( $order->get_date_paid() );
+		$this->assertSame( 'utm', $order->get_meta( '_wc_order_attribution_source_type' ) );
+		$this->assertSame( Manual_Sales::ATTRIBUTION_SOURCE, $order->get_meta( '_wc_order_attribution_utm_source' ) );
+		$this->assertSame( 'check', $order->get_meta( '_wc_order_attribution_utm_medium' ) );
 
 		$items = array_values( $order->get_items() );
 		$this->assertCount( 1, $items );

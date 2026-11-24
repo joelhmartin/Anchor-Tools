@@ -102,6 +102,9 @@ class Test_Manual_Sales extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'Check', $order->get_payment_method_title() );
 		$this->assertSame( 'pat@example.test', $order->get_billing_email() );
 		$this->assertNotNull( $order->get_date_paid() );
+		$this->assertSame( 'utm', $order->get_meta( '_wc_order_attribution_source_type' ) );
+		$this->assertSame( Manual_Sales::ATTRIBUTION_SOURCE, $order->get_meta( '_wc_order_attribution_utm_source' ) );
+		$this->assertSame( 'check', $order->get_meta( '_wc_order_attribution_utm_medium' ) );
 
 		$items = array_values( $order->get_items() );
 		$this->assertCount( 1, $items );
@@ -191,6 +194,59 @@ class Test_Manual_Sales extends Anchor_Events_TestCase {
 		$out = $this->manual_sales()->record( $seat_id, 100, 'check' );
 		$this->assertTrue( $out->is_failed() );
 		$this->assertSame( 'no_product', $out->reason() );
+	}
+
+	/**
+	 * A simple product linked to an event by hand (the product's Event tab),
+	 * the way pre-existing course products are linked.
+	 */
+	private function linked_product( $event_id, $name, $price ) {
+		$product = new WC_Product_Simple();
+		$product->set_name( $name );
+		$product->set_regular_price( (string) $price );
+		$product->set_status( 'publish' );
+		$product->set_virtual( true );
+		$product->update_meta_data( \Anchor\Events\WooCommerce::META_ENABLED, '1' );
+		$product->update_meta_data( \Anchor\Events\WooCommerce::META_EVENT_ID, $event_id );
+		$product->save();
+		return (int) $product->get_id();
+	}
+
+	public function test_hand_linked_event_records_against_the_chosen_product() {
+		$event_id = $this->make_event( [ 'title' => 'Linked Event' ] );
+		$dentist  = $this->linked_product( $event_id, 'Course - Dentist', 2995 );
+		$staff    = $this->linked_product( $event_id, 'Course - Staff', 950 );
+		$seat_id  = $this->make_seat( $event_id, [ 'source' => 'manual', 'name' => 'Lee Example', 'email' => 'lee@example.test' ] );
+
+		$this->assertTrue( $this->manual_sales()->available( $event_id ) );
+		$this->assertSame( [ $dentist, $staff ], array_keys( $this->manual_sales()->line_choices( $event_id ) ) );
+
+		$none = $this->manual_sales()->record( $seat_id, 950, 'check' );
+		$this->assertSame( 'pick_product', $none->reason(), 'Two possible tickets and none chosen: refuse, do not guess.' );
+
+		$foreign = $this->manual_sales()->record( $seat_id, 950, 'check', [ 'product' => $this->linked_product( $this->make_event(), 'Other', 5 ) ] );
+		$this->assertSame( 'pick_product', $foreign->reason(), 'A product linked to another event is not a choice.' );
+
+		$out = $this->manual_sales()->record( $seat_id, 950, 'check', [ 'product' => $staff ] );
+		$this->assertTrue( $out->is_sent(), 'reason: ' . $out->reason() );
+		$order = wc_get_order( (int) $out->reason() );
+		$items = array_values( $order->get_items() );
+		$this->assertSame( $staff, (int) $items[0]->get_product_id() );
+		$this->assertSame( 'completed', $order->get_status() );
+		$this->assertSame( 1, $this->count_seats( $event_id ), 'The reconcile kept the one seat.' );
+		$this->assertSame( (int) $out->reason(), $this->registrations()->get_seat( $seat_id )['order_id'] );
+	}
+
+	public function test_hand_linked_event_with_one_product_needs_no_choice() {
+		$event_id = $this->make_event( [ 'title' => 'Single Linked Event' ] );
+		$only     = $this->linked_product( $event_id, 'Course', 500 );
+		$seat_id  = $this->make_seat( $event_id, [ 'source' => 'manual' ] );
+
+		$out = $this->manual_sales()->record( $seat_id, 500, 'cash' );
+
+		$this->assertTrue( $out->is_sent(), 'reason: ' . $out->reason() );
+		$items = array_values( wc_get_order( (int) $out->reason() )->get_items() );
+		$this->assertSame( $only, (int) $items[0]->get_product_id() );
 	}
 
 	public function test_from_request_reads_amount_method_and_date() {

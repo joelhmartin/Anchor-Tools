@@ -34,6 +34,14 @@ class Manual_Sales {
     /** Payment method id stored on the order (not a registered gateway). */
     const PAYMENT_METHOD = 'anchor_manual';
 
+    /**
+     * WooCommerce order attribution source for these orders. Stored as a
+     * `utm` source so WooCommerce Analytics and the order screen show
+     * "Source: Manual" instead of "Unknown" (WooCommerce's own `admin` type
+     * would read "Web admin", which is how a staff-built checkout looks).
+     */
+    const ATTRIBUTION_SOURCE = 'Manual';
+
     /** @var Module */
     private $module;
 
@@ -76,9 +84,49 @@ class Manual_Sales {
      * @return bool
      */
     public function available( $event_id ) {
+        if ( ! \function_exists( 'wc_create_order' ) ) {
+            return false;
+        }
+        return $this->has_managed_product( $event_id ) || ! empty( $this->line_choices( $event_id ) );
+    }
+
+    /** Does the event sell through a product this plugin manages (one variation per ticket type)? */
+    private function has_managed_product( $event_id ) {
         return $this->module->product_sync
-            && \function_exists( 'wc_create_order' )
             && $this->module->product_sync->managed_product_id( (int) $event_id ) > 0;
+    }
+
+    /**
+     * What a sale can be recorded AS on an event whose product was linked by
+     * hand (the product's "Event" tab) instead of being managed: every linked
+     * simple product or variation, id => name. The seat's ticket type cannot
+     * pick the line there (such an event has no ticket types of its own), so
+     * staff choose.
+     *
+     * Empty for a managed event: its line follows the seat's ticket type.
+     *
+     * @param int $event_id
+     * @return array<int,string>
+     */
+    public function line_choices( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || $this->has_managed_product( $event_id ) || ! $this->module->woocommerce || ! \function_exists( 'wc_get_product' ) ) {
+            return [];
+        }
+        $choices = [];
+        foreach ( (array) $this->module->woocommerce->products_for_event( $event_id ) as $link ) {
+            $id      = (int) ( ! empty( $link['variation_id'] ) ? $link['variation_id'] : ( $link['product_id'] ?? 0 ) );
+            $product = $id > 0 ? \wc_get_product( $id ) : null;
+            // A variable parent is not something an order line can buy.
+            if ( ! $product || $product->is_type( 'variable' ) ) {
+                continue;
+            }
+            $label = $product->is_type( 'variation' )
+                ? \wp_strip_all_tags( \wc_get_formatted_variation( $product, true, false, false ) )
+                : '';
+            $choices[ $id ] = $label !== '' ? $label : $product->get_name();
+        }
+        return $choices;
     }
 
     /**
@@ -102,10 +150,10 @@ class Manual_Sales {
      * A blank amount means "no sale to record" (a comp, a speaker, a staff
      * seat): `amount` is null and the caller carries on as before.
      *
-     * @return array{amount:float|null,method:string,date:string,error:string}
+     * @return array{amount:float|null,method:string,date:string,product:int,error:string}
      */
     public static function from_request() {
-        $out = [ 'amount' => null, 'method' => 'other', 'date' => '', 'error' => '' ];
+        $out = [ 'amount' => null, 'method' => 'other', 'date' => '', 'product' => 0, 'error' => '' ];
 
         // phpcs:disable WordPress.Security.NonceVerification.Missing -- the roster handler verified the nonce.
         $raw = isset( $_POST['roster_sale_amount'] ) ? \trim( (string) \wp_unslash( $_POST['roster_sale_amount'] ) ) : '';
@@ -124,6 +172,8 @@ class Manual_Sales {
         if ( isset( self::methods()[ $method ] ) ) {
             $out['method'] = $method;
         }
+
+        $out['product'] = isset( $_POST['roster_sale_product'] ) ? \absint( \wp_unslash( $_POST['roster_sale_product'] ) ) : 0;
 
         $date = isset( $_POST['roster_sale_date'] ) ? \sanitize_text_field( (string) \wp_unslash( $_POST['roster_sale_date'] ) ) : '';
         // phpcs:enable
@@ -148,7 +198,9 @@ class Manual_Sales {
      * @param float  $amount  What was collected, in the store currency. 0 is allowed (a recorded comp).
      * @param string $method  A key of methods().
      * @param array  $args {
-     *   @type string $date  'Y-m-d' the money was taken (site time zone). Default today.
+     *   @type string $date    'Y-m-d' the money was taken (site time zone). Default today.
+     *   @type int    $product For an event with hand-linked products: the linked product or
+     *                         variation sold (a key of line_choices()). Ignored for a managed event.
      *   @type string $actor History actor, e.g. 'user:12'.
      * }
      * @return Outcome sent = order created (reason is the order id); failed = nothing was created.
@@ -194,10 +246,24 @@ class Manual_Sales {
             return Outcome::failed( 'no_product' );
         }
 
-        $tier_id      = (string) ( $seat['ticket_type_id'] ?? '' );
-        $variation_id = $tier_id !== '' ? (int) $this->module->product_sync->variation_for_tier( $event_id, $tier_id ) : 0;
-        $product_id   = (int) $this->module->product_sync->managed_product_id( $event_id );
-        $product      = \wc_get_product( $variation_id > 0 ? $variation_id : $product_id );
+        if ( $this->has_managed_product( $event_id ) ) {
+            $tier_id      = (string) ( $seat['ticket_type_id'] ?? '' );
+            $variation_id = $tier_id !== '' ? (int) $this->module->product_sync->variation_for_tier( $event_id, $tier_id ) : 0;
+            $product_id   = (int) $this->module->product_sync->managed_product_id( $event_id );
+            $product      = \wc_get_product( $variation_id > 0 ? $variation_id : $product_id );
+        } else {
+            // Hand-linked products: the line is whichever one staff picked, and
+            // only one this event is actually linked to. A lone choice needs no pick.
+            $choices = $this->line_choices( $event_id );
+            $picked  = (int) ( $args['product'] ?? 0 );
+            if ( $picked <= 0 && \count( $choices ) === 1 ) {
+                $picked = (int) \array_key_first( $choices );
+            }
+            if ( ! isset( $choices[ $picked ] ) ) {
+                return Outcome::failed( 'pick_product' );
+            }
+            $product = \wc_get_product( $picked );
+        }
         // A variable product cannot be an order line by itself, and a line on
         // the wrong tier would resolve to the wrong ticket type on reconcile.
         if ( ! $product || $product->is_type( 'variable' ) ) {
@@ -245,6 +311,9 @@ class Manual_Sales {
             $order->set_payment_method_title( \sprintf( \__( 'Manual: %s', 'anchor-schema' ), $methods[ $method ] ) );
             $order->update_meta_data( '_anchor_manual_sale_method', $method );
             $order->update_meta_data( '_anchor_manual_sale_seat', $seat_id );
+            $order->update_meta_data( '_wc_order_attribution_source_type', 'utm' );
+            $order->update_meta_data( '_wc_order_attribution_utm_source', self::ATTRIBUTION_SOURCE );
+            $order->update_meta_data( '_wc_order_attribution_utm_medium', $method );
             $order->set_date_created( $paid_ts );
             $order->set_date_paid( $paid_ts );
             // The typed amount IS the total: no tax is added on top of it.
@@ -325,6 +394,8 @@ class Manual_Sales {
         switch ( (string) $reason ) {
             case 'already_has_order':
                 return \__( 'this seat already has an order', 'anchor-schema' );
+            case 'pick_product':
+                return \__( 'choose which ticket was sold', 'anchor-schema' );
             case 'busy':
                 return \__( 'another save of this seat is still in progress', 'anchor-schema' );
             case 'seat_not_active':
@@ -344,13 +415,24 @@ class Manual_Sales {
     /**
      * wp-admin form-table rows.
      *
+     * @param int  $event_id
      * @param bool $with_date Offer a payment date (the seat edit form, for back-dating).
      */
-    public function admin_rows( $with_date = false ) {
+    public function admin_rows( $event_id, $with_date = false ) {
+        $choices = $this->line_choices( $event_id );
         echo '<tr><th scope="row"><label for="roster_sale_amount">' . \esc_html__( 'Amount paid', 'anchor-schema' ) . '</label></th><td>';
         echo '<input type="text" inputmode="decimal" name="roster_sale_amount" id="roster_sale_amount" class="regular-text" value="" placeholder="0.00" />';
         echo '<p class="description">' . \esc_html( self::help_text() ) . '</p>';
         echo '</td></tr>';
+
+        if ( \count( $choices ) > 1 ) {
+            echo '<tr><th scope="row"><label for="roster_sale_product">' . \esc_html__( 'Ticket sold', 'anchor-schema' ) . '</label></th><td>';
+            echo '<select name="roster_sale_product" id="roster_sale_product">';
+            foreach ( $choices as $id => $label ) {
+                echo '<option value="' . \esc_attr( (string) $id ) . '">' . \esc_html( $label ) . '</option>';
+            }
+            echo '</select></td></tr>';
+        }
 
         echo '<tr><th scope="row"><label for="roster_sale_method">' . \esc_html__( 'Paid by', 'anchor-schema' ) . '</label></th><td>';
         echo '<select name="roster_sale_method" id="roster_sale_method">';
@@ -370,10 +452,12 @@ class Manual_Sales {
     /**
      * Front-end console fields (inside an `.anchor-event-grid`).
      *
+     * @param int      $event_id
      * @param callable $field_id  fn( string $base ): string — the console's unique-id helper.
      * @param bool     $with_date Offer a payment date.
      */
-    public function frontend_fields( callable $field_id, $with_date = false ) {
+    public function frontend_fields( $event_id, callable $field_id, $with_date = false ) {
+        $choices   = $this->line_choices( $event_id );
         $amount_id = (string) $field_id( 'roster_sale_amount' );
         $method_id = (string) $field_id( 'roster_sale_method' );
         ?>
@@ -382,6 +466,17 @@ class Manual_Sales {
             <input type="text" inputmode="decimal" id="<?php echo \esc_attr( $amount_id ); ?>" name="roster_sale_amount" placeholder="0.00" />
             <small class="anchor-roster-fe-help"><?php echo \esc_html( self::help_text() ); ?></small>
         </div>
+        <?php if ( \count( $choices ) > 1 ) :
+            $product_id = (string) $field_id( 'roster_sale_product' ); ?>
+        <div class="anchor-event-field">
+            <label for="<?php echo \esc_attr( $product_id ); ?>"><?php \esc_html_e( 'Ticket sold', 'anchor-schema' ); ?></label>
+            <select id="<?php echo \esc_attr( $product_id ); ?>" name="roster_sale_product">
+                <?php foreach ( $choices as $id => $label ) : ?>
+                    <option value="<?php echo \esc_attr( (string) $id ); ?>"><?php echo \esc_html( $label ); ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <?php endif; ?>
         <div class="anchor-event-field">
             <label for="<?php echo \esc_attr( $method_id ); ?>"><?php \esc_html_e( 'Paid by', 'anchor-schema' ); ?></label>
             <select id="<?php echo \esc_attr( $method_id ); ?>" name="roster_sale_method">

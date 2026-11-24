@@ -463,7 +463,7 @@ class Roster {
         $this->tier_row( $event_id );
         $this->question_rows( $event_id );
         if ( $this->module->manual_sales && $this->module->manual_sales->available( $event_id ) ) {
-            $this->module->manual_sales->admin_rows();
+            $this->module->manual_sales->admin_rows( $event_id );
         }
         echo '</tbody></table>';
         \submit_button( \__( 'Add attendee', 'anchor-schema' ) );
@@ -568,7 +568,7 @@ class Roster {
         // A hand-added seat with no order behind it: offer to record what was
         // paid offline (this is also how earlier manual seats are caught up).
         if ( $this->module->manual_sales && $this->module->manual_sales->can_record_for_seat( $event_id, $seat ) ) {
-            $this->module->manual_sales->admin_rows( true );
+            $this->module->manual_sales->admin_rows( $event_id, true );
         }
         echo '</tbody></table>';
         \submit_button( \__( 'Save seat', 'anchor-schema' ) );
@@ -1051,7 +1051,7 @@ class Roster {
      * there is no sale to record (blank amount, or no WooCommerce product).
      *
      * @param int $event_id
-     * @return array{amount:float,method:string,date:string}|null
+     * @return array{amount:float,method:string,date:string,product:int}|null
      */
     private function read_sale_fields( $event_id ) {
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the calling handler verified the nonce.
@@ -1088,8 +1088,9 @@ class Roster {
             $this->redirect( $event_id, 'success', $done );
         }
         $recorded = $this->module->manual_sales->record( $seat_id, $sale['amount'], $sale['method'], [
-            'date'  => $sale['date'],
-            'actor' => 'user:' . \get_current_user_id(),
+            'date'    => $sale['date'],
+            'product' => (int) ( $sale['product'] ?? 0 ),
+            'actor'   => 'user:' . \get_current_user_id(),
         ] );
         if ( $recorded->is_sent() ) {
             $this->redirect( $event_id, 'success', \sprintf(
@@ -2558,7 +2559,7 @@ class Roster {
                     <?php endforeach; ?>
                     <?php
                     if ( $this->module->manual_sales && $this->module->manual_sales->available( $event_id ) ) {
-                        $this->module->manual_sales->frontend_fields( function ( $base ) use ( $event_id ) {
+                        $this->module->manual_sales->frontend_fields( $event_id, function ( $base ) use ( $event_id ) {
                             return $this->field_id( $base, $event_id );
                         } );
                     }
@@ -2694,7 +2695,7 @@ class Roster {
                     </div>
                     <?php
                     if ( $this->module->manual_sales && $this->module->manual_sales->can_record_for_seat( $event_id, $seat ) ) {
-                        $this->module->manual_sales->frontend_fields( function ( $base ) use ( $event_id ) {
+                        $this->module->manual_sales->frontend_fields( $event_id, function ( $base ) use ( $event_id ) {
                             return $this->field_id( $base, $event_id );
                         }, true );
                     }

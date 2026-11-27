@@ -24,6 +24,9 @@ Usage:
 
 == Changelog ==
 
+= 3.50.2 =
+* Popups: a fly-in no longer disappears when another popup is closed or when the visitor clicks elsewhere on the page. It closes only from its own X (or Escape when no other popup is open). Before, closing an opt-in popup also closed the fly-in beside it, so visitors never saw it.
+
 = 3.50.1 =
 * Events: Amount paid and Paid by now also work on events whose WooCommerce product was linked by hand (for example one product with several ticket types). Those events show a Ticket sold dropdown to pick which ticket was bought. Manual sale orders show "Source: Manual" in WooCommerce instead of Unknown.
 

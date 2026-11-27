@@ -630,6 +630,14 @@
     modal.hidden = true;
   }
 
+  // Whether a screen-covering (exclusive) popup is showing right now.
+  function anyExclusiveOpen(){
+    for (var i = 0; i < allModals.length; i++) {
+      if (!allModals[i].hidden && allModals[i]._exclusive !== false) return true;
+    }
+    return false;
+  }
+
   function wireClose(modal){
     modal.addEventListener('click', function(e){
       var t = e.target;
@@ -639,6 +647,12 @@
     });
     document.addEventListener('click', function(e){
       if(modal.hidden) return;
+      // Fly-ins (non-exclusive) have no backdrop and sit beside the page, so a
+      // click elsewhere is not a dismissal: it may be the visitor using the page,
+      // or closing ANOTHER popup (its X is outside the fly-in). Closing a modal
+      // used to close the fly-in under it, so the fly-in was never seen. A fly-in
+      // closes only from its own X (or Escape when it is the only popup open).
+      if(modal._exclusive === false) return;
       var now = (typeof e.timeStamp === 'number' && e.timeStamp > 0)
         ? e.timeStamp
         : ((window.performance && performance.now) ? performance.now() : Date.now());
@@ -650,7 +664,11 @@
       closeModal(modal);
     }, true);
     window.addEventListener('keydown', function(e){
-      if(e.key === 'Escape' && !modal.hidden) closeModal(modal);
+      if(e.key !== 'Escape' || modal.hidden) return;
+      // Escape belongs to the screen-covering popup when one is open: it must
+      // not also take a fly-in down with it.
+      if(modal._exclusive === false && anyExclusiveOpen()) return;
+      closeModal(modal);
     });
   }
 
